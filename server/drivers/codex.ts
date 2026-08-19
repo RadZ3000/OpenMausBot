@@ -67,8 +67,28 @@ function mountMcpServer(
     // Values stay in the child environment; argv contains names only so
     // credentials never appear in process listings or diagnostics.
     "-c", `${prefix}.env_vars=${JSON.stringify(Object.keys(server.env))}`,
+    // `auto` still sends every tool that isn't annotated read-only here for
+    // approval and lets the read-only ones — screenshots, state reads — run
+    // free; `prompt` would put a card in front of every screenshot too.
     "-c", `${prefix}.default_tools_approval_mode="auto"`,
   );
+}
+
+const MCP_APPROVAL_QUESTION_PREFIX = "mcp_tool_call_approval_";
+
+/** Codex asks MCP permission through requestUserInput rather than one of the
+ * decision requests, and only accepts its own option labels back — anything
+ * else, including prose, reads as Cancel and reaches the model as "user
+ * rejected MCP tool call". Verified against codex-cli 0.148.0. */
+function mcpToolApproval(method: string, params: any): { id: string; tool: string; summary: string } | null {
+  if (method !== "item/tool/requestUserInput") return null;
+  const question = Array.isArray(params.questions) ? params.questions[0] : null;
+  const id = String(question?.id ?? "");
+  if (!id.startsWith(MCP_APPROVAL_QUESTION_PREFIX)) return null;
+  const summary = String(question.question || question.header || "Approve MCP tool call?");
+  // Codex only names the tool inside the prompt text; fall back to the coarse
+  // label when it swaps in a monitor reason instead.
+  return { id, tool: summary.match(/run tool "([^"]+)"/)?.[1] ?? "mcp", summary };
 }
 
 export const CodexDriver: ProviderDriver<CodexConfig> = {
@@ -159,15 +179,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         mountMcpServer(appServerArgs, env, "computer", turn.integrations.localComputer);
       }
       if (turn.integrations?.phone) {
-        const bridge = turn.integrations.phone;
-        Object.assign(env, bridge.env);
-        const prefix = "mcp_servers.openmausbot_phone";
-        appServerArgs.push(
-          "-c", `${prefix}.command=${JSON.stringify(bridge.command)}`,
-          "-c", `${prefix}.args=${JSON.stringify(bridge.args)}`,
-          "-c", `${prefix}.env_vars=${JSON.stringify(Object.keys(bridge.env))}`,
-          "-c", `${prefix}.default_tools_approval_mode="auto"`,
-        );
+        mountMcpServer(appServerArgs, env, "openmausbot_phone", turn.integrations.phone);
       }
 
       const child = spawnCli(config.cli, appServerArgs, {
@@ -234,19 +246,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const method = msg.method as string;
         const params = msg.params ?? {};
         const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
-        const isQuestion = method === "item/tool/requestUserInput";
+        const mcpAsk = mcpToolApproval(method, params);
+        const isQuestion = method === "item/tool/requestUserInput" && !mcpAsk;
         const tool =
           method === "item/fileChange/requestApproval" || method === "applyPatchApproval"
             ? "edit"
-            : isQuestion
-              ? "ask_user"
-              : "shell";
+            : mcpAsk
+              ? mcpAsk.tool
+              : isQuestion
+                ? "ask_user"
+                : "shell";
+        const answerMcp = (questionId: string, label: "Allow" | "Cancel") =>
+          send({ jsonrpc: "2.0", id: msg.id, result: { answers: { [questionId]: { answers: [label] } } } });
         if (config.fullAuto && !isQuestion) {
+          if (mcpAsk) return answerMcp(mcpAsk.id, "Allow");
           return send({ jsonrpc: "2.0", id: msg.id, result: { decision: legacy ? "approved" : "accept" } });
         }
         const requestId = newId();
-        const summary =
-          typeof params.command === "string"
+        const summary = mcpAsk
+          ? mcpAsk.summary
+          : typeof params.command === "string"
             ? params.command.slice(0, 200)
             : Array.isArray(params.questions)
               ? params.questions.map((q: any) => q.question ?? q.header).filter(Boolean).join(" · ")
@@ -259,7 +278,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const finish = (behavior: "allow" | "deny" | "answer", message?: string, source: "user" | "timeout" | "system" = "user") => {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
-          if (isQuestion) {
+          if (mcpAsk) {
+            answerMcp(mcpAsk.id, behavior === "allow" ? "Allow" : "Cancel");
+          } else if (isQuestion) {
             const answers: Record<string, { answers: string[] }> = {};
             for (const q of Array.isArray(params.questions) ? params.questions : []) {
               answers[q.id] = { answers: [message || QUESTION_TIMEOUT_NOTE] };

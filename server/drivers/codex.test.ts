@@ -171,6 +171,7 @@ describe("CodexDriver turns (fake app-server)", () => {
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.argv.join(" ")).toContain("mcp_servers.computer.command");
+    expect(seen.argv).toContain('mcp_servers.computer.default_tools_approval_mode="auto"');
     expect(seen.argv.join(" ")).toContain("/tmp/container-mcp.js");
     expect(seen.argv.join(" ")).toContain("OMB_VM_TOKEN");
     expect(seen.argv.join(" ")).not.toContain("vm-secret");
@@ -278,6 +279,28 @@ describe("CodexDriver turns (fake app-server)", () => {
     await recorder.until((e) => e.type === "turn.completed");
     // legacy method name → legacy decision vocabulary
     expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ decision: "approved" });
+  });
+
+  it("surfaces an MCP tool approval as a permission and answers with Codex's own label", async () => {
+    await create({ mode: "mcp-approval" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-mcp-approve", text: "open firefox" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      requestType: "permission",
+      tool: "launch_app",
+      summary: 'Allow the computer MCP server to run tool "launch_app"?',
+    });
+
+    await instance.adapter.respondToRequest("t-mcp-approve", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "request.resolved");
+    await recorder.until((e) => e.type === "turn.completed");
+    // the literal option label — prose here would reach the model as a rejection
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({
+      answers: { mcp_tool_call_approval_c1: { answers: ["Allow"] } },
+    });
   });
 
   it("auto-approves commands in fullAuto without opening a request", async () => {

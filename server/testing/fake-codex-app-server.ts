@@ -4,8 +4,8 @@
 // initialize/thread/turn handshake, then plays a scripted turn. Like the
 // real app-server, it never exits on its own — the driver kills it.
 //
-//   FAKE_CODEX_MODE   happy (default) | approval | resume | stream |
-//                     logged-in-stdout | logged-out | unauthorized
+//   FAKE_CODEX_MODE   happy (default) | approval | mcp-approval | resume |
+//                     stream | logged-in-stdout | logged-out | unauthorized
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
@@ -137,6 +137,22 @@ process.stdin.on("data", (chunk) => {
         if (mode === "approval") {
           out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: "rm -rf scratch" } });
           // turn continues from the approval response handler above
+        } else if (mode === "mcp-approval") {
+          out({
+            jsonrpc: "2.0",
+            id: 100,
+            method: "item/tool/requestUserInput",
+            params: {
+              questions: [
+                {
+                  id: "mcp_tool_call_approval_c1",
+                  header: "Approve app tool call?",
+                  question: 'Allow the computer MCP server to run tool "launch_app"?',
+                  options: [{ label: "Allow" }, { label: "Cancel" }],
+                },
+              ],
+            },
+          });
         } else {
           finishTurn();
         }
