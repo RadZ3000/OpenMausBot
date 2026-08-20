@@ -35,6 +35,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm check:electron
+      # every platform: the native dependencies fan out into per-OS builds, so
+      # a copyleft binary can be present on one runner and absent on the others
+      - run: pnpm check:licenses
       - name: production UI build
         if: matrix.os == 'ubuntu-latest'
         run: pnpm exec vite build
