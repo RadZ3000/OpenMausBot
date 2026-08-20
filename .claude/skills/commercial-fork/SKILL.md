@@ -146,8 +146,19 @@ forked from. Treat every such default as a bug.
   build leaves. `cloudflare/composio-broker/` is also the right model for any
   proxy of our own — per-install tokens hashed in D1, rate-limit namespaces, and
   a `REGISTRATION_MODE` switch.
+- **Documentation links** — `src/components/ApiKeys.tsx:273` and
+  `src/components/LinuxLocalControl.tsx:16` open upstream's GitHub repo. A
+  customer clicking "docs" and landing on the project we forked from undoes a
+  lot of the impression the rest of the build works for.
 - **Brand** — `appId`, `productName`, the mascot, and the maintainer field are
   upstream's marks, and Apache §6 does not license them.
+
+`docs/identity-surface.md` maps the whole naming surface, including which names
+are *not* branding and must survive a rebrand untouched — data directories,
+`omb-*` storage keys, the `openmausbot://` scheme, `_openmausbot._tcp`, the
+`openmaus.team` wire format, and the health-probe response Electron checks
+before adopting a server. Renaming one of those strands installs rather than
+rebranding anything.
 
 ## Before a build leaves the building
 

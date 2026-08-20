@@ -92,24 +92,37 @@ the others buried. The three answer genuinely different buyers — a firm whose
 data cannot leave the building, a team that already has an Anthropic account,
 and someone who wants to see it work before thinking about either.
 
-## Phase 0 — the distribution profile (do this first)
+## Phase 0 — the distribution profile — **shipped**
 
-A single build-time module describing *this* distribution: product name, icon,
-default engine and model preference, analytics destination, and which optional
-features are visible.
+A single build-time module describing *this* distribution. Landed as
+`src/lib/distribution.ts`, wired at four seams: analytics takes its destination
+from the profile, `src/main.tsx` stamps the window title before the shell reads
+it, onboarding greets the user by the configured name, and `defaultSelection()`
+takes a preferred engine from `OMB_DEFAULT_ENGINE`.
 
-It also decides **which of the three install paths a given build offers** — a
-locked-down customer build may expose Local only, while the public build offers
-all three.
+**The survey it produced is the durable half, and it lives in
+[`docs/identity-surface.md`](../identity-surface.md).** Read that before Phase 2
+or before renaming anything. It maps every place the app names itself and sorts
+those names into the ones a distribution may change, the ones that identify the
+app to itself and must never change, and packaging identity — where `appId` is
+singled out, because changing it makes the build a different app to the OS, with
+a fresh data directory and no update continuity.
 
-It is small, additive, entirely ours, and both later phases need it. Today the
-brand is scattered across 15+ files and the default engine is hardcoded inside
-`defaultSelection()`; neither can be varied per customer without editing code
-upstream also owns.
+Two deviations from this plan as originally written, both deliberate:
 
-Seam: one new module read by the shell, the settings surfaces, and
-`defaultSelection()`. Prefer one seam over several — if this needs more than a
-handful of call sites, the shape is wrong.
+- **No install-path field yet.** This section previously said Phase 0 also
+  decides which of the three paths a build offers. Nothing reads such a field
+  until the Phase 1 chooser exists, and `module-design` is blunt that
+  speculative generality is this repo's characteristic failure mode. It is one
+  line to add alongside its first consumer. The same reasoning dropped a
+  general feature-flag map.
+- **Only two brand strings wired, not all of them.** Onboarding proves the seam;
+  the remaining fourteen are mechanical Phase 2 work, itemised in the identity
+  surface doc with a divergence forecast.
+
+Icon and packaging identity are untouched — they are applied by
+`electron-builder.yml` at packaging time, not to a running window, so they do
+not belong behind a module the renderer imports.
 
 ## Phase 1 — the three-path first run
 
@@ -184,6 +197,11 @@ one — same shape, same deployment story, same seam.
 With Phase 0 in place: product name, window title, icon, installer identity, and
 one additional skin built from the customer's palette and validated by the
 existing contrast script.
+
+Work from [`docs/identity-surface.md`](../identity-surface.md) rather than from a
+fresh grep. A grep cannot distinguish the fourteen copy strings that should be
+rebranded from the storage keys, wire formats and service names that must not be
+— and `src/lib/team-import.ts:14` carries one of each on the same line.
 
 **Explicitly out of scope:** replacing the mascot, extracting a primitives
 library, separating logic from the view components, or making layout swappable.
