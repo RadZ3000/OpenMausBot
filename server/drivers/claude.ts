@@ -33,6 +33,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { applyClaudeInject, mergeLocalInject } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
+import { filesOf, imagesOf, inlineImage, withAttachmentText } from "../turn-attachments.ts";
 
 /** Whether `claude` has been signed in.
  *
@@ -434,6 +435,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.phone = { ...turn.integrations.phone };
         allowed.push("mcp__phone");
       }
+      if (turn.integrations?.imageGen) {
+        mcpServers.image = { ...turn.integrations.imageGen };
+        allowed.push("mcp__image");
+      }
       // dweb network daemon (status / repo / opencode model access) via
       // server/drivers/dweb-proxy.ts — points at the configured dweb instance
       if (turn.integrations?.dweb) {
@@ -649,7 +654,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
       // prompt over stdin as a stream-json message — never argv (ARG_MAX)
-      const promptMsg = { type: "user", message: { role: "user", content: turn.text } };
+      //
+      // `content` stays a plain string unless something is actually attached:
+      // the block form is the Anthropic Messages shape and is what carries an
+      // image, but a turn with no picture should send exactly what it always
+      // sent rather than a newly-shaped payload nobody asked for.
+      const promptText = withAttachmentText(turn.text, filesOf(turn.attachments));
+      const images = imagesOf(turn.attachments).flatMap((a) => {
+        const inlined = inlineImage(a);
+        return inlined
+          ? [{ type: "image", source: { type: "base64", media_type: inlined.mime, data: inlined.data } }]
+          : [];
+      });
+      const content = images.length ? [{ type: "text", text: promptText }, ...images] : promptText;
+      const promptMsg = { type: "user", message: { role: "user", content } };
       child.stdin.write(JSON.stringify(promptMsg) + "\n");
       child.stdin.end();
       appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: promptMsg });
@@ -690,6 +708,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           computerMcp: true,
           composioMcp: true,
           phoneMcp: true,
+          imageGenMcp: true,
+          imageInput: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],
         },
         sendTurn,

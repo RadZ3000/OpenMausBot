@@ -16,6 +16,7 @@ import { DesktopCapabilitiesProvider } from "@/components/DesktopCapabilities";
 import { RoutinesPage } from "@/components/RoutinesPage";
 import { NoEngines } from "@/components/NoEngines";
 import { CommandPalette } from "@/components/CommandPalette";
+import { LightboxProvider } from "@/components/Lightbox";
 
 function Shell() {
   const { state, dispatch } = useStore();
@@ -148,7 +149,9 @@ export default function App() {
   return (
     <DesktopCapabilitiesProvider>
       <StoreProvider>
-        <Shell />
+        <LightboxProvider>
+          <Shell />
+        </LightboxProvider>
         {gated && <Onboarding onDone={() => setGated(false)} />}
       </StoreProvider>
     </DesktopCapabilitiesProvider>

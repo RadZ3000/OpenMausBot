@@ -63,10 +63,21 @@ export interface ConnectorCardData {
   resumed?: boolean;
 }
 
+/** A file the user attached, as the transcript sees it. The bytes live on
+ * disk and the path stays server-side (see server/attachments.ts) — a
+ * message travels to every client, and the path is a driver's input. */
+export interface MessageAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: "image" | "file";
+}
+
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector";
+  kind: "text" | "options" | "activity" | "screen" | "image" | "connector";
   text?: string;
   card?: OptionCardData;
   connector?: ConnectorCardData;
@@ -77,9 +88,16 @@ export interface Message {
   /** `setup` marks an error the user fixes by installing or configuring
    * something — the UI offers setup instead of a retry that cannot work. */
   tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean };
-  /** screen messages: a frame of the bot's computer (base64 image) */
+  /** screen messages: a frame of the bot's computer (base64 image).
+   * image messages: a picture the bot generated, saved at `path`. */
   png?: string;
   mime?: string;
+  /** image messages: where the file was written, so the user can open it. */
+  path?: string;
+  /** what the user attached to this message. Kept on a `text` message rather
+   * than given a kind of its own: a new kind would decode as `.unknown` on
+   * the iOS companion and lose the text with it. */
+  attachments?: MessageAttachment[];
   at: number;
   /** the message this one follows; null = thread root. Edited messages
    * share a parentId with the version they replace — that's a fork. */
@@ -284,6 +302,10 @@ export interface BotRecord {
    * start false — a shared persona must not reach the user's Gmail on
    * turn one. */
   composio?: boolean;
+  /** Whether this bot may generate images. Same opt-out rule as composio:
+   * unset/true = allowed, false = never mounted. The credential is
+   * workspace-wide; the grant is per bot, because generating costs money. */
+  imageGen?: boolean;
   /** Derived from `activity` — kept so the 200+ readers across the app and
    * tests keep working unchanged. Write through setActivity(), never here. */
   busy?: boolean;

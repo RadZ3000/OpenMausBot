@@ -31,6 +31,7 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { withAttachmentText } from "../turn-attachments.ts";
 import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "antigravityAgent";
@@ -201,7 +202,10 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // output (verified against agy 1.1.12). Combine persona + text.
       // Trade-off: a very large prompt could exceed argv limits (E2BIG),
       // guarded below since stdin is not an option.
-      const prompt = turn.system ? `${turn.system}\n\n${turn.text}` : turn.text;
+      // print mode carries one argv string, so an attachment is named rather
+      // than shown; the agent opens it with its own tools
+      const text = withAttachmentText(turn.text, turn.attachments ?? []);
+      const prompt = turn.system ? `${turn.system}\n\n${text}` : text;
       const resumeCursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
       let settled = false;

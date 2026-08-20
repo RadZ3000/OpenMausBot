@@ -24,6 +24,7 @@ import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { ApprovalCard } from "./ApprovalCard";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
+import { ExpandableImage } from "./Lightbox";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { shortPath } from "@/lib/short-path";
@@ -94,6 +95,16 @@ const Transcript = memo(function Transcript({
           ) : m.kind === "options" && m.card?.requestId && m.card.tool ? (
             <div className="flex justify-start">
               <ApprovalCard bot={memberOf(m.from?.botId)} message={m} />
+            </div>
+          ) : m.kind === "image" && m.png ? (
+            <div className="flex flex-col items-start gap-1">
+              <ExpandableImage
+                src={`data:${m.mime ?? "image/png"};base64,${m.png}`}
+                alt="Image a bot generated"
+                caption={m.path}
+                className="max-w-[70%] rounded-2xl border border-hairline/40"
+              />
+              {m.path && <span className="text-[11px] text-ink-secondary/70">{m.path}</span>}
             </div>
           ) : m.kind === "activity" && m.tool ? (
             <div className="flex justify-start">

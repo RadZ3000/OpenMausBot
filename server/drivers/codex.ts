@@ -28,6 +28,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
 import { codexLocalProviderArgs } from "./local-inject.ts";
 import { augmentedPath } from "../env-path.ts";
+import { filesOf, imagesOf, withAttachmentText } from "../turn-attachments.ts";
 import { appendNative } from "./native.ts";
 
 export { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
@@ -74,21 +75,21 @@ function mountMcpServer(
   );
 }
 
-const MCP_APPROVAL_QUESTION_PREFIX = "mcp_tool_call_approval_";
-
-/** Codex asks MCP permission through requestUserInput rather than one of the
- * decision requests, and only accepts its own option labels back — anything
- * else, including prose, reads as Cancel and reaches the model as "user
- * rejected MCP tool call". Verified against codex-cli 0.148.0. */
-function mcpToolApproval(method: string, params: any): { id: string; tool: string; summary: string } | null {
-  if (method !== "item/tool/requestUserInput") return null;
-  const question = Array.isArray(params.questions) ? params.questions[0] : null;
-  const id = String(question?.id ?? "");
-  if (!id.startsWith(MCP_APPROVAL_QUESTION_PREFIX)) return null;
-  const summary = String(question.question || question.header || "Approve MCP tool call?");
-  // Codex only names the tool inside the prompt text; fall back to the coarse
-  // label when it swaps in a monitor reason instead.
-  return { id, tool: summary.match(/run tool "([^"]+)"/)?.[1] ?? "mcp", summary };
+/** Codex asks for MCP tool permission over the MCP elicitation channel, not
+ * through one of its decision requests, and expects an MCP ElicitResult back
+ * — an `{ action }`, not the `{ decision }` every other approval takes.
+ * Answering the wrong shape counts as a refusal and reaches the model as
+ * "user rejected MCP tool call", which is how a mounted, healthy tool ends
+ * up looking broken to the user. Verified against codex-cli 0.148.0, which
+ * sends `mcpServer/elicitation/request` with `_meta.codex_approval_kind`. */
+function mcpToolApproval(method: string, params: any): { tool: string; summary: string } | null {
+  if (method !== "mcpServer/elicitation/request") return null;
+  if (params?._meta?.codex_approval_kind !== "mcp_tool_call") return null;
+  const server = String(params.serverName ?? "mcp");
+  const summary = String(params.message || `Allow the ${server} MCP server to run a tool?`);
+  // Codex names the tool only inside the prompt text; fall back to the
+  // server's name when it words the prompt some other way.
+  return { tool: summary.match(/run tool "([^"]+)"/)?.[1] ?? server, summary };
 }
 
 export const CodexDriver: ProviderDriver<CodexConfig> = {
@@ -181,6 +182,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       if (turn.integrations?.phone) {
         mountMcpServer(appServerArgs, env, "openmausbot_phone", turn.integrations.phone);
       }
+      if (turn.integrations?.imageGen) {
+        mountMcpServer(appServerArgs, env, "openmausbot_image", turn.integrations.imageGen);
+      }
 
       const child = spawnCli(config.cli, appServerArgs, {
         cwd: turn.cwd ?? homedir(),
@@ -247,7 +251,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const params = msg.params ?? {};
         const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
         const mcpAsk = mcpToolApproval(method, params);
-        const isQuestion = method === "item/tool/requestUserInput" && !mcpAsk;
+        const isQuestion = method === "item/tool/requestUserInput";
         const tool =
           method === "item/fileChange/requestApproval" || method === "applyPatchApproval"
             ? "edit"
@@ -256,10 +260,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               : isQuestion
                 ? "ask_user"
                 : "shell";
-        const answerMcp = (questionId: string, label: "Allow" | "Cancel") =>
-          send({ jsonrpc: "2.0", id: msg.id, result: { answers: { [questionId]: { answers: [label] } } } });
+        // An ElicitResult: `content` is required alongside an accept, even
+        // when the requested schema has no properties, as it does here.
+        const answerMcp = (accepted: boolean) =>
+          send({ jsonrpc: "2.0", id: msg.id, result: accepted ? { action: "accept", content: {} } : { action: "decline" } });
         if (config.fullAuto && !isQuestion) {
-          if (mcpAsk) return answerMcp(mcpAsk.id, "Allow");
+          if (mcpAsk) return answerMcp(true);
           return send({ jsonrpc: "2.0", id: msg.id, result: { decision: legacy ? "approved" : "accept" } });
         }
         const requestId = newId();
@@ -279,7 +285,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
           if (mcpAsk) {
-            answerMcp(mcpAsk.id, behavior === "allow" ? "Allow" : "Cancel");
+            answerMcp(behavior === "allow");
           } else if (isQuestion) {
             const answers: Record<string, { answers: string[] }> = {};
             for (const q of Array.isArray(params.questions) ? params.questions : []) {
@@ -490,7 +496,19 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
           await request("turn/start", {
             threadId: codexThreadId,
-            input: [{ type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text }],
+            input: [
+              {
+                type: "text",
+                text: withAttachmentText(
+                  turn.system ? `${turn.system}\n\n${turn.text}` : turn.text,
+                  filesOf(turn.attachments),
+                ),
+              },
+              // Probed against codex-cli: an input item of `localImage` takes
+              // a PATH, not bytes, and the model genuinely reads the pixels —
+              // a test image of three colour bands came back named correctly.
+              ...imagesOf(turn.attachments).map((a) => ({ type: "localImage", path: a.path })),
+            ],
             // Spread, not `effort: turn.effort ?? null`. Probed against
             // codex-cli 0.146.0: null is indistinguishable from an absent key
             // — both leave the thread's current effort alone, emitting no
@@ -554,6 +572,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           computerMcp: true,
           composioMcp: true,
           phoneMcp: true,
+          imageGenMcp: true,
+          imageInput: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],
         },
         sendTurn,

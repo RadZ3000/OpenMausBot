@@ -46,6 +46,7 @@ import { TaskPicker } from "./TaskPicker";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { SpeakButton } from "./SpeakButton";
 import { CallButton, CallOverlay } from "./CallView";
+import { ExpandableImage } from "./Lightbox";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { webhookMessageView } from "@/lib/webhook-message";
@@ -482,11 +483,28 @@ function ActivityChip({ message }: { message: Message }) {
 function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
   return (
     <div className="flex justify-start">
-      <img
+      <ExpandableImage
         src={`data:${mime ?? "image/png"};base64,${png}`}
         alt="Bot's screen"
         className="max-w-[70%] rounded-2xl border border-hairline/40"
       />
+    </div>
+  );
+}
+
+/** A picture the bot generated. Framed like a screen capture, but it is a
+ * deliverable rather than a moment, so the file path rides along — the user
+ * has to be able to find it on disk without asking. */
+function GeneratedImage({ png, mime, path }: { png: string; mime?: string; path?: string }) {
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <ExpandableImage
+        src={`data:${mime ?? "image/png"};base64,${png}`}
+        alt="Image the bot generated"
+        caption={path}
+        className="max-w-[70%] rounded-2xl border border-hairline/40"
+      />
+      {path && <span className="text-[11px] text-ink-secondary/70">{path}</span>}
     </div>
   );
 }
@@ -597,6 +615,8 @@ const MessagesList = memo(function MessagesList({
               );
             case "screen":
               return m.png ? <ScreenFrame png={m.png} mime={m.mime} /> : null;
+            case "image":
+              return m.png ? <GeneratedImage png={m.png} mime={m.mime} path={m.path} /> : null;
             default:
               return (
                 <Bubble

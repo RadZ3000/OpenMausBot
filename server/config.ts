@@ -56,6 +56,11 @@ const appConfigSchema = z.object({
   opencodeGo: z.object({ apiKey: optionalText }).optional(),
   /** Voice credentials and the selected voice id. */
   tts: z.object({ key: optionalText, voice: optionalText }).optional(),
+  /** Image generation against any OpenAI-compatible /v1/images/generations —
+   * the hosted one, or a local diffusion server. Only the key is secret;
+   * baseUrl and model are shown back so the panel can say where images
+   * come from. */
+  imageGen: z.object({ apiKey: optionalText, baseUrl: optionalText, model: optionalText }).optional(),
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   instances: instanceConfigMapSchema.optional(),
@@ -71,6 +76,7 @@ export interface AppConfig {
   vps?: { sshAlias?: string };
   opencodeGo?: { apiKey?: string };
   tts?: { key?: string; voice?: string };
+  imageGen?: { apiKey?: string; baseUrl?: string; model?: string };
   profile?: { name?: string; email?: string };
   instances?: InstanceConfigMap;
 }
@@ -126,6 +132,16 @@ export function loadConfig(): AppConfig {
   cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
   cfg.opencodeGo = { apiKey: process.env.OPENCODE_API_KEY, ...cfg.opencodeGo };
   cfg.tts = { key: process.env.OMB_TTS_KEY, ...cfg.tts };
+  // Deliberately its own variable rather than OPENAI_API_KEY: that name is
+  // stripped from CLI children on purpose (drivers/codex.ts), and reusing it
+  // here would put a key back into exactly the environments that protect
+  // against it. This one only ever reaches the image proxy.
+  cfg.imageGen = {
+    apiKey: process.env.OMB_IMAGE_API_KEY,
+    baseUrl: process.env.OMB_IMAGE_BASE_URL,
+    model: process.env.OMB_IMAGE_MODEL,
+    ...cfg.imageGen,
+  };
   return cfg;
 }
 
@@ -141,7 +157,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
-  for (const key of ["xai", "composio", "box", "opencodeGo", "tts", "profile"] as const) {
+  for (const key of ["xai", "composio", "box", "opencodeGo", "tts", "imageGen", "profile"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

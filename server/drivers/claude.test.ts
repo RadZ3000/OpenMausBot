@@ -6,7 +6,7 @@
 // These used to be POSIX-only: the fake CLI is a shebang script Windows
 // cannot exec, and the broker is a unix socket. Both now go through
 // resolveCliSpawn / permissionSocketPath, so they run everywhere.
-import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -238,6 +238,68 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(JSON.stringify(seen.argv)).not.toContain("tok");
     const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
     expect(allowed).toContain("mcp__agents");
+  });
+
+  it("mounts image generation and pre-allows its tools", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    expect(instance.adapter.capabilities.imageGenMcp).toBe(true);
+
+    await instance.adapter.sendTurn({
+      threadId: "t-image-gen",
+      text: "draw a barn",
+      integrations: {
+        imageGen: {
+          command: process.execPath,
+          args: ["/fake/image-proxy.js"],
+          env: { OMB_IMAGE_API_KEY: "image-secret" },
+        },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.mcpConfig.mcpServers.image).toMatchObject({
+      args: ["/fake/image-proxy.js"],
+      env: { OMB_IMAGE_API_KEY: "image-secret" },
+    });
+    // the key belongs in the private config file, never in a process listing
+    expect(JSON.stringify(seen.argv)).not.toContain("image-secret");
+    expect(seen.argv[seen.argv.indexOf("--allowedTools") + 1]).toContain("mcp__image");
+  });
+
+  it("sends an attached image as an Anthropic content block", async () => {
+    await create();
+    const dump = join(scratch, "attach.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const image = join(scratch, "shot.png");
+    writeFileSync(image, Buffer.from([1, 2, 3, 4]));
+    expect(instance.adapter.capabilities.imageInput).toBe(true);
+
+    await instance.adapter.sendTurn({
+      threadId: "t-attach",
+      text: "what is this?",
+      attachments: [{ id: "a1", name: "shot.png", mime: "image/png", size: 4, path: image, kind: "image" }],
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.prompt.message.content).toEqual([
+      { type: "text", text: "what is this?" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "AQIDBA==" } },
+    ]);
+  });
+
+  it("keeps content a plain string when nothing is attached", async () => {
+    await create();
+    const dump = join(scratch, "plain.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-plain", text: "hello" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    expect(JSON.parse(readFileSync(dump, "utf8")).prompt.message.content).toBe("hello");
   });
 
   it("mounts the dweb proxy from the drivers directory and pre-allows its tools", async () => {

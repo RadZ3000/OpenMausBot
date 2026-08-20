@@ -337,6 +337,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "chiefOfStaff"
         | "approvePeerComms"
         | "composio"
+        | "imageGen"
         | "modelSelection"
       >
     >,
@@ -349,6 +350,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const canUseVps = engine?.capabilities?.computerMcp === true && engine.driverKind !== "boxAgent";
   const connectedAppsConfigured = state.config?.composio?.configured === true;
   const connectedAppsEnabled = bot.composio !== false;
+  const canGenerateImages = engine?.capabilities?.imageGenMcp === true;
+  const imageGenConfigured = state.config?.imageGen?.configured === true;
+  const imageGenEnabled = bot.imageGen !== false;
   const currentChief = state.bots.find((candidate) => candidate.chiefOfStaff);
 
   useEffect(() => {
@@ -594,6 +598,46 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 className={cn(
                   "absolute top-[3px] size-5 rounded-full bg-white transition-all",
                   connectedAppsEnabled ? "left-[21px]" : "left-[3px]",
+                )}
+              />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+            <div>
+              <div className="text-[15px] font-medium text-ink">Image generation</div>
+              <div className="mt-0.5 text-[13px] text-ink-secondary">
+                {!imageGenConfigured
+                  ? "Add an image generation key in App Settings before giving this bot access."
+                  : !canGenerateImages
+                    ? "This bot's current engine cannot generate images."
+                    : imageGenEnabled
+                      ? "Let this bot draw pictures. Each image is billed by your image provider."
+                      : "Keep image generation unavailable to this bot."}
+              </div>
+            </div>
+            <button
+              role="switch"
+              aria-checked={imageGenEnabled}
+              aria-label="Allow this bot to generate images"
+              disabled={!imageGenEnabled && (!imageGenConfigured || !canGenerateImages)}
+              onClick={() => patch({ imageGen: !imageGenEnabled })}
+              title={
+                !imageGenEnabled && !imageGenConfigured
+                  ? "Add an image generation key in App Settings first"
+                  : !imageGenEnabled && !canGenerateImages
+                    ? "This engine cannot generate images"
+                    : undefined
+              }
+              className={cn(
+                "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                imageGenEnabled ? "bg-accent" : "bg-raised",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-[3px] size-5 rounded-full bg-white transition-all",
+                  imageGenEnabled ? "left-[21px]" : "left-[3px]",
                 )}
               />
             </button>

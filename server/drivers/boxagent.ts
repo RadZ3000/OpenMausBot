@@ -20,6 +20,7 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { withAttachmentText } from "../turn-attachments.ts";
 import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "boxAgent";
@@ -98,7 +99,9 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
         turn.system,
         "You are working on your own cloud computer — its desktop, Chrome, and shell are yours.",
         "",
-        turn.text,
+        // this API takes one string, so an attachment can only be named, not
+        // shown — the agent has a shell and can open it
+        withAttachmentText(turn.text, turn.attachments ?? []),
       ]
         .filter((s) => s !== undefined)
         .join("\n");

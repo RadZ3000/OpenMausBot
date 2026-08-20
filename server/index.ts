@@ -38,7 +38,13 @@ import {
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
-import { isEffortLevel, type RequestOutcome, type RuntimeEvent } from "./contracts.ts";
+import {
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  readAttachment,
+  removeThreadAttachments,
+  saveAttachment,
+} from "./attachments.ts";
+import { isEffortLevel, type RequestOutcome, type RuntimeEvent, type TurnAttachment } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
@@ -130,6 +136,7 @@ const MAX_COMMS_DEPTH = 1;
 // there is exactly one way proxies are located.
 const agentsProxyPath = SPAWNED_PROXIES.agents;
 const phoneProxyPath = SPAWNED_PROXIES.phone;
+const imageGenProxyPath = SPAWNED_PROXIES.imageGen;
 // in the packaged app process.execPath is Electron — run the proxy as node
 const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
 
@@ -154,6 +161,30 @@ function phoneIntegration() {
   if (process.env.OMB_RESOURCES_PATH) env.OMB_RESOURCES_PATH = process.env.OMB_RESOURCES_PATH;
   if (process.env.PH_ANDROID_SERIAL) env.PH_ANDROID_SERIAL = process.env.PH_ANDROID_SERIAL;
   return { command: process.execPath, args: [phoneProxyPath], env };
+}
+
+/** A hosted images endpoint needs a key; a local diffusion server usually
+ * needs only its URL. Either one on its own means the user set this up. */
+function imageGenConfigured(): boolean {
+  return Boolean(cfg.imageGen?.apiKey || cfg.imageGen?.baseUrl);
+}
+
+/** The credential goes into the proxy's own environment and nowhere else —
+ * it must never reach an agent CLI, where an image key sitting in
+ * OPENAI_API_KEY would flip Codex's billing off the ChatGPT login. */
+function imageGenIntegration(botId: string, threadId: string, directory: string) {
+  const env: Record<string, string> = {
+    ...AGENTS_NODE_FLAG,
+    OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
+    OMB_COMMS_TOKEN: COMMS_TOKEN,
+    OMB_BOT_ID: botId,
+    OMB_THREAD_ID: threadId,
+    OMB_IMAGE_DIR: directory,
+  };
+  if (cfg.imageGen?.apiKey) env.OMB_IMAGE_API_KEY = cfg.imageGen.apiKey;
+  if (cfg.imageGen?.baseUrl) env.OMB_IMAGE_BASE_URL = cfg.imageGen.baseUrl;
+  if (cfg.imageGen?.model) env.OMB_IMAGE_MODEL = cfg.imageGen.model;
+  return { command: process.execPath, args: [imageGenProxyPath], env };
 }
 
 function connectedAppsIntegration(botId: string, threadId: string) {
@@ -294,10 +325,11 @@ function pageSize(raw: string | null): number | null | undefined {
   return Math.min(size, MESSAGE_PAGE_MAX);
 }
 
-/** A screen message without its pixels. The client fetches those from
+/** A picture-bearing message without its pixels — a desktop frame or a
+ * generated image. The client fetches those from
  * `/api/threads/:threadId/messages/:id/image` when it actually shows one. */
 function slimMessage(message: Message): Message | Record<string, unknown> {
-  if (message.kind !== "screen" || !message.png) return message;
+  if ((message.kind !== "screen" && message.kind !== "image") || !message.png) return message;
   const { png, mime, ...rest } = message;
   return { ...rest, hasImage: true };
 }
@@ -961,12 +993,12 @@ bus.subscribe((event: RuntimeEvent) => {
 });
 
 function drainQueuedSends() {
-  drainSteeredMessages(store, (botId, threadId, prompt, userMessage) =>
+  drainSteeredMessages(store, (botId, threadId, prompt, userMessage, attachments) =>
     // A plain attended turn — no automationSource, no unattended, no comms
     // depth: exactly what typing the same words into an idle bot would run.
     // The messages are already in the transcript; userMessage keeps
     // startTurn from appending the joined prompt as a duplicate.
-    startTurn(botId, prompt, { threadId, userMessage }).catch((err) => {
+    startTurn(botId, prompt, { threadId, userMessage, attachments }).catch((err) => {
       store.appendMessage(threadId, {
         role: "bot",
         kind: "activity",
@@ -1084,6 +1116,27 @@ async function finalScreenFrame(botId: string): Promise<Frame | null> {
   return entry.last;
 }
 
+/** The ids a client named on a message, resolved to the attachments the
+ * harness stored. Only ids cross the wire, so a client can only ever attach
+ * something it uploaded to this conversation. An id that resolves to nothing
+ * is a 400 rather than a quietly dropped picture: the user attached it and
+ * can still see it in the composer. */
+function resolveAttachments(threadId: string, raw: unknown): TurnAttachment[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw Object.assign(new Error("attachments must be a list"), { status: 400 });
+  if (raw.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    throw Object.assign(new Error(`at most ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`), { status: 400 });
+  }
+  return raw.map((entry) => {
+    const id = typeof entry === "string" ? entry : String((entry as { id?: unknown })?.id ?? "");
+    const found = readAttachment(threadId, id);
+    if (!found) {
+      throw Object.assign(new Error("that attachment is no longer available — attach it again"), { status: 400 });
+    }
+    return found;
+  });
+}
+
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
 async function startTurn(
   botId: string,
@@ -1105,6 +1158,8 @@ async function startTurn(
      * The prompt is control-plane context: it reaches the provider without
      * masquerading as another message authored by the user. */
     connectorContinuation?: boolean;
+    /** Files the user attached, already resolved from upload ids to paths. */
+    attachments?: TurnAttachment[];
     onDispatchError?: (message: string) => void;
   },
 ) {
@@ -1150,11 +1205,18 @@ async function startTurn(
   }
 
   // an edit hands us its already-branched user message; a plain send appends
+  const attachments = opts?.attachments ?? [];
   let userMessage = opts?.userMessage;
   if (!userMessage) {
     userMessage = opts?.connectorContinuation
       ? { id: `connector-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
-      : store.appendMessage(threadId, { role: "user", kind: "text", text });
+      : store.appendMessage(threadId, {
+          role: "user",
+          kind: "text",
+          text,
+          // the transcript shows what was attached; the paths stay here
+          ...(attachments.length ? { attachments: attachments.map(({ path: _p, ...rest }) => rest) } : {}),
+        });
   }
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE
@@ -1242,6 +1304,19 @@ async function startTurn(
           ? store.pinTaskCwd(bot.id, threadId, privateWorkspace)
           : null;
       const cwd = pinnedCwd ?? undefined;
+      // Image generation, gated exactly like connected apps: the engine must
+      // be able to mount it, the workspace must be configured, and the bot
+      // must not have it switched off. It also needs somewhere to write, so
+      // an engine with no local desk never gets it.
+      const imageDirectory = cwd ?? privateWorkspace;
+      if (
+        bot.imageGen !== false &&
+        imageGenConfigured() &&
+        instance.adapter.capabilities.imageGenMcp === true &&
+        imageDirectory
+      ) {
+        integrations.imageGen = imageGenIntegration(bot.id, threadId, imageDirectory);
+      }
       // dweb is opt-in: without an explicit daemon URL, do not advertise
       // tools that would fail on every call or spawn an unnecessary proxy.
       const dwebUrl = process.env.DWEB_URL?.trim();
@@ -1432,6 +1507,7 @@ async function startTurn(
                 .join(" and ")} in their message — bring them in with ask_bot and fold their reply into your answer.`
             : ""),
         integrations,
+        ...(attachments.length ? { attachments } : {}),
         cwd,
       });
       // dispatched: the rewind is spent, and the old cursors are dead
@@ -1583,6 +1659,9 @@ async function runGroupMemberTurn(
   // must not run Pixel twice (once chained, once as a direct responder)
   spoken: Set<string> = new Set(),
   connectorContinuation?: string,
+  // what the user attached to the message that started this turn. Every
+  // responder is answering that same message, so each one is shown it.
+  attachments: TurnAttachment[] = [],
 ): Promise<boolean> {
   const group = store.group(groupId);
   const bot = store.bot(botId);
@@ -1710,6 +1789,7 @@ async function runGroupMemberTurn(
         system: roomSystem,
         cwd,
         integrations,
+        ...(attachments.length ? { attachments } : {}),
         ...memberTurnSelection(bot.modelSelection),
       })
       .catch((err) => {
@@ -1743,16 +1823,21 @@ async function runGroupMemberTurn(
       .filter((b): b is NonNullable<typeof b> => Boolean(b) && b!.id !== bot.id);
     for (const next of roomResponders(replyText, members, { kind: "mentions" })) {
       if (spoken.has(next.id)) continue;
-      if (!(await runGroupMemberTurn(groupId, next.id, hop + 1, spoken))) return false;
+      if (!(await runGroupMemberTurn(groupId, next.id, hop + 1, spoken, undefined, attachments))) return false;
     }
   }
   return true;
 }
 
-function startGroupTurn(groupId: string, text: string) {
+function startGroupTurn(groupId: string, text: string, attachments: TurnAttachment[] = []) {
   const group = store.group(groupId);
   if (!group) throw Object.assign(new Error("no such group"), { status: 404 });
-  store.appendMessage(group.threadId, { role: "user", kind: "text", text });
+  store.appendMessage(group.threadId, {
+    role: "user",
+    kind: "text",
+    text,
+    ...(attachments.length ? { attachments: attachments.map(({ path: _p, ...rest }) => rest) } : {}),
+  });
 
   const members = group.memberIds
     .map((id) => store.bot(id))
@@ -1783,7 +1868,7 @@ function startGroupTurn(groupId: string, text: string) {
     const spoken = new Set<string>();
     for (const responder of responders) {
       if (spoken.has(responder.id)) continue;
-      if (!(await runGroupMemberTurn(groupId, responder.id, 0, spoken))) break;
+      if (!(await runGroupMemberTurn(groupId, responder.id, 0, spoken, undefined, attachments))) break;
     }
   });
   groupQueues.set(groupId, next.catch(() => {}));
@@ -1943,6 +2028,7 @@ function cliProbeEnvironment(): NodeJS.ProcessEnv {
     "COMPOSIO_API_KEY",
     "OMB_COMPOSIO_BROKER_TOKEN",
     "OMB_TTS_KEY",
+    "OMB_IMAGE_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
   ]) {
@@ -1970,6 +2056,13 @@ function configStatus() {
     // the chosen voice is a setting, not a secret; the key is reported the
     // same configured-or-not way as every other credential
     tts: tts.describeVoice(cfg),
+    // same split for images: the key stays write-only, while the endpoint
+    // and model are settings the panel has to be able to show back
+    imageGen: {
+      configured: imageGenConfigured(),
+      baseUrl: cfg.imageGen?.baseUrl ?? "",
+      model: cfg.imageGen?.model ?? "",
+    },
     // not a secret — the sidebar shows it
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
   };
@@ -2023,7 +2116,15 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(data);
 }
 
-function readBody(req: IncomingMessage): Promise<any> {
+/** 1MB is plenty for every request a person types. A generated image is the
+ * one payload that is legitimately larger, so that route asks for its own
+ * ceiling rather than lifting this one for everybody. */
+const MAX_BODY_BYTES = 1_000_000;
+/** A 1024x1024 PNG lands around 1.5-3MB once base64'd; this leaves room for
+ * a large one without letting the route be used to exhaust memory. */
+const MAX_IMAGE_BODY_BYTES = 12_000_000;
+
+function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<any> {
   return new Promise((resolve, reject) => {
     let data = "";
     let bytes = 0;
@@ -2037,7 +2138,7 @@ function readBody(req: IncomingMessage): Promise<any> {
     req.on("data", (c) => {
       if (done) return;
       bytes += typeof c === "string" ? Buffer.byteLength(c) : c.length;
-      if (bytes > 1_000_000) {
+      if (bytes > maxBytes) {
         // Keep draining the socket, but stop retaining attacker-controlled
         // bytes. Destroying the request here prevents the caller from
         // receiving the useful 413 response.
@@ -2135,6 +2236,32 @@ const server = createServer(async (req, res) => {
             description: b.description || undefined,
           }));
         return json(res, 200, { bots });
+      }
+      // A finished image, handed over by the image proxy. Tool results go to
+      // the agent and never through the harness, so without this callback
+      // the user would see a "generate_image" chip and no picture.
+      if (method === "POST" && path === "/api/internal/images") {
+        const body = await readBody(req, MAX_IMAGE_BODY_BYTES);
+        const bot = store.bot(String(body.botId ?? ""));
+        if (!bot) return json(res, 404, { error: "no such bot" });
+        const png = String(body.data ?? "");
+        if (!png) return json(res, 400, { error: "data required" });
+        const threadId = String(body.threadId ?? "") || bot.threadId;
+        // the thread has to be one this bot actually speaks in, so a stray
+        // id cannot drop a picture into somebody else's conversation
+        const group = store.groupByThread(threadId);
+        if (store.botByThread(threadId)?.id !== bot.id && !group) {
+          return json(res, 404, { error: "no such thread" });
+        }
+        const message: Omit<Message, "id" | "at"> = {
+          role: "bot",
+          kind: "image",
+          png,
+          mime: String(body.mime ?? "image/png"),
+          path: String(body.path ?? "") || undefined,
+        };
+        store.appendMessage(threadId, group ? { ...message, from: groupSpeakers.get(threadId) } : message);
+        return json(res, 200, { ok: true });
       }
       if (method === "POST" && path === "/api/internal/ask-bot") {
         const body = await readBody(req);
@@ -2494,6 +2621,58 @@ const server = createServer(async (req, res) => {
       return res.end(bytes);
     }
 
+    // ── what the user attaches to a message ─────────────────────────────
+    // Upload first, send second: the composer stores the bytes here and then
+    // names the returned ids on the message. The id is the only handle a
+    // client ever holds — see server/attachments.ts for why a client-supplied
+    // path would be a file-read primitive.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/attachments$/);
+    if (m && method === "POST") {
+      const threadId = m[1];
+      if (!store.botByThread(threadId) && !store.groupByThread(threadId)) {
+        return json(res, 404, { error: "no such conversation" });
+      }
+      const body = await readBody(req, MAX_IMAGE_BODY_BYTES);
+      const name = String(body.name ?? "attachment");
+      const data = String(body.data ?? "");
+      if (!data) return json(res, 400, { error: "data required" });
+      try {
+        const stored = saveAttachment(threadId, name, Buffer.from(data, "base64"));
+        // The path stays server-side; the client gets what it needs to draw a
+        // chip and to name the attachment when it sends.
+        const { path: _path, ...wire } = stored;
+        return json(res, 200, wire);
+      } catch (error: any) {
+        return json(res, error?.status ?? 500, { error: error?.message ?? "could not save that file" });
+      }
+    }
+
+    m = path.match(/^\/api\/threads\/([\w-]+)\/attachments\/([\w-]+)$/);
+    if (m && method === "GET") {
+      if (!store.botByThread(m[1]) && !store.groupByThread(m[1])) {
+        return json(res, 404, { error: "no such conversation" });
+      }
+      const stored = readAttachment(m[1], m[2]);
+      if (!stored) return json(res, 404, { error: "no such attachment" });
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(stored.path);
+      } catch {
+        return json(res, 404, { error: "no such attachment" });
+      }
+      res.writeHead(200, {
+        // Only a sniffed image type is echoed back; anything else downloads as
+        // bytes, so an uploaded .html can never be served as a page.
+        "content-type": stored.kind === "image" ? stored.mime : "application/octet-stream",
+        "content-length": String(bytes.byteLength),
+        "x-content-type-options": "nosniff",
+        ...(stored.kind === "image" ? {} : { "content-disposition": `attachment; filename="${stored.name}"` }),
+        // an attachment's bytes never change once stored
+        "cache-control": "private, max-age=31536000, immutable",
+      });
+      return res.end(bytes);
+    }
+
     // ── search across every transcript ──────────────────────────────────
     // A LIKE scan over the SQLite message store: local transcripts are
     // megabytes at most, so a scan answers in milliseconds and needs no
@@ -2746,6 +2925,7 @@ const server = createServer(async (req, res) => {
       if (!group) return json(res, 404, { error: "no such room" });
       lastReply.delete(group.threadId);
       store.deleteGroup(group.id);
+      removeThreadAttachments(group.threadId);
       for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
           unlinkSync(join(dir, `${group.threadId}.ndjson`));
@@ -2757,8 +2937,11 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
-      if (!text) return json(res, 400, { error: "text required" });
-      startGroupTurn(m[1], text);
+      const group = store.group(m[1]);
+      if (!group) return json(res, 404, { error: "no such room" });
+      const attachments = resolveAttachments(group.threadId, body.attachments);
+      if (!text && !attachments.length) return json(res, 400, { error: "text required" });
+      startGroupTurn(m[1], text, attachments);
       return json(res, 202, { ok: true });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
@@ -2875,6 +3058,11 @@ const server = createServer(async (req, res) => {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
         patch.composio = body.composio;
       }
+      // per-bot gate on image generation (the credential is workspace-wide)
+      if (body.imageGen !== undefined) {
+        if (typeof body.imageGen !== "boolean") return json(res, 400, { error: "imageGen must be true or false" });
+        patch.imageGen = body.imageGen;
+      }
       if (
         body.computer !== undefined &&
         !["cloud", "vm", "local", "off"].includes(String(body.computer))
@@ -2947,6 +3135,7 @@ const server = createServer(async (req, res) => {
       cancelPeerApprovalsFor(bot.id);
       discardDelegations(commsBus, bot.threadId);
       store.deleteBot(bot.id);
+      removeThreadAttachments(bot.threadId);
       for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
           unlinkSync(join(dir, `${bot.threadId}.ndjson`));
@@ -3019,18 +3208,20 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
-      if (!text) return json(res, 400, { error: "text required" });
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      const attachments = resolveAttachments(bot.threadId, body.attachments);
+      // a picture on its own is a message, so text is only required without one
+      if (!text && !attachments.length) return json(res, 400, { error: "text required" });
       // A busy bot no longer refuses the message: it lands in the thread
       // now (marked queued) and auto-sends when the turn settles — see the
       // steer-queue drain above. Synchronous from the busy check to the
       // queue insert, so a settle can't slip between them and strand it.
       if (bot.busy) {
-        const message = queueSteeredMessage(store, bot, text);
+        const message = queueSteeredMessage(store, bot, text, attachments);
         return json(res, 202, { ok: true, queued: true, messageId: message.id });
       }
-      await startTurn(bot.id, text);
+      await startTurn(bot.id, text, { attachments });
       return json(res, 202, { ok: true });
     }
 

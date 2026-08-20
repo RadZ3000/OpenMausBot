@@ -14,6 +14,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { filesOf, imagesOf, inlineImage, withAttachmentText } from "../turn-attachments.ts";
 
 const DRIVER_KIND = "grok";
 const DEFAULT_URL = "https://api.x.ai/v1";
@@ -133,13 +134,25 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       const abort = new AbortController();
       active.set(threadId, { abort, turnId });
 
+      // An attached picture rides as an OpenAI-style multimodal part; a data
+      // URL rather than a link because the file is local and this endpoint
+      // could not fetch it. Without one, `content` stays the plain string the
+      // API has always been sent.
+      const promptText = withAttachmentText(turn.text, filesOf(turn.attachments));
+      const imageParts = imagesOf(turn.attachments).flatMap((a) => {
+        const inlined = inlineImage(a);
+        return inlined ? [{ type: "image_url", image_url: { url: `data:${inlined.mime};base64,${inlined.data}` } }] : [];
+      });
       const messages = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
         ...(turn.transcript ?? []).map((m) => ({
           role: m.role === "assistant" ? "assistant" : "user",
           content: m.text,
         })),
-        { role: "user", content: turn.text },
+        {
+          role: "user",
+          content: imageParts.length ? [{ type: "text", text: promptText }, ...imageParts] : promptText,
+        },
       ];
       appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messages } });
 
@@ -201,7 +214,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", imageInput: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer

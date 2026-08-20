@@ -163,11 +163,34 @@ export interface SendTurnInput {
     agents?: { command: string; args: string[]; env: Record<string, string> };
     /** Physical Android phone tools over authorized USB debugging. */
     phone?: { command: string; args: string[]; env: Record<string, string> };
+    /** Image generation against an OpenAI-compatible /v1/images/generations
+     * endpoint — hosted or a local diffusion server. A harness-owned proxy
+     * holds the credential and reports finished images back, so the picture
+     * reaches the transcript instead of only the agent's context. */
+    imageGen?: { command: string; args: string[]; env: Record<string, string> };
     /** dweb network daemon: an MCP proxy exposing dweb status, repo, and
      * opencode model access as tools. url is the dweb HTTP base. */
     dweb?: { url: string };
   };
+  /** Files the user attached to this turn, already on disk. Passed
+   * structurally rather than flattened into `text` because the protocols
+   * disagree about what an image is: Codex takes a path, ACP takes base64
+   * and only when the agent advertised `image`, Claude takes an Anthropic
+   * content block. A driver that can do none of those renders them with
+   * `attachmentsAsText()` and loses nothing it had before. */
+  attachments?: TurnAttachment[];
   cwd?: string;
+}
+
+/** An attachment as a driver sees it — with the path the harness resolved,
+ * which never travels to a client. */
+export interface TurnAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  path: string;
+  kind: "image" | "file";
 }
 
 export interface TurnStartResult {
@@ -193,6 +216,14 @@ export interface ProviderAdapter {
     composioMcp?: boolean;
     /** True when the driver can mount the first-party physical-phone MCP. */
     phoneMcp?: boolean;
+    /** True when the driver mounts turn.integrations.imageGen. Same rule as
+     * computerMcp: a configured key says the user CAN generate images, not
+     * that this engine can be handed the tool. */
+    imageGenMcp?: boolean;
+    /** True when the driver can put an attached image in front of the model
+     * as pixels rather than as a file path. Same rule as computerMcp: the UI
+     * must not promise vision to a bot whose engine only gets a path. */
+    imageInput?: boolean;
     /** Effort levels this driver can pass to its CLI, ascending. Absent =
      * the driver cannot set effort, so the app never offers the control —
      * same rule as computerMcp: never show a knob the driver cannot turn. */

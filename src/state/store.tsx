@@ -53,7 +53,7 @@ export interface ConnectorCardData {
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector";
+  kind: "text" | "options" | "activity" | "screen" | "image" | "connector";
   text?: string;
   card?: OptionCardData;
   connector?: ConnectorCardData;
@@ -61,9 +61,12 @@ export interface Message {
    * narration of the same chip ("reading a file"), used by call mode. */
   /** `setup` marks an error fixed by installing something, not by retrying. */
   tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean };
-  /** screen messages: a frame of the bot's computer (base64) */
+  /** screen messages: a frame of the bot's computer (base64).
+   * image messages: a picture the bot generated, saved at `path`. */
   png?: string;
   mime?: string;
+  /** image messages: where the file was written, so the user can open it. */
+  path?: string;
   at: number;
   /** the message this one follows; null = thread root. Edited messages
    * share a parentId with the version they replace — that's a fork. */
@@ -175,6 +178,9 @@ export interface Bot {
   /** Whether this bot may use the workspace's connected apps. Unset means
    * allowed for existing bots; imported bots start with this disabled. */
   composio?: boolean;
+  /** Whether this bot may generate images. Unset means allowed; the
+   * credential is workspace-wide, the grant is per bot. */
+  imageGen?: boolean;
   messages: Message[];
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
@@ -214,6 +220,9 @@ export interface ConfigStatus {
   box: { configured: boolean };
   vps: { configured: boolean; sshAlias: string };
   opencodeGo?: { configured: boolean };
+  /** Image generation. `configured` = a key or a local endpoint is set; the
+   * key is never echoed back, but the endpoint and model are settings. */
+  imageGen?: { configured: boolean; baseUrl: string; model: string };
   /** Voice (ElevenLabs). `configured` = a key is saved; `ready` = a key AND
    * a voice, which is what it takes to actually speak. The key itself is
    * never echoed back. */
@@ -250,6 +259,9 @@ export interface InstanceInfo {
     computerMcp?: boolean;
     agentsMcp?: boolean;
     composioMcp?: boolean;
+    imageGenMcp?: boolean;
+    /** the engine can be shown an attached picture, not just told its path */
+    imageInput?: boolean;
     effortLevels?: readonly EffortLevel[];
   };
   /** `custom` agents sit below the rail divider — no subscription catalog. */
@@ -408,6 +420,7 @@ export type Action =
           | "chiefOfStaff"
           | "approvePeerComms"
           | "composio"
+          | "imageGen"
           | "modelSelection"
         >
       >;

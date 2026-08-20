@@ -165,6 +165,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_MODELS;
     delete process.env.FAKE_ACP_MODEL_STICKS;
     delete process.env.FAKE_ACP_USAGE_ROOT;
+    delete process.env.FAKE_ACP_IMAGE_PROMPT;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -249,6 +250,78 @@ describe("ACP turns (fake CLI)", () => {
       args: ["/tmp/connector-proxy.js"],
       env: [{ name: "OMB_CONNECTOR_UPSTREAM_URL", value: "http://127.0.0.1:8799/api/internal/connectors/mcp" }],
     });
+  });
+
+  it("mounts image generation as a stdio MCP server", async () => {
+    await create();
+    const dump = join(scratch, "image-gen.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    expect(instance.adapter.capabilities.imageGenMcp).toBe(true);
+    await instance.adapter.sendTurn({
+      threadId: "t-image-gen",
+      text: "draw a barn",
+      integrations: {
+        imageGen: {
+          command: process.execPath,
+          args: ["/tmp/image-proxy.js"],
+          env: { OMB_IMAGE_API_KEY: "image-secret" },
+        },
+      },
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+    expect(JSON.parse(readFileSync(`${dump}.mcp.json`, "utf8"))).toContainEqual({
+      name: "image",
+      command: process.execPath,
+      args: ["/tmp/image-proxy.js"],
+      env: [{ name: "OMB_IMAGE_API_KEY", value: "image-secret" }],
+    });
+  });
+
+  // The protocol says a client MUST restrict prompt content to what the agent
+  // advertised at initialize, so these two cases are the whole feature: the
+  // same attachment reaches an announcing agent as pixels and everyone else
+  // as the path it always was.
+  it("sends an image as a content block to an agent that advertised image prompts", async () => {
+    process.env.FAKE_ACP_IMAGE_PROMPT = "1";
+    await create();
+    const dump = join(scratch, "attach.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const image = join(scratch, "shot.png");
+    writeFileSync(image, Buffer.from([1, 2, 3, 4]));
+    expect(instance.adapter.capabilities.imageInput).toBe(true);
+
+    await instance.adapter.sendTurn({
+      threadId: "t-image-in",
+      text: "what is this?",
+      attachments: [{ id: "a1", name: "shot.png", mime: "image/png", size: 4, path: image, kind: "image" }],
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const prompt = JSON.parse(readFileSync(`${dump}.prompt.json`, "utf8"));
+    expect(prompt.prompt).toEqual([
+      { type: "text", text: "what is this?" },
+      { type: "image", mimeType: "image/png", data: "AQIDBA==" },
+    ]);
+  });
+
+  it("falls back to the path in the text when the agent never advertised images", async () => {
+    await create();
+    const dump = join(scratch, "attach-plain.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const image = join(scratch, "shot.png");
+    writeFileSync(image, Buffer.from([1, 2, 3, 4]));
+
+    await instance.adapter.sendTurn({
+      threadId: "t-image-out",
+      text: "what is this?",
+      attachments: [{ id: "a1", name: "shot.png", mime: "image/png", size: 4, path: image, kind: "image" }],
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const prompt = JSON.parse(readFileSync(`${dump}.prompt.json`, "utf8"));
+    expect(prompt.prompt).toHaveLength(1);
+    expect(prompt.prompt[0].type).toBe("text");
+    expect(prompt.prompt[0].text).toContain(`<attached-image path="${image}" />`);
   });
 
   it("droid takes model and autonomy over the wire, never through argv", async () => {

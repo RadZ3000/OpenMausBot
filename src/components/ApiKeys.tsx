@@ -6,7 +6,7 @@ import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 
-export type ConfigSection = "composio" | "box" | "opencodeGo";
+export type ConfigSection = "composio" | "box" | "opencodeGo" | "imageGen";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -18,6 +18,7 @@ const SECTIONS: Record<
   },
   box: { body: (v) => ({ box: { token: v } }), flag: (c) => c.box.configured },
   opencodeGo: { body: (v) => ({ opencodeGo: { apiKey: v } }), flag: (c) => c.opencodeGo?.configured ?? false },
+  imageGen: { body: (v) => ({ imageGen: { apiKey: v } }), flag: (c) => c.imageGen?.configured ?? false },
 };
 
 const CREDENTIALS: Record<
@@ -56,6 +57,16 @@ const CREDENTIALS: Record<
     href: "https://opencode.ai/docs/go/",
     linkLabel: "Open OpenCode Go setup guide",
     optional: true,
+  },
+  imageGen: {
+    label: "Image generation key",
+    placeholder: "sk-…",
+    description:
+      "Let bots draw pictures with a generate_image tool. Uses OpenAI's images API by default; set OMB_IMAGE_BASE_URL to use a local image server instead.",
+    href: "https://platform.openai.com/api-keys",
+    linkLabel: "Create or copy an OpenAI API key",
+    optional: true,
+    warning: "Each generated image is billed by your image provider.",
   },
 };
 

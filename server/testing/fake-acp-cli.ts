@@ -190,7 +190,17 @@ function handle(msg: any) {
         process.exit(3);
       }
       const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
-      result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
+      result(msg.id, {
+        protocolVersion: 1,
+        authMethods,
+        // The spec makes image content conditional on this advertisement, so
+        // the default is an agent that never announced it — the shape most
+        // ACP CLIs still have.
+        ...(process.env.FAKE_ACP_IMAGE_PROMPT
+          ? { agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true } } }
+          : {}),
+        _meta: { modelState: { currentModelId: "fake-acp-model" } },
+      });
       break;
     }
     case "authenticate":
@@ -263,6 +273,11 @@ function handle(msg: any) {
       break;
     }
     case "session/prompt": {
+      // recorded like session/new's mcpServers, so a test can assert exactly
+      // which content blocks a turn was sent
+      if (process.env.FAKE_ACP_DUMP) {
+        writeFileSync(`${process.env.FAKE_ACP_DUMP}.prompt.json`, JSON.stringify(msg.params ?? null, null, 2));
+      }
       if (mode === "hang") {
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);

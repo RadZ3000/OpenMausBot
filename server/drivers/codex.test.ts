@@ -150,6 +150,71 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(seen.env.OMB_COMMS_TOKEN).toBe("per-boot-token");
   });
 
+  it("mounts image generation without placing the image key in argv", async () => {
+    await create();
+    const dump = join(scratch, "image-gen.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    expect(instance.adapter.capabilities.imageGenMcp).toBe(true);
+
+    await instance.adapter.sendTurn({
+      threadId: "t-image-gen",
+      text: "draw a barn",
+      integrations: {
+        imageGen: {
+          command: process.execPath,
+          args: ["/tmp/image-proxy.js"],
+          env: { ELECTRON_RUN_AS_NODE: "1", OMB_IMAGE_API_KEY: "image-secret" },
+        },
+      },
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv.join(" ")).toContain("mcp_servers.openmausbot_image.command");
+    expect(seen.argv.join(" ")).toContain("/tmp/image-proxy.js");
+    // argv is world-readable in a process list; the key rides in the env
+    expect(seen.argv.join(" ")).not.toContain("image-secret");
+    expect(seen.env.OMB_IMAGE_API_KEY).toBe("image-secret");
+  });
+
+  it("sends an attached image as a localImage path and a file as prompt text", async () => {
+    await create();
+    const dump = join(scratch, "attach.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    expect(instance.adapter.capabilities.imageInput).toBe(true);
+
+    await instance.adapter.sendTurn({
+      threadId: "t-attach",
+      text: "what is this?",
+      attachments: [
+        { id: "a1", name: "shot.png", mime: "image/png", size: 4, path: "/tmp/shot.png", kind: "image" },
+        { id: "a2", name: "notes.txt", mime: "application/octet-stream", size: 9, path: "/tmp/notes.txt", kind: "file" },
+      ],
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const start = seen.calls.find((call: any) => call.method === "turn/start");
+    // the picture goes as a path Codex reads; the file is named in the text
+    expect(start.params.input).toEqual([
+      { type: "text", text: 'what is this?\n\n<attached-file path="/tmp/notes.txt" />' },
+      { type: "localImage", path: "/tmp/shot.png" },
+    ]);
+  });
+
+  it("leaves a turn with no attachments exactly as it was", async () => {
+    await create();
+    const dump = join(scratch, "plain.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-plain", text: "hello" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const start = seen.calls.find((call: any) => call.method === "turn/start");
+    expect(start.params.input).toEqual([{ type: "text", text: "hello" }]);
+  });
+
   it("mounts the Local VM computer MCP server without placing credentials in argv", async () => {
     await create();
     const dump = join(scratch, "local-computer.json");
@@ -281,7 +346,7 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ decision: "approved" });
   });
 
-  it("surfaces an MCP tool approval as a permission and answers with Codex's own label", async () => {
+  it("surfaces an MCP tool approval as a permission and answers it as an elicitation", async () => {
     await create({ mode: "mcp-approval" });
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CODEX_DUMP = dump;
@@ -297,10 +362,22 @@ describe("CodexDriver turns (fake app-server)", () => {
     await instance.adapter.respondToRequest("t-mcp-approve", opened.requestId!, { behavior: "allow" });
     await recorder.until((e) => e.type === "request.resolved");
     await recorder.until((e) => e.type === "turn.completed");
-    // the literal option label — prose here would reach the model as a rejection
-    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({
-      answers: { mcp_tool_call_approval_c1: { answers: ["Allow"] } },
-    });
+    // an ElicitResult — a `{ decision }` here reaches the model as
+    // "user rejected MCP tool call" even though the user allowed it
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ action: "accept", content: {} });
+  });
+
+  it("declines an MCP tool approval the user denied", async () => {
+    await create({ mode: "mcp-approval" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-mcp-deny", text: "open firefox" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    await instance.adapter.respondToRequest("t-mcp-deny", opened.requestId!, { behavior: "deny" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ action: "decline" });
   });
 
   it("auto-approves commands in fullAuto without opening a request", async () => {

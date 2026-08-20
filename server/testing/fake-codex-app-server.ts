@@ -138,19 +138,19 @@ process.stdin.on("data", (chunk) => {
           out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: "rm -rf scratch" } });
           // turn continues from the approval response handler above
         } else if (mode === "mcp-approval") {
+          // codex-cli 0.148.0 asks MCP permission over the elicitation
+          // channel, marking it as an approval in _meta, and expects an MCP
+          // ElicitResult back rather than a decision.
           out({
             jsonrpc: "2.0",
             id: 100,
-            method: "item/tool/requestUserInput",
+            method: "mcpServer/elicitation/request",
             params: {
-              questions: [
-                {
-                  id: "mcp_tool_call_approval_c1",
-                  header: "Approve app tool call?",
-                  question: 'Allow the computer MCP server to run tool "launch_app"?',
-                  options: [{ label: "Allow" }, { label: "Cancel" }],
-                },
-              ],
+              serverName: "computer",
+              mode: "form",
+              _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"] },
+              message: 'Allow the computer MCP server to run tool "launch_app"?',
+              requestedSchema: { type: "object", properties: {} },
             },
           });
         } else {

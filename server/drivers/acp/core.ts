@@ -40,6 +40,7 @@ import { augmentedPath } from "../../env-path.ts";
 const COMPUTER_PROXY_PATH = SPAWNED_PROXIES.computer;
 import { appendNative } from "../native.ts";
 import { SPAWNED_PROXIES } from "../../proxy-paths.ts";
+import { filesOf, imagesOf, inlineImage, withAttachmentText } from "../../turn-attachments.ts";
 
 export interface AcpConfig {
   cli: string;
@@ -247,6 +248,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             args: local.args,
             env: acpEnv(local.env ?? {}),
           });
+        }
+        const imageGen = turn.integrations?.imageGen;
+        if (imageGen) {
+          servers.push({ name: "image", command: imageGen.command, args: imageGen.args, env: acpEnv(imageGen.env) });
         }
         return servers;
       };
@@ -599,14 +604,33 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             }
             emitSessionStarted();
             state.promptSent = true;
-            const text = support.buildPromptText
+            const composed = support.buildPromptText
               ? support.buildPromptText(turn)
               : turn.system
                 ? `${turn.system}\n\n${turn.text}`
                 : turn.text;
+            // The protocol is explicit that a client MUST restrict prompt
+            // content to what the agent advertised at initialize, so pixels
+            // go only to an agent that announced `image`. Everything else
+            // falls back to the path in the text — which is what every
+            // attachment got before this existed, and unlike `resource_link`
+            // (a baseline the agents here are untested against) it is
+            // guaranteed to be in front of the model.
+            const canSeeImages = init?.agentCapabilities?.promptCapabilities?.image === true;
+            const images = imagesOf(turn.attachments);
+            const blocks = canSeeImages
+              ? images.flatMap((a) => {
+                  const inlined = inlineImage(a);
+                  return inlined ? [{ type: "image", mimeType: inlined.mime, data: inlined.data }] : [];
+                })
+              : [];
+            const text = withAttachmentText(composed, [
+              ...filesOf(turn.attachments),
+              ...(canSeeImages ? [] : images),
+            ]);
             const result = await request("session/prompt", {
               sessionId,
-              prompt: [{ type: "text", text }],
+              prompt: [{ type: "text", text }, ...blocks],
             });
             // opencode 1.18.18 reports usage at the result root; grok and
             // gemini put it under _meta. Read both rather than lose the count.
@@ -674,6 +698,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             agentsMcp: true,
             computerMcp: true,
             composioMcp: true,
+            imageGenMcp: true,
+            // whether pixels actually reach the model is the agent's call at
+            // initialize, not ours; this says only that the driver will pass
+            // them on when it is told they are welcome
+            imageInput: true,
             effortLevels: support.effortLevels,
           },
           sendTurn,
