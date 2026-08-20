@@ -10,6 +10,23 @@ like nearly as much as people expect, but it makes a few things load-bearing
 that would otherwise be housekeeping. Read this before proposing a
 reorganisation, adding a dependency, or wiring anything that talks to a server.
 
+## Remotes: read from upstream, write only to ours
+
+`origin` is **ours** (`RadZ3000/OpenMausBot`) and is the only place anything is
+ever pushed. `upstream` (`milind-soni/OpenMausBot`) is a source we read and
+nothing more. Our work is the product; it does not go back.
+
+Intent alone does not enforce this, so the push URL is disabled outright. A
+fresh clone will not have that, so set it up first:
+
+```sh
+git remote set-url --push upstream DISABLED
+git remote -v      # upstream should read: DISABLED (push)
+```
+
+`git fetch upstream` keeps working normally; `git push upstream` now fails
+locally, before any network call, instead of relying on GitHub to reject us.
+
 ## What we inherit
 
 `LICENSE` is **Apache-2.0**. `NOTICE` records that the project was relicensed
