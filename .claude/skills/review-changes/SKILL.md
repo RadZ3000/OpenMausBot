@@ -99,6 +99,10 @@ Every file listed should be something upstream genuinely lacks. A file we edited
 that upstream also owns is a merge conflict we inherit forever. See
 `check-upstream-first`.
 
+Because this fork is sold, that list is also our record of what we own. Flag any
+new dependency, any hardcoded endpoint or key, and any default that points at
+upstream — `commercial-fork` has the standard.
+
 ## 6. Report
 
 Present the two reports under `## Standards` and `## Spec`, then the divergence

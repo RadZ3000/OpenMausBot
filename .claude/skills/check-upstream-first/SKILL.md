@@ -91,3 +91,7 @@ what they do, and the recommendation.
 After any merge, `git diff --stat upstream/main` should contain only things
 upstream genuinely does not have. Anything else is a file we will hand-resolve
 forever.
+
+That same diff is how we know which code is ours, because this fork is sold —
+see `commercial-fork` for what that obliges us to keep, and for the defaults
+(telemetry, update feed, brand) that must never point at upstream.
