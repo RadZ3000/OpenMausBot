@@ -136,6 +136,16 @@ forked from. Treat every such default as a bug.
 - **Update feed** — `electron-builder.yml` still publishes to and updates from
   `milind-soni/openmausbot-releases`. **A build handed to anyone must not carry
   this**, or it will update itself onto upstream's product.
+- **Connected-apps broker** — `electron/main.mjs` falls back to
+  `openmausbot-composio.milindsoni201.workers.dev` whenever `app.isPackaged`.
+  So a packaged build routes a customer's Gmail, Slack, Calendar and Notion
+  traffic through upstream's Cloudflare Worker, on upstream's Composio key, with
+  a per-installation token in upstream's D1. It never fires in development,
+  which is exactly why it is easy to ship. Upstream's own README tells forks to
+  deploy their own Worker and set `OMB_COMPOSIO_BROKER_URL`; do that before any
+  build leaves. `cloudflare/composio-broker/` is also the right model for any
+  proxy of our own — per-install tokens hashed in D1, rate-limit namespaces, and
+  a `REGISTRATION_MODE` switch.
 - **Brand** — `appId`, `productName`, the mascot, and the maintainer field are
   upstream's marks, and Apache §6 does not license them.
 
