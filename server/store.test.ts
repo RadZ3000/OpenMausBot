@@ -82,6 +82,22 @@ describe("Store", () => {
     expect(reloaded.group(group.id)?.defaultResponder).toEqual({ kind: "member", botId: second.id });
   });
 
+  it("speaksInThread gates a room on membership, not on the room existing", () => {
+    const store = new Store(selection);
+    const member = store.createBot();
+    const outsider = store.createBot();
+    const room = store.createGroup("Team", [member.id]);
+
+    expect(store.speaksInThread(member.id, room.threadId)).toBe(true);
+    // the hole this closes: an internal callback that only asked "is this a
+    // room" let any bot drop a message into a room it was never in
+    expect(store.speaksInThread(outsider.id, room.threadId)).toBe(false);
+    // a 1:1 thread still turns on ownership, and an unknown thread on nothing
+    expect(store.speaksInThread(member.id, member.threadId)).toBe(true);
+    expect(store.speaksInThread(outsider.id, member.threadId)).toBe(false);
+    expect(store.speaksInThread(member.id, "no-such-thread")).toBe(false);
+  });
+
   it("migrates old rooms without routing to their first member", () => {
     const store = new Store(selection);
     const first = store.createBot();

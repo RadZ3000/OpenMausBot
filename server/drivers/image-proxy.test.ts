@@ -184,12 +184,16 @@ describe("image-proxy MCP surface", () => {
     expect(res.error.code).toBe(-32602);
   });
 
-  it("stops generating once the per-turn cap is reached", async () => {
+  // the cap counts calls made by this proxy process, which the driver keeps
+  // alive across the turns of one session — so the refusal must not promise
+  // the bot a fresh budget on the next turn
+  it("stops generating once the session cap is reached", async () => {
     const capped = startProxy({ OMB_IMAGE_MAX_CALLS: "1" });
     const first = await capped.rpc("tools/call", { name: "generate_image", arguments: { prompt: "one" } });
     expect(first.result.isError).toBeFalsy();
     const second = await capped.rpc("tools/call", { name: "generate_image", arguments: { prompt: "two" } });
     expect(second.result.isError).toBe(true);
-    expect(second.result.content[0].text).toContain("per-turn limit");
+    expect(second.result.content[0].text).toContain("limit for one session");
+    expect(second.result.content[0].text).not.toContain("this turn");
   });
 });

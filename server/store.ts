@@ -752,6 +752,16 @@ export class Store {
     return this.bots.find((b) => b.threadId === threadId || b.tasks?.some((t) => t.threadId === threadId)) ?? null;
   }
 
+  /** Whether this bot is entitled to append to that thread: a room needs
+   * membership, anything else needs ownership. The internal callbacks take a
+   * thread id from a proxy rather than from the router, so "the room exists"
+   * is not the question — "is this bot in it" is. */
+  speaksInThread(botId: string, threadId: string): boolean {
+    const group = this.groupByThread(threadId);
+    if (group) return group.memberIds.includes(botId);
+    return this.botByThread(threadId)?.id === botId;
+  }
+
   createBot(
     profile: Partial<
       Pick<BotRecord, "name" | "title" | "description" | "color" | "mascotExpression" | "modelSelection">

@@ -48,12 +48,16 @@ instructed to describe the picture in full.
 
 The tool is not marked read-only, so it goes through the normal approval card
 before each call — generating an image spends money, and the prompt is worth
-reading before it does. A bot may generate at most 8 images per turn; past
-that the tool refuses and tells the bot to ask first.
+reading before it does. A bot may generate at most 8 images per agent session;
+past that the tool refuses and tells the bot to ask first. The cap lives in the
+proxy process, which the driver keeps alive across the turns of one session —
+so it is not a fresh budget every turn.
 
 Generated images are kept in the transcript at full size. Unlike desktop
 screen frames, they are never pruned: they are deliverables, and the file on
-disk is what the user came for.
+disk is what the user came for. The transcript API strips the pixels from
+stored messages and marks them `hasImage`, so the app fetches them back from
+`/api/threads/:threadId/messages/:id/image` when it shows one.
 
 ## Engine support
 

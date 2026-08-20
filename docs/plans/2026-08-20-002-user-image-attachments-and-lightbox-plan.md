@@ -10,6 +10,31 @@ created: 2026-08-20
 
 # feat: User image attachments across engines, plus an image lightbox
 
+## Status: partly superseded — read this first
+
+**The lightbox half shipped. The attachment half did not, and was deliberately
+abandoned.** Everything below about `server/turn-attachments.ts`,
+`capabilities.imageInput`, `MessageAttachment`/`TurnAttachment`, per-driver image
+content blocks, and the companion attachment route describes a design that is
+**not in the codebase**. Do not use it as a map.
+
+Mid-implementation, upstream shipped its own image attachments
+(`6b2ca7e`, "feat: add secure image attachments (#295)") at the same path this
+plan claimed, `server/attachments.ts`. Upstream's design passes engines a **file
+path** rather than pixels, which looked like a shortcoming until a probe against
+the real `codex` CLI settled it: given only a path, Codex opens the file with its
+own `imageView` tool and reads the image correctly. Their version is simpler,
+and being a one-way fork, every file we also own at their path is a merge
+conflict we inherit forever.
+
+So `server/attachments.ts` is upstream's, byte for byte, and our parallel stack
+was deleted. What survives from this plan is the lightbox
+(`src/components/Lightbox.tsx`, `src/lib/lightbox.ts`) plus its use for **every**
+image in the app — generated, screen-captured, and user-attached, in both 1:1 and
+room transcripts.
+
+The lesson is now a skill: `.claude/skills/check-upstream-first/SKILL.md`.
+
 ## Summary
 
 A user can already drop a file on the window, but only its **path** ever reaches the

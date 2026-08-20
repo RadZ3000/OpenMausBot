@@ -65,6 +65,9 @@ export interface Message {
   /** screen messages: a frame of the bot's computer (base64).
    * image messages: a picture the bot generated, saved at `path`. */
   png?: string;
+  /** the server strips pixels from stored messages and sets this instead, so
+   * a reloaded transcript knows a picture exists and can go fetch it. */
+  hasImage?: boolean;
   mime?: string;
   /** image messages: where the file was written, so the user can open it. */
   path?: string;
@@ -684,13 +687,14 @@ export function reducer(state: AppState, action: Action): AppState {
         let messages = [...b.messages, action.message];
         // base64 screen frames are big; a long computer-use session would
         // grow memory without bound. Keep the newest few frames' pixels and
-        // strip the rest (the message row survives as a placeholder).
+        // strip the rest — `hasImage` marks what was dropped, so scrolling
+        // back re-fetches the frame instead of showing a hole.
         if (action.message.kind === "screen") {
           const withPng = messages.filter((m) => m.kind === "screen" && m.png);
           const excess = withPng.length - MAX_KEPT_SCREEN_FRAMES;
           if (excess > 0) {
             const dropIds = new Set(withPng.slice(0, excess).map((m) => m.id));
-            messages = messages.map((m) => (dropIds.has(m.id) ? { ...m, png: undefined } : m));
+            messages = messages.map((m) => (dropIds.has(m.id) ? { ...m, png: undefined, hasImage: true } : m));
           }
         }
         return { ...b, messages, activeLeafId: action.message.id };

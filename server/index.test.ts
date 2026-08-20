@@ -1065,6 +1065,43 @@ describe("harness HTTP API", () => {
     }
   });
 
+  // A room is a different conversation, not a different bot. The mount lived
+  // only on the 1:1 path at first, so a member that could draw at its own desk
+  // silently lost the tool the moment it spoke in a room.
+  it("mounts image generation on a room turn, not just a 1:1 turn", async () => {
+    const created = await api("POST", "/api/bots", {});
+    const botId = created.body.bot.id;
+    const room = (await api("POST", "/api/groups", {
+      name: "Image room",
+      memberIds: [botId],
+    })).body.group;
+    try {
+      await api("PATCH", `/api/bots/${botId}`, {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      });
+      expect((await api("PUT", "/api/config", { imageGen: { apiKey: "room-image-key" } })).status).toBe(200);
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "draw me a house" })).status).toBe(202);
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+
+      const seen = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      expect(seen.mcpConfig.mcpServers.image).toBeTruthy();
+      // same rule as everywhere else: the key travels in the proxy's env and
+      // never on the argv another local process can read
+      expect(seen.mcpConfig.mcpServers.image.env.OMB_IMAGE_API_KEY).toBe("room-image-key");
+      expect(JSON.stringify(seen.argv)).not.toContain("room-image-key");
+    } finally {
+      await api("POST", `/api/groups/${room.id}/interrupt`);
+      await expect.poll(async () => (await api("GET", "/api/bots")).body.bots.find(
+        (bot: { id: string }) => bot.id === botId,
+      )?.busy, { timeout: 5_000 }).toBe(false);
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${botId}`);
+      await api("PUT", "/api/config", { imageGen: { apiKey: "" } });
+    }
+  });
+
   it("validates the non-secret VPS alias and keeps old bots on Box by default", async () => {
     const before = await api("GET", "/api/bots");
     const bot = before.body.bots[0];

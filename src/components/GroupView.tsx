@@ -26,6 +26,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ExpandableImage } from "./Lightbox";
 import { attachmentBasename, splitAttachedImages } from "@/lib/composer-attachments";
+import { messageImageSrc } from "@/lib/message-image";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { shortPath } from "@/lib/short-path";
@@ -110,6 +111,7 @@ const Transcript = memo(function Transcript({
         // can open one), so the tag has to come back out of the text here as
         // well — otherwise the bubble shows the markup instead of the picture
         const attached = user && m.kind === "text" && m.text ? splitAttachedImages(m.text) : null;
+        const generated = m.kind === "image" ? messageImageSrc(group.threadId, m) : null;
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || newDay;
         const row =
           // a member can hit a permission ask mid-turn; without this the
@@ -123,10 +125,10 @@ const Transcript = memo(function Transcript({
             <div className="flex justify-start">
               <ApprovalCard bot={memberOf(m.from?.botId)} message={m} />
             </div>
-          ) : m.kind === "image" && m.png ? (
+          ) : generated ? (
             <div className="flex flex-col items-start gap-1">
               <ExpandableImage
-                src={`data:${m.mime ?? "image/png"};base64,${m.png}`}
+                src={generated}
                 alt="Image a bot generated"
                 caption={m.path}
                 className="max-w-[70%] rounded-2xl border border-hairline/40"

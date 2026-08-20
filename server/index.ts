@@ -165,6 +165,16 @@ function phoneIntegration() {
   return { command: process.execPath, args: [phoneProxyPath], env };
 }
 
+/** Gated on the mounted integration rather than the key, like the connected-apps
+ * hint: a bot is only told it can draw when its driver actually mounted the
+ * tool. The tool's own description carries the detail; this exists so the model
+ * reaches for it instead of refusing, or describing a picture in words. */
+function imageGenPrompt(mounted: unknown): string {
+  return mounted
+    ? " You can make pictures with the generate_image tool — mockups, diagrams, illustrations. The result is saved to your workspace and shown to the user automatically, so reach for it when asked for an image rather than saying you cannot make one."
+    : "";
+}
+
 /** A hosted images endpoint needs a key; a local diffusion server usually
  * needs only its URL. Either one on its own means the user set this up. */
 function imageGenConfigured(): boolean {
@@ -1627,6 +1637,7 @@ async function startTurn(
           (integrations.composio
             ? " The user's connected apps (Gmail, Calendar, Slack, Notion, and the rest) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Reach for them before telling the user you have no access to a service."
             : "") +
+          imageGenPrompt(integrations.imageGen) +
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
           (privateWorkspace ? memorySystemPrompt(bot.id) : "") +
           skillInstructions +
@@ -1878,8 +1889,21 @@ async function runGroupMemberTurn(
   // but must not decide the pin: the room's desk is a property of the
   // room, not of whichever member happened to speak first.
   const cwd = groupTurnCwd(workspace, () => store.pinGroupCwd(group.id));
+  // Image generation, gated exactly as it is for a 1:1 turn — a room is a
+  // different conversation, not a different bot, so a member that can draw
+  // at its own desk can draw here too. It still needs somewhere to write.
+  const imageDirectory = cwd ?? workspace;
+  if (
+    bot.imageGen !== false &&
+    imageGenConfigured() &&
+    instance.adapter.capabilities.imageGenMcp === true &&
+    imageDirectory
+  ) {
+    integrations.imageGen = imageGenIntegration(bot.id, group.threadId, imageDirectory);
+  }
   const roomSystem =
     (workspace ? `${system}\n${memorySystemPrompt(bot.id).trim()}` : system) +
+    imageGenPrompt(integrations.imageGen) +
     renderSkillInstructions(selectedSkills);
 
   // run the turn and wait for it to settle, folding the reply text so a
@@ -2377,9 +2401,10 @@ const server = createServer(async (req, res) => {
         if (!png) return json(res, 400, { error: "data required" });
         const threadId = String(body.threadId ?? "") || bot.threadId;
         // the thread has to be one this bot actually speaks in, so a stray
-        // id cannot drop a picture into somebody else's conversation
+        // id cannot drop a picture into somebody else's conversation — for a
+        // room that means membership, not merely that the room exists
         const group = store.groupByThread(threadId);
-        if (store.botByThread(threadId)?.id !== bot.id && !group) {
+        if (!store.speaksInThread(bot.id, threadId)) {
           return json(res, 404, { error: "no such thread" });
         }
         const message: Omit<Message, "id" | "at"> = {
@@ -2389,7 +2414,13 @@ const server = createServer(async (req, res) => {
           mime: String(body.mime ?? "image/png"),
           path: String(body.path ?? "") || undefined,
         };
-        store.appendMessage(threadId, group ? { ...message, from: groupSpeakers.get(threadId) } : message);
+        // attributed to the bot that drew it, not to whoever holds the room
+        // now: the proxy can report after the turn released the speaker slot,
+        // and an unattributed picture in a room has no face against it
+        store.appendMessage(
+          threadId,
+          group ? { ...message, from: { botId: bot.id, name: bot.name, color: bot.color } } : message,
+        );
         return json(res, 200, { ok: true });
       }
       if (method === "POST" && path === "/api/internal/ask-bot") {

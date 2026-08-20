@@ -147,7 +147,7 @@ async function callTool(args: Json): Promise<{ content: unknown[]; isError?: boo
   if (!prompt) return { content: [{ type: "text", text: "generate_image needs a prompt." }], isError: true };
   if (calls >= MAX_CALLS) {
     return {
-      content: [{ type: "text", text: `This turn has already generated ${MAX_CALLS} images — the per-turn limit. Ask the user before generating more.` }],
+      content: [{ type: "text", text: `This session has already generated ${MAX_CALLS} images — the limit for one session. Ask the user before generating more.` }],
       isError: true,
     };
   }
