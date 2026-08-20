@@ -672,7 +672,9 @@ struct MessageRow: View {
             CardView(chat: chat, message: message)
         case .activity:
             ActivityChip(tool: message.tool)
-        case .screen:
+        // a generated picture arrives in the same shape as a capture — inline
+        // pixels live, fetched by id once stored — so it draws the same way
+        case .screen, .image:
             ScreenShot(threadId: chat.threadId, message: message)
         case .unknown:
             // A message kind from a newer computer. Almost everything the

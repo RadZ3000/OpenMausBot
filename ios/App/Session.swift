@@ -823,6 +823,7 @@ extension CompanionState {
             return card.isPending && !card.subtitle.isEmpty ? card.subtitle : card.title
         case .activity: return last.tool?.name ?? ""
         case .screen: return "Screenshot"
+        case .image: return "Image"
         case .unknown: return last.text ?? ""
         }
     }

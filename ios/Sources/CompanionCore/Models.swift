@@ -67,7 +67,7 @@ public struct CommChip: Codable, Hashable, Sendable {
 
 public struct Message: Codable, Hashable, Identifiable, Sendable {
     public enum Kind: String, Codable, Sendable {
-        case text, options, activity, screen
+        case text, options, activity, screen, image
         /// A kind this build has never heard of.
         ///
         /// Not decorative. `kind` is not optional, so without this a single
@@ -112,10 +112,10 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var from: Sender?
     public var reactions: [Reaction]?
     public var comm: CommChip?
-    /// Screen messages in the paged shape: the pixels live behind
+    /// Screen and image messages in the paged shape: the pixels live behind
     /// `/api/threads/:threadId/messages/:id/image` rather than inline.
     public var hasImage: Bool?
-    /// Screen messages in the full shape: base64 pixels, inline.
+    /// Screen and image messages in the full shape: base64 pixels, inline.
     public var png: String?
     public var mime: String?
 

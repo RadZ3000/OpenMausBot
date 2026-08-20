@@ -1330,11 +1330,7 @@ async function startTurn(
   if (!userMessage) {
     userMessage = opts?.connectorContinuation
       ? { id: `connector-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
-      : store.appendMessage(threadId, {
-          role: "user",
-          kind: "text",
-          text,
-        });
+      : store.appendMessage(threadId, { role: "user", kind: "text", text });
   }
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE
@@ -2933,6 +2929,9 @@ const server = createServer(async (req, res) => {
         if (msg.kind === "text" && msg.text) lines.push(`**${who}:**`, "", msg.text, "");
         else if (msg.kind === "activity" && msg.tool) lines.push(`> ${msg.tool.name}`, "");
         else if (msg.kind === "screen") lines.push("> [screen capture]", "");
+        // a generated picture is a deliverable sitting on disk, so the export
+        // links the file rather than noting that one existed
+        else if (msg.kind === "image") lines.push(msg.path ? `![generated image](${msg.path})` : "> [generated image]", "");
         else if (msg.kind === "options" && msg.card) {
           lines.push(`> ${msg.card.title}${msg.card.answered ? ` — answered: ${msg.card.answered}` : ""}`, "");
         }

@@ -33,6 +33,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { applyClaudeInject, mergeLocalInject } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
+
 /** Whether `claude` has been signed in.
  *
  * Credential storage is deliberately not inspected here. Claude Code uses the

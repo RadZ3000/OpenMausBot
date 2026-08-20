@@ -84,6 +84,7 @@ extension CompanionState {
         case .options: return last.card?.title ?? ""
         case .activity: return last.tool?.name ?? ""
         case .screen: return "Screenshot"
+        case .image: return "Image"
         }
     }
 }

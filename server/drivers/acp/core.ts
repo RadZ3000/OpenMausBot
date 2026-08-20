@@ -41,6 +41,7 @@ import { augmentedPath } from "../../env-path.ts";
 const COMPUTER_PROXY_PATH = SPAWNED_PROXIES.computer;
 import { appendNative } from "../native.ts";
 import { SPAWNED_PROXIES } from "../../proxy-paths.ts";
+
 export interface AcpConfig {
   cli: string;
   fullAuto: boolean;
@@ -628,14 +629,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             }
             emitSessionStarted();
             state.promptSent = true;
-            const composed = support.buildPromptText
+            const text = support.buildPromptText
               ? support.buildPromptText(turn)
               : turn.system
                 ? `${turn.system}\n\n${turn.text}`
                 : turn.text;
             const result = await request("session/prompt", {
               sessionId,
-              prompt: [{ type: "text", text: composed }],
+              prompt: [{ type: "text", text }],
             });
             // opencode 1.18.18 reports usage at the result root; grok and
             // gemini put it under _meta. Read both rather than lose the count.
