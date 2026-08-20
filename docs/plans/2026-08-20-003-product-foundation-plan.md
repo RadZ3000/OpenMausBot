@@ -94,11 +94,21 @@ and someone who wants to see it work before thinking about either.
 
 ## Phase 0 — the distribution profile — **shipped**
 
-A single build-time module describing *this* distribution. Landed as
-`src/lib/distribution.ts`, wired at four seams: analytics takes its destination
-from the profile, `src/main.tsx` stamps the window title before the shell reads
-it, onboarding greets the user by the configured name, and `defaultSelection()`
-takes a preferred engine from `OMB_DEFAULT_ENGINE`.
+A single build-time module describing *this* distribution — in practice two,
+because the window and the harness server are built differently and cannot share
+one channel. `src/lib/distribution.ts` covers everything read in the window
+(product name, analytics destination), inlined by Vite. `server/distribution.ts`
+covers the engine and model a new bot starts on, and `electron/distribution.mjs`
+bakes those into a packaged build through electron-builder's `extraMetadata`,
+since a forked server inherits no environment when the app is launched from the
+Dock or the Start menu.
+
+Wired at five seams: analytics takes its destination from the profile,
+`src/main.tsx` stamps the window title before the shell reads it, onboarding
+greets the user by the configured name, `defaultSelection()` honours the
+preferred engine, and `startingModel()` honours the preferred model — the last
+only when the chosen engine actually lists it, so a stale id degrades to that
+engine's own default rather than producing a bot that fails on send.
 
 **The survey it produced is the durable half, and it lives in
 [`docs/identity-surface.md`](../identity-surface.md).** Read that before Phase 2

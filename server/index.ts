@@ -46,6 +46,7 @@ import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts"
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import { isEffortLevel, type RequestOutcome, type RuntimeEvent } from "./contracts.ts";
+import { PREFERRED_ENGINE, startingModel } from "./distribution.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
@@ -260,14 +261,7 @@ function askBotAndWait(targetBotId: string, message: string, depth: number, from
 }
 
 // default selection for new bots: first available instance, claude preferred
-//
-// Which engine is preferred is the one thing a distribution may change here
-// (OMB_DEFAULT_ENGINE, a driverKind such as "hermesAgent"), because a build
-// that ships its own local stack wants that stack picked rather than whichever
-// cloud CLI the machine happens to have. It is only a *preference*: an engine
-// that is not installed loses to one that is, so a bad value costs nothing.
-const PREFERRED_ENGINE = process.env.OMB_DEFAULT_ENGINE?.trim() || "claudeAgent";
-
+// unless this distribution prefers another — see server/distribution.ts
 async function defaultSelection() {
   const described = await registry.describe();
   const available = described.filter((d) => d.snapshot.state === "available");
@@ -277,7 +271,8 @@ async function defaultSelection() {
   // user with no CLIs used to get. An empty selection is honest: the UI shows
   // the setup path instead of a bot that cannot answer.
   const pick = available.find((d) => d.driverKind === PREFERRED_ENGINE) ?? available[0];
-  return { instanceId: pick?.instanceId ?? "", model: pick?.models.default ?? "" };
+  if (!pick) return { instanceId: "", model: "" };
+  return { instanceId: pick.instanceId, model: startingModel(pick.models) };
 }
 let bootSelection = { instanceId: "", model: "" };
 const store = new Store(() => bootSelection);

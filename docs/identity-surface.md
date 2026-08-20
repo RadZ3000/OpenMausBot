@@ -166,19 +166,48 @@ what a merge can absorb, revisit the catalog idea — but measure first.
 
 ## Configuring a build
 
+Configuration reaches the two halves of the app by different routes, because
+they are built differently.
+
+**The window** — set at `pnpm build`, inlined by Vite:
+
 ```sh
 VITE_PRODUCT_NAME="Acme Agents"      # window title, onboarding, (Phase 2) all UI copy
 VITE_ANALYTICS_KEY="phc_..."         # unset = analytics off entirely
 VITE_ANALYTICS_HOST="https://..."    # defaults to PostHog US
-OMB_DEFAULT_ENGINE="hermesAgent"     # driverKind a new bot prefers; server-side
 ```
 
-The `VITE_*` values are inlined by Vite at build time and must be set for
-`pnpm build`. Note that `src/lib/distribution.ts` reads each as a literal
-`import.meta.env.VITE_X` expression rather than passing the env object around:
-only the literal form is substituted, and the object form compiles fine and then
-reads `undefined` in production.
+`src/lib/distribution.ts` reads each as a literal `import.meta.env.VITE_X`
+expression rather than passing the env object around: only the literal form is
+substituted, and the object form compiles fine and then reads `undefined` in
+production.
 
-`OMB_DEFAULT_ENGINE` is read by `defaultSelection()` in `server/index.ts` and is
-inherited from the Electron process environment. Baking it into a packaged build
-is still an open packaging step.
+**The harness server** — baked at packaging time. It is a forked process with no
+Vite build, and a packaged app launched from the Dock or Start menu inherits no
+environment, so these travel in the `package.json` staged inside the asar:
+
+```sh
+electron-builder --win \
+  -c.extraMetadata.distribution.defaultEngine=hermesAgent \
+  -c.extraMetadata.distribution.defaultModel=ollama::qwen3:4b
+```
+
+or as a block in a per-customer config file that extends `electron-builder.yml`:
+
+```yaml
+extraMetadata:
+  distribution:
+    defaultEngine: hermesAgent
+    defaultModel: "ollama::qwen3:4b"
+```
+
+`electron/distribution.mjs` reads that back and forwards it to the server as
+`OMB_DEFAULT_ENGINE` / `OMB_DEFAULT_MODEL`. The real environment still wins over
+a baked value, so a packaged build can be redirected in the field for debugging.
+
+Both are preferences and neither can produce a bot that cannot answer: an engine
+that is not installed loses to one that is, and a model the chosen engine does
+not list is ignored in favour of its own default. Local catalogs are discovered
+at runtime, so a model the user has not pulled yet is simply absent — which is
+why a missing id means "not here" rather than "misconfigured". See
+`server/distribution.ts`.

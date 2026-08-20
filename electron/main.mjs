@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc, setCuaStateListener } from "./cua.mjs";
 import { createAndroidDeviceController } from "./android-device.mjs";
 import { finishSpeech, startSpeech, stopSpeech } from "./speech.mjs";
+import { distributionEnv, readDistributionMetadata } from "./distribution.mjs";
 import { openBlankTerminal } from "./terminal-launch.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
@@ -216,6 +217,9 @@ async function startServerOn(port) {
       OMB_SKILLS_DIR: path.join(process.resourcesPath, "skills"),
       OMB_PORT: String(port),
       OMB_USER_DATA: app.getPath("userData"),
+      // what this build prefers a new bot to run on, baked in at packaging
+      // time; absent in an unconfigured build, and the real environment wins
+      ...distributionEnv(readDistributionMetadata(app.getAppPath()), process.env),
       ...(secureCredentials.composioApiKey
         ? { COMPOSIO_API_KEY: secureCredentials.composioApiKey }
         : {}),
