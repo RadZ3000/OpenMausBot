@@ -196,7 +196,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             <h1 className="mt-4 text-[20px] font-semibold text-ink">Welcome to OpenMausBot</h1>
             <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
               Bots that do real work on their own computer. Tell us who you are
-              and we&rsquo;ll let you know when big things ship.
+              &mdash; your name and email stay on this machine.
             </p>
             <input
               autoFocus

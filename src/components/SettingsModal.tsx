@@ -15,6 +15,7 @@ import { UsageSection } from "./UsageSection";
 import { VoiceSettings } from "./VoiceSettings";
 import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
+import { AnalyticsSettings } from "./AnalyticsSettings";
 import { cn } from "@/lib/cn";
 
 const SECTIONS: Array<{ id: AppSettingsSection; label: string; icon: typeof User }> = [
@@ -210,6 +211,7 @@ export function SettingsModal() {
                 <Card title="Room turns" subtitle="Set one maximum duration for every bot turn in a room.">
                   <RoomTurnTimeoutSettings />
                 </Card>
+                <AnalyticsSettings />
                 <UpdatesRow />
               </>
             )}
