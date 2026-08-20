@@ -25,6 +25,7 @@ import { ReactionBar, ReactionChips } from "./Reactions";
 import { ApprovalCard } from "./ApprovalCard";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ExpandableImage } from "./Lightbox";
+import { attachmentBasename, splitAttachedImages } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { shortPath } from "@/lib/short-path";
@@ -105,6 +106,10 @@ const Transcript = memo(function Transcript({
         const prev = textMessages[i - 1];
         const newDay = !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
         const user = m.role === "user";
+        // a room takes attachments too (the composer checks every responder
+        // can open one), so the tag has to come back out of the text here as
+        // well — otherwise the bubble shows the markup instead of the picture
+        const attached = user && m.kind === "text" && m.text ? splitAttachedImages(m.text) : null;
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || newDay;
         const row =
           // a member can hit a permission ask mid-turn; without this the
@@ -151,7 +156,26 @@ const Transcript = memo(function Transcript({
                   )}
                   title={new Date(m.at).toLocaleString()}
                 >
-                  {user ? m.text : <ChatMarkdown text={m.text} />}
+                  {user ? (
+                    <>
+                      {attached && attached.images.length > 0 && (
+                        <div className="mb-2 flex flex-wrap justify-end gap-2">
+                          {attached.images.map((p) => (
+                            <ExpandableImage
+                              key={p}
+                              src={`/api/attachments/${encodeURIComponent(attachmentBasename(p))}`}
+                              alt="Attached image"
+                              caption={p}
+                              className="block max-h-[220px] max-w-[260px] rounded-lg border border-hairline/40 object-cover"
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {attached?.display ?? m.text}
+                    </>
+                  ) : (
+                    <ChatMarkdown text={m.text} />
+                  )}
                 </div>
                 {!user && <ReactionBar threadId={group.threadId} message={m} />}
                 <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
