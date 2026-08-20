@@ -4,8 +4,9 @@
 // The destination is build configuration rather than a constant, because a
 // constant is how a fork ends up reporting its customers to whoever it forked
 // from — installs, which engine each message went to, and, through identify(),
-// the email addresses collected at onboarding. With VITE_ANALYTICS_KEY unset,
-// which is the default here, nothing initialises and no request is made.
+// the email addresses collected at onboarding. It is declared alongside the rest
+// of what varies per build, in ./distribution; unset is the default, and then
+// nothing initialises and no request is made.
 //
 // Autocapture stays off even when enabled: it ships the $el_text of clicked
 // elements, and the sidebar and option cards render model output and message
@@ -13,9 +14,7 @@
 import posthog from "posthog-js";
 
 import { createAnalytics, type AnalyticsClient, type AnalyticsProps } from "./analytics-core";
-
-const TOKEN = String(import.meta.env.VITE_ANALYTICS_KEY ?? "");
-const HOST = String(import.meta.env.VITE_ANALYTICS_HOST ?? "").trim() || "https://us.i.posthog.com";
+import { distribution } from "./distribution";
 
 const client: AnalyticsClient = {
   init: (token, host) =>
@@ -35,8 +34,8 @@ const client: AnalyticsClient = {
 const analytics = createAnalytics(
   client,
   localStorage,
-  TOKEN,
-  HOST,
+  distribution.analyticsKey,
+  distribution.analyticsHost,
   navigator.userAgent.includes("Electron") ? "desktop" : "browser",
 );
 

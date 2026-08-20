@@ -260,6 +260,14 @@ function askBotAndWait(targetBotId: string, message: string, depth: number, from
 }
 
 // default selection for new bots: first available instance, claude preferred
+//
+// Which engine is preferred is the one thing a distribution may change here
+// (OMB_DEFAULT_ENGINE, a driverKind such as "hermesAgent"), because a build
+// that ships its own local stack wants that stack picked rather than whichever
+// cloud CLI the machine happens to have. It is only a *preference*: an engine
+// that is not installed loses to one that is, so a bad value costs nothing.
+const PREFERRED_ENGINE = process.env.OMB_DEFAULT_ENGINE?.trim() || "claudeAgent";
+
 async function defaultSelection() {
   const described = await registry.describe();
   const available = described.filter((d) => d.snapshot.state === "available");
@@ -268,7 +276,7 @@ async function defaultSelection() {
   // spawn ENOENT — the single worst first-run experience, and the one every
   // user with no CLIs used to get. An empty selection is honest: the UI shows
   // the setup path instead of a bot that cannot answer.
-  const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
+  const pick = available.find((d) => d.driverKind === PREFERRED_ENGINE) ?? available[0];
   return { instanceId: pick?.instanceId ?? "", model: pick?.models.default ?? "" };
 }
 let bootSelection = { instanceId: "", model: "" };
