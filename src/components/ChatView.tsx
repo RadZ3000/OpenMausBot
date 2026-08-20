@@ -376,21 +376,16 @@ function Bubble({
               {attachedImages && attachedImages.images.length > 0 && (
                 <div className="mb-2 flex flex-wrap justify-end gap-2">
                   {attachedImages.images.map((path) => (
-                    <a
+                    // the thumbnail crops to keep the bubble small, so it
+                    // opens in the same viewer the bot's images use rather
+                    // than throwing the file at a browser tab
+                    <ExpandableImage
                       key={path}
-                      href={`/api/attachments/${encodeURIComponent(attachmentBasename(path))}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block max-w-[260px] overflow-hidden rounded-lg border border-hairline/40"
-                      title={path}
-                    >
-                      <img
-                        src={`/api/attachments/${encodeURIComponent(attachmentBasename(path))}`}
-                        alt="Attached image"
-                        loading="lazy"
-                        className="block max-h-[220px] w-full object-cover"
-                      />
-                    </a>
+                      src={`/api/attachments/${encodeURIComponent(attachmentBasename(path))}`}
+                      alt="Attached image"
+                      caption={path}
+                      className="block max-h-[220px] max-w-[260px] rounded-lg border border-hairline/40 object-cover"
+                    />
                   ))}
                 </div>
               )}

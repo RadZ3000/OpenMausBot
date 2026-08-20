@@ -21,10 +21,11 @@ const SECTIONS: Record<
   imageGen: { body: (v) => ({ imageGen: { apiKey: v } }), flag: (c) => c.imageGen?.configured ?? false },
 };
 
-const ELECTRON_CREDENTIAL: Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey"> = {
+const ELECTRON_CREDENTIAL: Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey" | "imageGenApiKey"> = {
   composio: "composioApiKey",
   box: "boxToken",
   opencodeGo: "opencodeGoApiKey",
+  imageGen: "imageGenApiKey",
 };
 
 const CREDENTIALS: Record<
