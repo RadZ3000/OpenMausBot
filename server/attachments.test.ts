@@ -1,102 +1,85 @@
-import { readFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
-import { describe, expect, it } from "vitest";
+// attachments.ts: save + read-back, the mime allowlist, size ceiling, and
+// the name-lock that keeps the serving route inside the attachments dir.
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  MAX_ATTACHMENT_BYTES,
-  readAttachment,
-  removeThreadAttachments,
-  safeName,
-  saveAttachment,
-  sniffImageMime,
-} from "./attachments.ts";
+// The module reads DATA_DIR at import time, so the env var must be set
+// before the import is evaluated.
+const DATA_ROOT = mkdtempSync(join(tmpdir(), "omb-attachments-"));
+process.env.OMB_DATA_DIR = join(DATA_ROOT, "data");
 
-/** A real, whole PNG — the sniffer reads magic bytes, not extensions. */
-function png(): Buffer {
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    Buffer.alloc(64, 7),
-  ]);
-}
+const { ATTACHMENTS_DIR, IMAGE_MAX_BYTES, extensionForMime, readAttachment, saveImage } = await import("./attachments.ts");
 
-describe("attachment names", () => {
-  it("strips directory components so a name cannot climb out", () => {
-    expect(safeName("../../etc/passwd")).toBe("passwd");
-    expect(safeName("..\\..\\windows\\system32\\cfg.sys")).toBe("cfg.sys");
-    expect(safeName("/absolute/path.png")).toBe("path.png");
+describe("extensionForMime", () => {
+  it("maps the accepted image mimes to extensions", () => {
+    expect(extensionForMime("image/png")).toBe(".png");
+    expect(extensionForMime("image/jpeg")).toBe(".jpg");
+    expect(extensionForMime("image/gif")).toBe(".gif");
+    expect(extensionForMime("image/webp")).toBe(".webp");
   });
 
-  it("refuses to lead with a dot and never returns empty", () => {
-    expect(safeName(".ssh")).toBe("ssh");
-    expect(safeName("...")).toBe("attachment");
-    expect(safeName("")).toBe("attachment");
-  });
-});
-
-describe("image sniffing", () => {
-  it("identifies images by their bytes", () => {
-    expect(sniffImageMime(png())).toBe("image/png");
-    expect(sniffImageMime(Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(20), Buffer.from([0xd9])]))).toBe(
-      "image/jpeg",
-    );
-    expect(sniffImageMime(Buffer.from("GIF89a" + "x".repeat(20)))).toBe("image/gif");
+  it("tolerates parameters and casing", () => {
+    expect(extensionForMime("Image/PNG; charset=binary")).toBe(".png");
+    expect(extensionForMime("  image/webp  ")).toBe(".webp");
   });
 
-  it("does not take a caller's word for it", () => {
-    expect(sniffImageMime(Buffer.from("PK\u0003\u0004 this is a zip"))).toBeNull();
-    expect(sniffImageMime(Buffer.from("short"))).toBeNull();
+  it("refuses everything else — including svg, which executes script", () => {
+    expect(extensionForMime("image/svg+xml")).toBeNull();
+    expect(extensionForMime("text/plain")).toBeNull();
+    expect(extensionForMime(undefined)).toBeNull();
   });
 });
 
-describe("saving and resolving attachments", () => {
-  it("stores an image and resolves it back by id", () => {
-    const saved = saveAttachment("t-save", "shot.png", png());
-    expect(saved.kind).toBe("image");
+describe("saveImage", () => {
+  beforeEach(() => {
+    rmSync(ATTACHMENTS_DIR, { recursive: true, force: true });
+  });
+  afterEach(() => {
+    rmSync(ATTACHMENTS_DIR, { recursive: true, force: true });
+  });
+
+  it("persists bytes under the attachments dir with a generated name", () => {
+    const saved = saveImage(Buffer.from("png-bytes"), "image/png");
+    expect(saved.path.startsWith(ATTACHMENTS_DIR)).toBe(true);
+    expect(saved.path.endsWith(".png")).toBe(true);
+    expect(saved.bytes).toBe(9);
     expect(saved.mime).toBe("image/png");
-    expect(saved.size).toBe(72);
-    expect(readFileSync(saved.path).equals(png())).toBe(true);
-
-    const found = readAttachment("t-save", saved.id);
-    expect(found?.path).toBe(saved.path);
-    removeThreadAttachments("t-save");
+    if (process.platform !== "win32") {
+      expect(statSync(ATTACHMENTS_DIR).mode & 0o777).toBe(0o700);
+      expect(statSync(saved.path).mode & 0o777).toBe(0o600);
+    }
   });
 
-  it("keeps a mislabelled image on the extension its bytes deserve", () => {
-    const saved = saveAttachment("t-ext", "screenshot.dat", png());
-    expect(basename(saved.path).endsWith(".png")).toBe(true);
-    // the display name is what the user typed; only the path is normalized
-    expect(saved.name).toBe("screenshot.dat");
-    removeThreadAttachments("t-ext");
+  it("round-trips through readAttachment with the right mime", () => {
+    const saved = saveImage(Buffer.from("gif!"), "image/gif");
+    const name = saved.path.split(/[\\/]/).pop()!;
+    const back = readAttachment(name);
+    expect(back?.bytes.toString()).toBe("gif!");
+    expect(back?.mime).toBe("image/gif");
   });
 
-  it("treats anything that is not an image as an openable file", () => {
-    const saved = saveAttachment("t-file", "notes.txt", Buffer.from("plain text, not a picture"));
-    expect(saved.kind).toBe("file");
-    expect(saved.mime).toBe("application/octet-stream");
-    removeThreadAttachments("t-file");
+  it("rejects unsupported mimes, empty bodies, and oversize bodies", () => {
+    expect(() => saveImage(Buffer.from("x"), "image/svg+xml")).toThrow(/unsupported image type/);
+    expect(() => saveImage(Buffer.alloc(0), "image/png")).toThrow(/empty/);
+    expect(() => saveImage(Buffer.alloc(IMAGE_MAX_BYTES + 1), "image/png")).toThrow(/exceeds/);
+  });
+});
+
+describe("readAttachment name lock", () => {
+  beforeEach(() => {
+    rmSync(ATTACHMENTS_DIR, { recursive: true, force: true });
+  });
+  afterEach(() => {
+    rmSync(ATTACHMENTS_DIR, { recursive: true, force: true });
   });
 
-  it("writes inside the thread's own directory even for a hostile name", () => {
-    const saved = saveAttachment("t-evil", "../../../escape.png", png());
-    expect(basename(dirname(saved.path))).toBe("t-evil");
-    expect(saved.path).not.toContain("..");
-    removeThreadAttachments("t-evil");
-  });
-
-  it("rejects empty and oversize uploads", () => {
-    expect(() => saveAttachment("t-size", "empty.png", Buffer.alloc(0))).toThrow(/empty/);
-    expect(() => saveAttachment("t-size", "huge.png", Buffer.alloc(MAX_ATTACHMENT_BYTES + 1))).toThrow(/limited to/);
-  });
-
-  it("resolves nothing for ids it never issued", () => {
-    expect(readAttachment("t-miss", "not-a-uuid")).toBeNull();
-    expect(readAttachment("t-miss", "11111111-2222-3333-4444-555555555555")).toBeNull();
-  });
-
-  it("forgets a conversation's attachments when it is removed", () => {
-    const saved = saveAttachment("t-gone", "shot.png", png());
-    expect(readAttachment("t-gone", saved.id)).not.toBeNull();
-    removeThreadAttachments("t-gone");
-    expect(readAttachment("t-gone", saved.id)).toBeNull();
+  it("refuses traversal, dotfiles, and names the saver never writes", () => {
+    expect(readAttachment("..%2F..%2Fconfig.json")).toBeNull();
+    expect(readAttachment(".env")).toBeNull();
+    expect(readAttachment("a/b.png")).toBeNull();
+    expect(readAttachment("no-extension")).toBeNull();
+    expect(readAttachment("uuid.jpeg")).toBeNull(); // saved as .jpg
   });
 });

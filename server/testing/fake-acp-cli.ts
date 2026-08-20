@@ -55,28 +55,54 @@ const configOptions = () =>
       ]
     : null;
 const argv = process.argv.slice(2);
+const dumpEnv = Object.fromEntries(
+  [
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "SystemRoot",
+    "FAKE_ACP_MODE",
+    "FAKE_ACP_RPC_DUMP",
+    "TEST_POLICY",
+    "OPENCODE_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "BOX_TOKEN",
+    "OMB_TTS_KEY",
+    "UNSLOTH_STUDIO_AUTH_TOKEN",
+    "CURSOR_API_KEY",
+    "CURSOR_AUTH_TOKEN",
+  ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]] as const)),
+);
+const dumpState: Record<string, unknown> = { argv, env: dumpEnv };
 if (process.env.FAKE_ACP_DUMP) {
-  const dumpEnv = Object.fromEntries(
-    [
-      "PATH",
-      "HOME",
-      "USERPROFILE",
-      "SystemRoot",
-      "FAKE_ACP_MODE",
-      "FAKE_ACP_RPC_DUMP",
-      "TEST_POLICY",
-      "OPENCODE_API_KEY",
-      "OPENAI_API_KEY",
-      "OPENROUTER_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "XAI_API_KEY",
-      "UNSLOTH_STUDIO_AUTH_TOKEN",
-    ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]] as const)),
-  );
   writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify({ argv, env: dumpEnv }, null, 2));
 }
 if (argv.includes("--version")) {
   console.log("fake-acp 1.0.0");
+  process.exit(0);
+}
+// Cursor's driver probes `agent status` / `agent models` on the same binary
+// it later spawns for ACP. Answer those without entering the JSON-RPC loop
+// so catalog/auth tests do not hang on stdin.
+if (argv[0] === "status" || argv[0] === "whoami") {
+  const authenticated = process.env.FAKE_ACP_AUTH !== "0";
+  console.log(JSON.stringify({ isAuthenticated: authenticated }));
+  process.exit(0);
+}
+if (argv[0] === "models" || argv.includes("--list-models")) {
+  console.log(
+    [
+      "Available models",
+      "",
+      "auto - Auto (default)",
+      "composer-2.5 - Composer 2.5 (current)",
+      "gpt-5.3-codex - Codex 5.3",
+      "cursor-live - Cursor Live",
+    ].join("\n"),
+  );
   process.exit(0);
 }
 
@@ -190,17 +216,7 @@ function handle(msg: any) {
         process.exit(3);
       }
       const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
-      result(msg.id, {
-        protocolVersion: 1,
-        authMethods,
-        // The spec makes image content conditional on this advertisement, so
-        // the default is an agent that never announced it — the shape most
-        // ACP CLIs still have.
-        ...(process.env.FAKE_ACP_IMAGE_PROMPT
-          ? { agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true } } }
-          : {}),
-        _meta: { modelState: { currentModelId: "fake-acp-model" } },
-      });
+      result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
       break;
     }
     case "authenticate":
@@ -216,6 +232,10 @@ function handle(msg: any) {
         break;
       }
       const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
+      if (process.env.FAKE_ACP_DUMP) {
+        dumpState.mcpServers = servers;
+        writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
+      }
       agentsMcp = servers.find((s: any) => s?.name === "agents") ?? null;
       if (process.env.FAKE_ACP_DUMP) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.mcp.json`, JSON.stringify(servers, null, 2));
@@ -273,11 +293,6 @@ function handle(msg: any) {
       break;
     }
     case "session/prompt": {
-      // recorded like session/new's mcpServers, so a test can assert exactly
-      // which content blocks a turn was sent
-      if (process.env.FAKE_ACP_DUMP) {
-        writeFileSync(`${process.env.FAKE_ACP_DUMP}.prompt.json`, JSON.stringify(msg.params ?? null, null, 2));
-      }
       if (mode === "hang") {
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);

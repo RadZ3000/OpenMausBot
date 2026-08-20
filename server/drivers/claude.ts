@@ -14,7 +14,7 @@ import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
-import { DATA_DIR } from "../config.ts";
+import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 
@@ -33,8 +33,6 @@ import { newEventId, newId } from "../contracts.ts";
 import { applyClaudeInject, mergeLocalInject } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
-import { filesOf, imagesOf, inlineImage, withAttachmentText } from "../turn-attachments.ts";
-
 /** Whether `claude` has been signed in.
  *
  * Credential storage is deliberately not inspected here. Claude Code uses the
@@ -75,6 +73,9 @@ function claudeEnvironment(
   const env: NodeJS.ProcessEnv = { ...source, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
+  // The harness process may hold workspace credentials (xai/box/voice keys,
+  // env-injected at boot); none of them are this CLI's to see.
+  stripWorkspaceCredentialEnv(env);
   const applied = applyClaudeInject(env, model);
   if (!applied.injected) delete env.ANTHROPIC_API_KEY;
   return env;
@@ -379,6 +380,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+      const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
+      if (controlsHost && config.permissionMode === "bypassPermissions") {
+        throw new Error("local computer control requires the interactive approval broker");
+      }
       const turnId = newId();
       const sessionId = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
       const newSessionId = sessionId ? null : newId();
@@ -417,11 +422,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         };
         allowed.push("mcp__computer");
       } else if (turn.integrations?.localComputer) {
-        // A direct Cua Driver MCP connection. This can be the Electron-owned
-        // host daemon or the isolated Local VM; the agent sees the same
-        // "computer" server either way.
-        mcpServers.computer = { ...turn.integrations.localComputer };
-        allowed.push("mcp__computer");
+        const local = turn.integrations.localComputer;
+        mcpServers.computer = {
+          command: local.command,
+          args: local.args,
+          env: local.env,
+        };
+        // The isolated Local VM preserves the established pre-allow behavior.
+        // Host tools always route through OpenMausBot's permission broker.
+        if (!controlsHost) allowed.push("mcp__computer");
       }
       // peer-agent comms (list_bots/ask_bot) — the harness builds the whole
       // spawn contract (command/args/env incl. the boot token) in
@@ -468,6 +477,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               requestType: ask.kind,
               tool: ask.tool,
               summary: askSummary(ask),
+              approvalScope: controlsHost ? "local-computer" : undefined,
               choices: Array.isArray(ask.input?.choices) ? (ask.input.choices as string[]).slice(0, 5) : undefined,
             }),
           onResolve: (resolved) =>
@@ -477,6 +487,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               requestId: resolved.id,
               behavior: resolved.behavior,
               source: resolved.source,
+              approvalScope: controlsHost ? "local-computer" : undefined,
             }),
         });
         args.push("--permission-prompt-tool", "mcp__ogb__approve");
@@ -654,20 +665,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
       // prompt over stdin as a stream-json message — never argv (ARG_MAX)
-      //
-      // `content` stays a plain string unless something is actually attached:
-      // the block form is the Anthropic Messages shape and is what carries an
-      // image, but a turn with no picture should send exactly what it always
-      // sent rather than a newly-shaped payload nobody asked for.
-      const promptText = withAttachmentText(turn.text, filesOf(turn.attachments));
-      const images = imagesOf(turn.attachments).flatMap((a) => {
-        const inlined = inlineImage(a);
-        return inlined
-          ? [{ type: "image", source: { type: "base64", media_type: inlined.mime, data: inlined.data } }]
-          : [];
-      });
-      const content = images.length ? [{ type: "text", text: promptText }, ...images] : promptText;
-      const promptMsg = { type: "user", message: { role: "user", content } };
+      const promptMsg = { type: "user", message: { role: "user", content: turn.text } };
       child.stdin.write(JSON.stringify(promptMsg) + "\n");
       child.stdin.end();
       appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: promptMsg });
@@ -709,8 +707,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           composioMcp: true,
           phoneMcp: true,
           imageGenMcp: true,
-          imageInput: true,
+          images: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],
+          localComputerMcp: config.permissionMode !== "bypassPermissions",
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),
@@ -737,7 +736,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           execCli(
             config.cli,
             ["-p", prompt, "--model", "claude-haiku-4-5", "--output-format", "text"],
-            { timeout: 60_000, env: { ...process.env, PATH: augmentedPath() } },
+            { timeout: 60_000, env: claudeEnvironment("claude-haiku-4-5") },
             (err, stdout) => (err ? reject(err) : resolve(stdout.trim())),
           );
         }),

@@ -48,6 +48,8 @@ export interface OptionCardData {
   held?: string;
   /** the narrow grant "always allow" remembers, e.g. "Bash:git" */
   allowKey?: string;
+  /** Local actions never share remembered grants with cloud/tool approvals. */
+  approvalScope?: "local-computer";
 }
 
 export interface ConnectorCardData {
@@ -61,17 +63,6 @@ export interface ConnectorCardData {
   error?: string;
   dismissed?: boolean;
   resumed?: boolean;
-}
-
-/** A file the user attached, as the transcript sees it. The bytes live on
- * disk and the path stays server-side (see server/attachments.ts) — a
- * message travels to every client, and the path is a driver's input. */
-export interface MessageAttachment {
-  id: string;
-  name: string;
-  mime: string;
-  size: number;
-  kind: "image" | "file";
 }
 
 export interface Message {
@@ -94,10 +85,6 @@ export interface Message {
   mime?: string;
   /** image messages: where the file was written, so the user can open it. */
   path?: string;
-  /** what the user attached to this message. Kept on a `text` message rather
-   * than given a kind of its own: a new kind would decode as `.unknown` on
-   * the iOS companion and lose the text with it. */
-  attachments?: MessageAttachment[];
   at: number;
   /** the message this one follows; null = thread root. Edited messages
    * share a parentId with the version they replace — that's a fork. */
@@ -147,6 +134,9 @@ export interface GroupRecord {
    * turn that dispatches. null = each member's own default; absent = not
    * pinned yet. See pinGroupCwd for why it never moves. */
   pinnedCwd?: string | null;
+  /** the one message pinned to the top of this room's transcript. A pin id
+   * that no longer resolves (edited away, deleted) simply renders nothing. */
+  pinnedMessageId?: string;
 }
 
 /** One task = one conversation with its own context.
@@ -289,6 +279,11 @@ export interface BotRecord {
   rewound?: boolean;
   pinned?: boolean;
   hidden?: boolean;
+  /** Optional labeled divider used to organize this bot in the sidebar. */
+  section?: string;
+  /** the one message pinned to the top of this bot's active thread; a pin
+   * that no longer resolves (branch switched away, deleted) renders nothing */
+  pinnedMessageId?: string;
   /** The single workspace-wide coordinator. The store enforces that at
    * most one bot owns this role, even if an older/corrupt file says more. */
   chiefOfStaff?: boolean;

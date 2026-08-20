@@ -93,6 +93,33 @@ describe("ClaudeDriver.decodeConfig", () => {
     // it, Windows pipes for these two threads would collide and race
     expect(permissionSocketPath("t-perm-dup-1")).not.toBe(permissionSocketPath("t-perm-dup-2"));
   });
+
+  it("does not advertise or accept local CUA in bypassPermissions mode", async () => {
+    const bypass = await ClaudeDriver.create({
+      instanceId: "claude-bypass",
+      displayName: "Claude Bypass",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, permissionMode: "bypassPermissions" },
+    });
+    expect(bypass.adapter.capabilities.localComputerMcp).toBe(false);
+    await expect(
+      bypass.adapter.sendTurn({
+        threadId: "t-bypass-local",
+        text: "click",
+        integrations: {
+          localComputer: {
+            command: "/cua-driver",
+            args: ["mcp"],
+            env: {},
+            platform: "linux",
+            scope: "local-computer",
+          },
+        },
+      }),
+    ).rejects.toThrow(/interactive approval broker/);
+    await bypass.dispose();
+  });
 });
 
 describe("ClaudeDriver turns (fake CLI)", () => {
@@ -122,6 +149,11 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_MODE;
     delete process.env.FAKE_CLAUDE_DUMP;
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.COMPOSIO_API_KEY;
+    delete process.env.BOX_TOKEN;
+    delete process.env.OPENCODE_API_KEY;
+    delete process.env.OMB_TTS_KEY;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -178,6 +210,11 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
     process.env.ANTHROPIC_API_KEY = "sk-should-not-leak";
+    // workspace credentials the harness may hold (env-injected at boot by
+    // the desktop shell) must never ride into the CLI child
+    process.env.XAI_API_KEY = "xai-should-not-leak";
+    process.env.BOX_TOKEN = "box-should-not-leak";
+    process.env.OMB_TTS_KEY = "tts-should-not-leak";
 
     await instance.adapter.sendTurn({ threadId: "t-hygiene", text: "the secret prompt", system: "You are Testy." });
     await recorder.until((e) => e.type === "turn.completed");
@@ -190,6 +227,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(seen.env.CLAUDECODE).toBeUndefined();
     expect(seen.env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(seen.env.XAI_API_KEY).toBeUndefined();
+    expect(seen.env.BOX_TOKEN).toBeUndefined();
+    expect(seen.env.OMB_TTS_KEY).toBeUndefined();
   });
 
   it("uses instance credentials when launching an injected local model", async () => {
@@ -267,39 +307,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     // the key belongs in the private config file, never in a process listing
     expect(JSON.stringify(seen.argv)).not.toContain("image-secret");
     expect(seen.argv[seen.argv.indexOf("--allowedTools") + 1]).toContain("mcp__image");
-  });
-
-  it("sends an attached image as an Anthropic content block", async () => {
-    await create();
-    const dump = join(scratch, "attach.json");
-    process.env.FAKE_CLAUDE_DUMP = dump;
-    const image = join(scratch, "shot.png");
-    writeFileSync(image, Buffer.from([1, 2, 3, 4]));
-    expect(instance.adapter.capabilities.imageInput).toBe(true);
-
-    await instance.adapter.sendTurn({
-      threadId: "t-attach",
-      text: "what is this?",
-      attachments: [{ id: "a1", name: "shot.png", mime: "image/png", size: 4, path: image, kind: "image" }],
-    });
-    await recorder.until((e) => e.type === "turn.completed");
-
-    const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(seen.prompt.message.content).toEqual([
-      { type: "text", text: "what is this?" },
-      { type: "image", source: { type: "base64", media_type: "image/png", data: "AQIDBA==" } },
-    ]);
-  });
-
-  it("keeps content a plain string when nothing is attached", async () => {
-    await create();
-    const dump = join(scratch, "plain.json");
-    process.env.FAKE_CLAUDE_DUMP = dump;
-
-    await instance.adapter.sendTurn({ threadId: "t-plain", text: "hello" });
-    await recorder.until((e) => e.type === "turn.completed");
-
-    expect(JSON.parse(readFileSync(dump, "utf8")).prompt.message.content).toBe("hello");
   });
 
   it("mounts the dweb proxy from the drivers directory and pre-allows its tools", async () => {
@@ -386,6 +393,37 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(existsSync(dirname(configPath))).toBe(false);
   });
 
+  it("mounts local CUA without pre-allowing its computer namespace", async () => {
+    await create();
+    const dump = join(scratch, "local-dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await instance.adapter.sendTurn({
+      threadId: "t-local",
+      text: "inspect the desktop",
+      integrations: {
+        localComputer: {
+          command: "/opt/cua driver/cua-driver",
+          args: ["mcp", "--embedded", "--socket", "/run/user/1000/driver.sock"],
+          env: { CUA_DRIVER_EMBEDDED: "1" },
+          platform: "linux",
+          generation: "generation-1",
+          scope: "local-computer",
+        },
+      },
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.mcpConfig.mcpServers.computer).toEqual({
+      command: "/opt/cua driver/cua-driver",
+      args: ["mcp", "--embedded", "--socket", "/run/user/1000/driver.sock"],
+      env: { CUA_DRIVER_EMBEDDED: "1" },
+    });
+    const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
+    expect(allowed).not.toContain("mcp__computer");
+    expect(instance.adapter.capabilities.localComputerMcp).toBe(true);
+  });
+
   it("resumes with --resume when a cursor exists and reports that session id", async () => {
     await create();
     const dump = join(scratch, "dump.json");
@@ -455,7 +493,19 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("brokers a permission ask into request.opened and answers over the socket", async () => {
     await create("hang");
-    await instance.adapter.sendTurn({ threadId: "t-perm-abc", text: "go" });
+    await instance.adapter.sendTurn({
+      threadId: "t-perm-abc",
+      text: "go",
+      integrations: {
+        localComputer: {
+          command: "/cua-driver",
+          args: ["mcp"],
+          env: {},
+          platform: "linux",
+          scope: "local-computer",
+        },
+      },
+    });
     await recorder.until((e) => e.type === "session.started");
 
     // connect as the MCP proxy would and raise an ask — unix socket on
@@ -481,13 +531,18 @@ describe("ClaudeDriver turns (fake CLI)", () => {
       tool: "Bash",
       summary: "rm -rf scratch",
       requestId: "ask-1",
+      approvalScope: "local-computer",
     });
 
     // the outcome names exactly what was granted: this action, once
     await expect(instance.adapter.respondToRequest("t-perm-abc", "ask-1", { behavior: "allow" })).resolves.toBe("allowed-once");
     expect(await answered).toMatchObject({ behavior: "allow" });
     const resolved = await recorder.until((e) => e.type === "request.resolved");
-    expect(resolved).toMatchObject({ behavior: "allow", source: "user" });
+    expect(resolved).toMatchObject({
+      behavior: "allow",
+      source: "user",
+      approvalScope: "local-computer",
+    });
 
     conn.end();
     await instance.adapter.interruptTurn("t-perm-abc");
@@ -673,6 +728,19 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.argv).not.toContain("--effort");
+  });
+
+  it("strips workspace credentials from generateText helper children", async () => {
+    await create();
+    const dump = join(scratch, "generate-text-env.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const names = ["XAI_API_KEY", "COMPOSIO_API_KEY", "BOX_TOKEN", "OPENCODE_API_KEY", "OMB_TTS_KEY"] as const;
+    for (const name of names) process.env[name] = `${name}-must-not-leak`;
+
+    await instance.generateText?.("summarize safely");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    for (const name of names) expect(seen.env[name]).toBeUndefined();
   });
 
   it("declares the effort levels the CLI accepts", async () => {

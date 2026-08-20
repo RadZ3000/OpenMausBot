@@ -8,15 +8,15 @@ import { join } from "node:path";
 import { NATIVE_DIR } from "../config.ts";
 import { redactSecrets } from "../redact.ts";
 
-/** Long enough for any protocol string worth diffing, short enough that an
- * attached image cannot turn this log into the biggest file in the profile. */
+/** Long enough for any protocol string worth diffing, short enough that a
+ * screenshot cannot turn this log into the biggest file in the profile. */
 const MAX_LOGGED_STRING = 4096;
 
-/** Verbatim, except for payloads that are bytes rather than protocol. An
- * inlined image is megabytes of base64 that says nothing about protocol
- * drift, and a turn that carries a few of them would otherwise write more to
- * this log than to the transcript. The shape is preserved so a diff still
- * lines up; only the middle of the value goes. */
+/** Verbatim, except for payloads that are bytes rather than protocol. A
+ * computer-use screenshot comes back as megabytes of base64 that say nothing
+ * about protocol drift, and a bot driving a desktop takes them continuously —
+ * unelided, this log outgrows the transcript it explains. The shape is
+ * preserved so a diff still lines up; only the middle of the value goes. */
 function elideBulk(value: unknown): unknown {
   if (typeof value === "string") {
     return value.length > MAX_LOGGED_STRING
