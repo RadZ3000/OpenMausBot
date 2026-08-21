@@ -194,25 +194,36 @@ on `machine init`. First-run now inits with `--memory 6144` and recreates
 an existing undersized guest (`machine rm --force` then init). Do not treat
 that skip string as "the laptop is too small."
 
-**Machine start failed on this box (2026-08-21, later the same day).** After
-the guest was correctly sized to 6 GiB, `podman machine start` still exited
-125 in ~38–48 s with Podman's
-`Error: machine did not transition into running state: ssh error: machine not in running state`.
-`podman info` then refused `127.0.0.1:63051`. Docker-API forwarding often
-printed `All pipe instances are busy` first; that is a warning. **Quitting
-Docker Desktop did not make start succeed.**
+**Machine start depends on the WSL kernel, not on Docker or guest RAM.**
 
-Inside the guest, Podman's `/root/bootstrap` nested systemd
-(`unshare --kill-child --fork … /lib/systemd/systemd`) appears and dies in
-about a second; nothing listens on the SSH port. Writing `[boot] systemd=true`
-into the distro then terminating it yielded `Wsl/Service/E_UNEXPECTED` until
-`podman machine rm --force` and re-init.
+On **WSL 2.2.4 / kernel 5.15** (this box, earlier 2026-08-21), after the guest
+was sized to 6 GiB, `podman machine start` exited 125 in ~38–48 s:
 
-This mixed-dev box was **WSL 2.2.4 / kernel 5.15** for those probes, then
-`wsl --update` to **2.7.12 / kernel 6.18** (start not re-measured). The Path A
-customer is still "no Docker, current WSL". Do not encode Docker-kill, guest
-`systemd=true`, or `wsl --update` into the installer. Skip with the `Error:`
-line; Continue is never gated on the VM.
+```
+Error: machine did not transition into running state: ssh error: machine not in running state
+```
+
+`podman info` then refused the SSH port. Docker-API forwarding often printed
+`All pipe instances are busy` first; that is a warning. **Quitting Docker
+Desktop did not make start succeed.** Inside the guest, Podman's
+`/root/bootstrap` nested systemd (`unshare --kill-child --fork …
+/lib/systemd/systemd`) appeared and died in about a second; nothing listened
+on SSH. Writing `[boot] systemd=true` then `wsl --terminate` yielded
+`Wsl/Service/E_UNEXPECTED` until `podman machine rm --force` and re-init.
+
+On **WSL 2.7.12.0 / kernel 6.18.33.2-2** (same box, after `wsl --update`,
+stock guest, no `systemd=true`, Docker Desktop still Stopped): nested
+`/lib/systemd/systemd` was still alive three seconds after bootstrap. Cold
+`machine stop` then `machine start` exited **0 in ~10 s** ("started
+successfully"). `podman info` reported the remote socket; `podman run --rm
+quay.io/podman/hello` printed Hello Podman World. A leftover bootstrap from a
+manual probe made a later `machine start` exit 125 with `already running`
+while the client still worked — inspect-then-start in Path A skips start when
+State is already `running`.
+
+Do not encode Docker-kill, guest `systemd=true`, or `wsl --update` into the
+installer. Old in-box WSL 2.2.x still skip with Podman's `Error:` line;
+Continue is never gated on the VM. Current Store WSL is enough for start.
 
 Walk log: [`2026-08-21-005-path-a-live-walk.md`](2026-08-21-005-path-a-live-walk.md).
 
@@ -223,9 +234,8 @@ and PATH scan are all load-bearing.
 Still unmeasured, and still load-bearing for putting this on Path A:
 
 - Granite resident + this VM on a **16 GB** machine.
-- `POST /api/local-computer/pull` wall-clock for layer **v4** (v3 is already
-  on disk).
-- Whether Hermes + Granite issues a computer-use tool call (B-24).
+- Whether Hermes + Granite issues a computer-use tool call (B-24). The Cua
+  layer **v4** pull/build on this box was **~218 s**, then `run` ~9 s.
 
 ## Explicitly out of scope until someone argues otherwise
 

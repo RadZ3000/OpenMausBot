@@ -77,37 +77,56 @@ Podman 6.0.2 per-user MSI, provider WSL, machine `podman-machine-default`.
 `--memory 6144` and recreates an undersized guest. That recreate **worked**
 (inspect: 6144 MiB).
 
-**Start.** `podman machine start` exits 125 after ~38–48 s:
+**Start on WSL 2.2.4 / kernel 5.15.** `podman machine start` exited 125 after
+~38–48 s:
 
 ```
 Error: machine did not transition into running state: ssh error: machine not in running state
 ```
 
 Often preceded by Docker-API forwarding noise (`CreateFile \\.\pipe\…: All
-pipe instances are busy`). `podman info` then fails with
-`dial tcp 127.0.0.1:63051: connection refused`.
+pipe instances are busy`). `podman info` then failed with
+`dial tcp 127.0.0.1:<ssh>: connection refused`. Quitting Docker Desktop
+(`DockerCli.exe -Shutdown`) **did not** make start succeed. Nested systemd
+from Podman's `/root/bootstrap` appeared for about a second and died.
 
-Quitting Docker Desktop (`DockerCli.exe -Shutdown`) **did not** make start
-succeed. Nested systemd from Podman's `/root/bootstrap`
-(`unshare --kill-child --fork … /lib/systemd/systemd`) appears for about a
-second and dies; `sshd` never listens on 63051. Writing `[boot] systemd=true`
-into the guest `/etc/wsl.conf` then `wsl --terminate` produced
-`Wsl/Service/E_UNEXPECTED` (distro unusable until `podman machine rm --force`
-and re-init).
+Writing `[boot] systemd=true` then `wsl --terminate` produced
+`Wsl/Service/E_UNEXPECTED` on that kernel (distro unusable until
+`podman machine rm --force` and re-init). **Do not** put Docker-kill, guest
+`systemd=true`, `wsl --update`, or linger/`sshd` outside Podman's bootstrap
+into Path A.
 
-**Do not** put any of these in Path A: kill Docker, write guest `systemd=true`,
-`wsl --update`, linger/`sshd` outside Podman's bootstrap. Fail open with the
-`Error:` line; chat still works.
+**Start on WSL 2.7.12.0 / kernel 6.18.33.2-2 (re-probed 2026-08-21 evening).**
+Dropped the experimental guest (`machine rm --force`), inited
+`--provider wsl --memory 6144` (42 s, image already cached). Stock
+`/etc/wsl.conf` is only `[user] default=user`. Nested `/lib/systemd/systemd`
+was still running three seconds after `/root/bootstrap`. Cold `machine stop`
+(~6 s) then `machine start` exited **0 in ~10 s**. `podman info` and
+`podman run --rm quay.io/podman/hello` both succeeded. Docker Desktop distro
+was Stopped; no `systemd=true`.
 
-This box started the walk on **WSL 2.2.4 / kernel 5.15**. After the failures,
-`wsl --update` exited 0 to **WSL 2.7.12.0 / kernel 6.18.33.2-2**. Start was
-**not** re-probed after that update. If this machine is reused: assume the
-guest may still have `systemd=true` (broken); `podman machine rm --force` then
-`machine init --provider wsl --memory 6144`. A clean customer box with current
-WSL and no Docker is still the Path A target, and is still unmeasured for
-`machine start`.
+Native `systemd=true` on 2.7 did boot `sshd` and made `podman info` work, but
+`machine start` still exited 125 (`machine not in running state` / later
+`already running`) because Podman's isRunning grep wants
+`^/lib/systemd/systemd`, not pid 1 `/sbin/init`. Do not ship that write;
+stock nested bootstrap is the customer path and it works on current WSL.
 
-Cua image pull / `POST /api/local-computer/run` were not reached.
+`POST /api/local-model/vm` on the throwaway harness (2026-08-21 evening):
+inspect already `running` → **Podman is ready** (did not call `machine start`).
+An overlapping POST saw `Another Local VM setup action is still running` while
+the first request pulled `trycua/xfce-cua` and built
+`localhost/openmausbot/cua-local-vm:driver-0.20.0-v4`. That first request
+finished in **230 s**: Preparing 2.2 s → 220.7 s, then Starting the Local VM
+→ **Local VM is ready** (`vm: true`) at 229.7 s. A later POST with the image
+already present returned ready in ~15 s. Viewer
+`http://127.0.0.1:6080/vnc.html`. Workspace
+`%TEMP%\omb-b24-home\vm-home`.
+
+**Follow-up, not a 5-minute patch:** if inspect says stopped but start exits
+125 (`already running` or `not in running state`), still try `podman info`.
+If info works, yield ready. We only saw `already running` after a leftover
+manual `/root/bootstrap`, not on a cold customer start (that exited 0). Do
+not add an inspect-vs-ps sync.
 
 ## 4. B-24 — next probe, not done
 
@@ -126,16 +145,19 @@ That is hypothesis 1 in plan 004. Do not use real `~/.openmausbot`. Do not
 mock `child_process`.
 
 Windows one-bot Path A is B-24**(b)** (`mcpServers: []`, hang in file-tools
-sandbox). **(a)** needs a second bot, Composio, or a working Local VM.
+sandbox). **(a)** needs a second bot, Composio, or a working Local VM — the
+shared Cua VM is now up on this throwaway home, so (a) is reachable if the
+bot's `computer` is `vm`.
 
 ## 5. Next steps, in order, on another system
 
 1. **B-24(b) one-bot turn** as above. That is the live question.
 2. Packaged NSIS + B-15 only if that machine can download electron-builder
    binaries. Not required to settle B-24.
-3. Local VM `machine start` only on a box without Docker, preferably current
-   WSL. Do not copy this PC's guest `wsl.conf`. Do not treat a skip as "not
-   enough RAM".
+3. Local VM is settled on this box for current Store WSL (2.7.x): stock
+   guest, `machine start`, Cua layer v4 pull/build (~3.5 min), `run`. Old
+   2.2.x still skip with the CLI `Error:` line. Do not copy a guest
+   `wsl.conf`. Do not treat a skip as "not enough RAM".
 4. Optional product holes **not** blocking B-24: set `OLLAMA_HOST` when we
    spawn owned Ollama; poll Path A status while Hermes installs; Granite pull
    NDJSON client timeout vs server finish.

@@ -97,9 +97,11 @@ removed and re-inited. Never Docker Desktop. Call those routes from
 
 A 3B model may drive the desktop poorly — that is copy, not a reason to skip
 the sandbox. 16 GB + Granite + VM is still unmeasured. Docker Desktop
-coexistence is a support trap, not the customer path: on this mixed-dev box
-`machine start` failed because the guest nested systemd died, not because the
-host was short of RAM, and quitting Docker did not fix it. Details in
+coexistence is a support trap, not the customer path. On this mixed-dev box
+`machine start` failed under **WSL 2.2.4 / kernel 5.15** because Podman's
+nested systemd died (quitting Docker did not fix it). The same stock 6 GiB
+guest **started in ~10 s** on **WSL 2.7.12 / kernel 6.18**, and
+`podman run --rm quay.io/podman/hello` worked. Details in
 [plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md)
 and the live walk
 [plan 2026-08-21-005](plans/2026-08-21-005-path-a-live-walk.md).
