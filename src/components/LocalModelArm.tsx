@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 // Path A of the first-run chooser: an open-weights model on this machine.
 //
-// Three things have to be true: Ollama running, Granite pulled, Hermes
-// installed. The model download and the Hermes install both happen here —
-// Qwen Code used to be the "light" CLI on the next screen, and it cannot
-// complete a local turn.
+// Chat needs Ollama, Granite, and Hermes. The Local VM (Cua desktop in
+// Podman) is offered on this arm too, but Continue is never gated on it.
 //
 // See docs/plans/2026-08-20-005-three-path-first-run-plan.md.
 
@@ -17,6 +15,19 @@ interface LocalModelStatus {
   runtimeUp: boolean;
   modelReady: boolean;
   agentInstanceId: string;
+  wslReady: boolean;
+  vmReady: boolean;
+  vmProblem: string | null;
+}
+
+interface NdjsonEvent {
+  status?: string;
+  fraction?: number | null;
+  error?: string;
+  done?: boolean;
+  skip?: boolean;
+  reason?: string;
+  vm?: boolean;
 }
 
 interface Progress {
@@ -42,6 +53,7 @@ function Checklist({ status }: { status: LocalModelStatus }) {
     { done: status.runtimeUp, label: "Ollama running" },
     { done: status.modelReady, label: `Model ${status.model}` },
     { done: Boolean(status.agentInstanceId), label: "Hermes agent" },
+    { done: status.vmReady, label: status.vmReady ? "Local computer" : "Local computer (optional)" },
   ];
   return (
     <ul className="mt-4 w-full space-y-1.5 text-left text-[13px]">
@@ -57,12 +69,13 @@ function Checklist({ status }: { status: LocalModelStatus }) {
 
 async function readNdjson(
   response: Response,
-  onEvent: (event: { status?: string; fraction?: number | null; error?: string }) => void,
-): Promise<void> {
+  onEvent: (event: NdjsonEvent) => void,
+): Promise<NdjsonEvent | undefined> {
   if (!response.ok || !response.body) throw new Error("The request could not be started.");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let last: NdjsonEvent | undefined;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -71,19 +84,23 @@ async function readNdjson(
     buffer = parts.pop() ?? "";
     for (const part of parts) {
       if (!part.trim()) continue;
-      const event: { status?: string; fraction?: number | null; error?: string } = JSON.parse(part);
+      const event: NdjsonEvent = JSON.parse(part);
       if (event.error) throw new Error(event.error);
+      last = event;
       onEvent(event);
     }
   }
+  return last;
 }
 
 export function LocalModelArm({ onReady }: { onReady: () => void }) {
   const [status, setStatus] = useState<LocalModelStatus | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const vmKickoff = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -133,6 +150,56 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
       setProgress(null);
     }
   };
+
+  const setupVm = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    setProgress({ label: "Setting up the Local computer…", fraction: null });
+    try {
+      const response = await fetch("/api/local-model/vm", { method: "POST" });
+      const last = await readNdjson(response, (event) => {
+        if (event.status) setProgress({ label: event.status, fraction: null });
+      });
+      if (last?.skip) {
+        setNotice(last.status ?? "The Local computer could not start. You can still chat.");
+      }
+      await refresh();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "The Local computer could not start. You can still chat.");
+    } finally {
+      setProgress(null);
+    }
+  }, [refresh]);
+
+  const installWsl = async () => {
+    setError(null);
+    setNotice(null);
+    setProgress({ label: "Installing WSL…", fraction: null });
+    try {
+      const response = await fetch("/api/local-model/wsl", { method: "POST" });
+      const last = await readNdjson(response, (event) => {
+        if (event.status) setProgress({ label: event.status, fraction: null });
+      });
+      if (last?.skip) {
+        setNotice(last.status ?? "WSL did not finish. You can still chat.");
+      } else {
+        vmKickoff.current = false;
+      }
+      await refresh();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "WSL did not finish. You can still chat.");
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!status?.runtimeUp || !status.modelReady || !status.agentInstanceId) return;
+    if (status.vmReady || !status.wslReady || progress) return;
+    if (vmKickoff.current) return;
+    vmKickoff.current = true;
+    void setupVm();
+  }, [status, progress, setupVm]);
 
   const remove = async () => {
     setRemoving(true);
@@ -236,7 +303,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
         <p className="mt-4 text-center text-[12px] leading-snug text-ink-secondary">
           {status.tier === "tight"
             ? "This computer can run a model, but only a small one, and answers will take minutes rather than seconds. "
-            : "A model this size is noticeably weaker at long multi-step tool work than a hosted one, and it can’t drive a computer. "}
+            : "A model this size is noticeably weaker at long multi-step tool work than a hosted one. "}
           You can switch a bot to another model at any time.
         </p>
       </>
@@ -275,7 +342,34 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
       <Checklist status={status} />
       <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
         <span className="text-ink">{status.model}</span> and Hermes are ready on this machine.
+        {status.vmReady
+          ? " A Linux computer is running in the background for desktop work."
+          : " Chat works now. A Linux computer can start in the background if this machine allows it."}
       </p>
+      {progress && (
+        <>
+          <ProgressBar fraction={progress.fraction} />
+          <div className="mt-2 max-h-24 overflow-y-auto text-[12.5px] text-ink-secondary">{progress.label}</div>
+        </>
+      )}
+      {!status.wslReady && !progress && (
+        <button
+          type="button"
+          onClick={() => void installWsl()}
+          className="mt-5 w-full rounded-lg bg-inset py-2.5 text-[15px] font-medium text-ink"
+        >
+          Install WSL (asks for administrator once)
+        </button>
+      )}
+      {status.wslReady && !status.vmReady && !progress && (
+        <button
+          type="button"
+          onClick={() => void setupVm()}
+          className="mt-5 w-full rounded-lg bg-inset py-2.5 text-[15px] font-medium text-ink"
+        >
+          Set up the Local computer
+        </button>
+      )}
       <button
         type="button"
         onClick={onReady}
@@ -283,6 +377,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
       >
         Continue
       </button>
+      {notice && <div className="mt-2 w-full text-[12.5px] leading-snug text-ink-secondary">{notice}</div>}
       {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
       {confirming ? (
         <div className="mt-4 w-full rounded-xl bg-card p-3">

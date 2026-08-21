@@ -210,8 +210,9 @@ dedicated VRAM. 3–4B is the floor for an unknown machine.
 
 This is an agent harness doing multi-step tool calls, the hardest workload for a
 small model, and single-call tool accuracy compounds badly across a twenty-step
-task. The arm should say so rather than let someone discover it, and it should
-not offer computer control.
+task. The arm should say so rather than let someone discover it. It **does**
+offer computer control: the Local VM is part of the Path A checklist
+(Podman, not Docker). Chat continues if that step fails.
 
 ### Reducing the footprint: every lever, ranked
 

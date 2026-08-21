@@ -1,11 +1,10 @@
 # Local-path Local VM: considerations, not a spec
 
-Status: **open**. Written 2026-08-21 so the next pass on "run a model on this
-computer" does not have to reconstruct the conversation. This is a research
-note. It does not authorise implementation, and it does not override plan
-[003](2026-08-20-003-product-foundation-plan.md) or
-[005](2026-08-20-005-three-path-first-run-plan.md) until someone re-opens those
-with evidence.
+Status: **decided, first cut in tree.** Written 2026-08-21 as research; the two product
+lines were settled the same day: Path A **offers computer control out of the box**,
+and **chat still works if the VM step fails**. Code: `server/podman-setup.ts`,
+`GET`/`POST /api/local-model/{vm,wsl}`, and a fourth row on
+`src/components/LocalModelArm.tsx`. This file keeps the measurements.
 
 The standing register is [`docs/local-model-path.md`](../local-model-path.md).
 Defects stay in [`docs/known-bugs.md`](../known-bugs.md).
@@ -13,8 +12,12 @@ Defects stay in [`docs/known-bugs.md`](../known-bugs.md).
 ## check-upstream-first
 
 Required because a plan in `docs/plans/` is exactly when the skill applies.
+**Re-fetch `upstream/main` before every implementation pass on this arm**, not
+only when the plan was written — they ship into `container-computer.ts`,
+Settings Local VM, and onboarding while we work.
 
-- Fetched `upstream/main` on 2026-08-21; this branch was **0 commits behind**.
+- Fetched `upstream/main` 2026-08-21 (morning and again before this pass);
+  this branch was **0 commits behind** both times.
 - Upstream **already has** the Local VM: `server/local-computer.ts`,
   `server/container-computer.ts`, `src/components/LocalComputerSection.tsx`,
   `src/lib/local-computer.ts`, Settings → Local VM, and
@@ -84,10 +87,13 @@ Treat these as questions with a preferred guess, not as requirements.
    fit a nominal 16 GB laptop that `machine.ts` currently calls `comfortable`.
    The `tight` tier might skip or warn. **Unknown until measured** with both
    resident.
-4. **Podman.** We should not bundle a hypervisor in NSIS. Whether `winget` via
-   argv (no `shell: true`) is unelevated, reliable, and acceptable for a sold
-   product is untested. A "Get Podman" link, like Get Ollama, may be the honest
-   v1.
+4. **Podman.** Do not depend on Docker Desktop, and do not send a layperson to
+   install it. A one-time UAC is acceptable if WSL is missing (`wsl --install`).
+   The CLI itself installs per-user with no admin. Fetch the checksum-pinned MSI
+   and `msiexec` with argv (`MSIINSTALLPERUSER=1 MACHINE_PROVIDER=wsl`) rather
+   than a "Get Podman" clipboard command. Then `machine init`, raise the default
+   **2 GiB** guest above our 4 GB container cap, and `machine start`. See the
+   Podman probe below.
 5. **Bot default.** If the VM is ready, pointing the starter bot at
    `computer: "vm"` (Computer panel's Local VM destination, not host `local`
    CUA) would stop dumping people into Settings. Only makes sense if the engine
@@ -102,8 +108,8 @@ On a machine that has just done a scratch install of the Hermes/Granite arm
 
 - Free RAM before and after Granite is loaded, then after `podman machine start`
   and after the Cua container is `running`.
-- Whether Podman CLI installs per-user on Windows 11 without admin, and whether
-  `podman machine` then needs a reboot / WSL.
+- Whether `podman machine start` succeeds on a machine **without** Docker
+  Desktop (this box failed to start while Desktop was running).
 - Wall-clock and failure modes of `POST /api/local-computer/pull` and `run`.
 - Whether Hermes + Granite issues *any* computer-use tool call when the VM is
   attached (B-24 and MCP attachment are still open; a VM that never gets a tool
@@ -113,6 +119,96 @@ On a machine that has just done a scratch install of the Hermes/Granite arm
 
 If those numbers kill the idea, record that in `local-model-path.md` as
 **Decided (not on this arm)** rather than leaving this file to age into a spec.
+
+## Measured 2026-08-21 — this Windows box, not the Granite machine
+
+Not the scratch Hermes/Granite install the list above asked for. Windows 11
+Home, **47.8 GB** RAM, **~21 GB** free on `C:`, WSL2 present (`docker-desktop`
+distro). Docker Desktop **is** (`docker` 26.1.4 at
+`C:\Program Files\Docker\Docker`), daemon was down until `Docker Desktop.exe`
+was launched; `docker info` then succeeded in under a second. The Linux VM
+reports 6 CPUs / ~23 GB. Host `vmmemWSL` sat around **3.3 GB** with Docker's
+other compose stack (`eigent_*`) already auto-started — launching Desktop is
+not a quiet probe on this machine.
+
+A Local VM **already existed** from an earlier session:
+
+- Image `localhost/openmausbot/cua-local-vm:driver-0.20.0-v3` (1.45 GB).
+  Current code pins `IMAGE_LAYER_VERSION = "4"`, so today's app would treat
+  this as stale and ask to recreate.
+- Base `trycua/xfce-cua` uncompressed **1.32 GB**; Hub lists the pinned
+  digest `sha256:274eb636…` (same as `0.1.0` / `latest`) at **~472 MB**
+  compressed for amd64.
+- Container `openmausbot-computer`, 4 GB / 2 CPU cap, viewer `127.0.0.1:6080`,
+  workspace `~\.openmausbot\vm-home`. It had `Exited (255)` from Docker
+  Desktop shutting down.
+
+`docker start openmausbot-computer` returned in **0.7 s**. After ~8 s: VNC
+`/vnc.html` **HTTP 200**, `cua-driver 0.20.0`, health report **`overall: ok`**
+(X11, AT-SPI, screen capture all pass). Resident memory inside the cap was
+**~270 MB / 4 GiB**. Host free RAM moved by a few hundred MB; `vmmemWSL`
+grew ~340 MB. The 4 GB figure is a cgroup limit, not 4 GB extra on the
+laptop. `docker stop` then exited 0.
+
+So on Docker, **resume after a host daemon restart worked**. That contradicts
+the API's blanket `POST /start` → 409 ("cannot safely resume; remove and
+recreate"). Settings already folds a stopped container into **needsRecreate**,
+so the "Start Local VM" button is unreachable; [B-06](../known-bugs.md) is
+now "dead button + policy that this host did not need."
+
+### Podman 6.0.2 — installed on this box, 2026-08-21
+
+Primary sources: Podman's
+[Windows tutorial](https://github.com/containers/podman/blob/main/docs/tutorials/podman-for-windows.md)
+and [build_windows.md](https://github.com/containers/podman/blob/main/build_windows.md)
+(user-scope MSI is the default; `MSIINSTALLPERUSER=1` needs no admin;
+`ALLUSERS=1` does). Hyper-V is **not** on Windows Home; WSL is the only
+provider on this SKU. The installer **no longer installs WSL**;
+`wsl --install` is the admin-shaped step, and only when WSL is absent. This
+box already had WSL2.
+
+**CLI install, no UAC.** Downloaded
+`podman-installer-windows-amd64.msi` v6.0.2 (27,381,760 bytes, SHA-256
+`c0940598…79396f` matching `winget show Podman.CLI`). Ran
+`msiexec /i … /quiet /norestart MSIINSTALLPERUSER=1 MACHINE_PROVIDER=wsl`.
+Exit 0 in ~26 s. `podman.exe` at
+`%LOCALAPPDATA%\Programs\Podman\podman.exe` (client 6.0.2). User PATH gained
+that directory. `%APPDATA%\containers\containers.conf.d\99-podman-machine-provider.conf`
+contains `provider="wsl"`. No reboot.
+
+**`windowsKnownDirs()` does not list that folder.** A GUI app started before
+the MSI will not see `podman` until restart, same class as [B-12](../known-bugs.md).
+If we install Podman in-app, scan `%LOCALAPPDATA%\Programs\Podman` the way we
+already scan Hermes.
+
+**Machine init, no admin.** `podman machine init --provider wsl` completed in
+**167 s**, pulled `quay.io/podman/machine-os:6.0`, registered WSL distro
+`podman-machine-default`. Defaults: **3 CPUs, 2 GiB RAM, 100 GiB disk**
+(sparse). Our Cua container is `--memory 4g`. A default machine cannot host
+it; first-run must `podman machine set --memory` (at least 4096, likely more
+once Granite is resident) **before** `run`.
+
+**Machine start failed on this box.** Two attempts, ~38 s, exit 125:
+`CreateFile \\.\pipe\podman-machine-default: All pipe instances are busy`
+(Docker-API forwarding; Desktop was running) and then
+`ssh error: machine not in running state` / `127.0.0.1:58980` refused.
+`wsl -d podman-machine-default -- echo wsl-ok` worked and listed the distro
+**Running**, but the Podman client still could not open a session. Same
+failure class as Podman issues about Docker Desktop occupying the
+compatibility pipe. **Not measured:** start on a machine with no Docker.
+That is the Path A customer. Do not treat this mixed-dev box as the
+layperson result.
+
+Settings today only copies `winget install -e --id Podman.CLI`. That is not
+enough: WSL, silent MSI + provider, `machine init`, memory, `machine start`,
+and PATH scan are all load-bearing.
+
+Still unmeasured, and still load-bearing for putting this on Path A:
+
+- Granite resident + this VM on a **16 GB** machine.
+- `POST /api/local-computer/pull` wall-clock for layer **v4** (v3 is already
+  on disk).
+- Whether Hermes + Granite issues a computer-use tool call (B-24).
 
 ## Explicitly out of scope until someone argues otherwise
 

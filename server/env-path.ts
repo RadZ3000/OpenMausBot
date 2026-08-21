@@ -65,6 +65,7 @@ function windowsKnownDirs(): string[] {
     join(localAppData, "agy", "bin"), // Antigravity installer
     join(localAppData, "hermes", "hermes-agent", "bin"), // Hermes installer (0.20+)
     join(localAppData, "hermes", "bin"), // older Hermes shim layout
+    join(localAppData, "Programs", "Podman"), // per-user Podman.CLI MSI
     join(home, ".local", "bin"), // claude native installer
     join(home, ".claude", "local"),
     join(home, "bin"), // Factory droid installer (%USERPROFILE%\bin)

@@ -80,32 +80,25 @@ will never use. Unavoidable while VRAM stays unreadable — see the GPU entry.
 **Build order:** CLI first (smallest, unblocked, retires three bugs), then
 runtime ownership, then the checklist rework in [B-11](known-bugs.md).
 As of 2026-08-21 the arm installs Hermes in-app (not bundled) and shows the
-three-row checklist; the CLI-bundle vs fetch question is not reopened here.
+three-row checklist plus an optional Local computer row; the CLI-bundle vs fetch question is not reopened here.
 
-### Local VM on this arm — **Open** (research, not a spec)
+### Local VM on this arm — **Decided**
 
-Recorded 2026-08-21 after the Hermes/Granite first-run landed, before anyone
-had walked a scratch reinstall of that installer. **Nothing below is decided.**
-The working notes, including what to measure, live in
+Path A **offers computer control out of the box** (the OpenMausBot Cua Local
+VM, not Hermes' own CUA). Chat **still works** if WSL, Podman, `machine start`,
+or the image pull fails — Continue is never gated on the VM.
+
+Windows first-run: WSL if missing (one UAC), checksum-pinned per-user Podman
+MSI, `machine init`, raise guest RAM above the 4 GB container cap, `machine
+start`, then existing `POST /api/local-computer/pull` and `run`. Never Docker
+Desktop. Call those routes from `LocalModelArm.tsx` (ours); do not fork
+upstream Settings cards.
+
+A 3B model may drive the desktop poorly — that is copy, not a reason to skip
+the sandbox. 16 GB + Granite + VM is still unmeasured. Docker Desktop
+coexistence (`machine start` pipe/SSH failure) is a support trap, not the
+customer path. Details in
 [plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md).
-
-The product question is whether "run a model on this computer" should also
-stand up OpenMausBot's Cua Linux sandbox (Settings → Local VM), which is a
-different stack from Hermes' own computer-use tools. Plan
-[003](plans/2026-08-20-003-product-foundation-plan.md) and
-[005](plans/2026-08-20-005-three-path-first-run-plan.md) currently say this
-arm should **not** offer computer control, because a 3B local model is a weak
-driver for long tool loops. Including the VM anyway may still be right if the
-promise is "this machine can host a desktop," not "Granite will use it well."
-That tension is the thing to research, not to paper over.
-
-Upstream already owns the VM (`server/container-computer.ts`,
-`src/components/LocalComputerSection.tsx`, `/api/local-computer/*`). A first-run
-implementation would call those routes from `LocalModelArm.tsx` (ours) rather
-than nesting their Settings cards. Podman/WSL is the Ollama of this layer: we
-do not yet know whether we can install it unelevated, how much RAM a 16 GB
-laptop has left after Granite, or whether `pull`/`run` belong before or after
-the first successful chat. Measure on a clean Windows box before writing code.
 
 **Sequencing caveat:** [B-15](known-bugs.md) may outrank all of it. A setup flow
 does not help a customer whose machine refuses to install the app.
@@ -223,8 +216,10 @@ model tier.
 
 An agent makes many model calls per task, each re-reading a growing transcript,
 so latency multiplies by step count *and* worsens as the task runs. Never route
-Auto or computer control to a local model. Expose fewer tools to one: every tool
-schema is re-sent on every step, costing both speed and accuracy.
+Auto to a local model. Computer control on this path is the Local VM sandbox,
+not the host desktop; a 3B model may drive it poorly, which is copy, not a
+reason to skip the sandbox. Expose fewer tools to one: every tool schema is
+re-sent on every step, costing both speed and accuracy.
 
 ---
 
@@ -509,7 +504,5 @@ Alibaba's Qwen Code). **Do this before any bundling work starts**, not after.
 3. **16 GB threshold** — see above.
 4. **Delete semantics** — what happens to bots pointing at a removed model.
 5. **Which agent CLI to bundle**, once licences are checked.
-6. **Whether first-run should stand up the Local VM**, and on which machines —
-   see [plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md).
-   Open until a scratch install of the Hermes/Granite arm has been walked and
-   the RAM / Podman / quality questions below have actual numbers.
+6. **Local VM on first-run** — decided 2026-08-21: Path A stands it up;
+   chat still works if it fails. See the Local VM entry above.

@@ -182,10 +182,16 @@ persistable forms so the dangerous one cannot be saved by accident.
 
 ### B-06 · "Start Local VM" is offered but always rejected — `open`
 
-The UI offers Start for a stopped container while the API rejects `start` with
-409 (`setupCommands` returns `start: null`). Recorded in the product foundation
-plan's audit; worth fixing early because it sits directly on the only host-adjacent
-computer story Windows has.
+`POST /api/local-computer/start` always 409s ("cannot safely resume; remove and
+recreate"). `setupCommands()` returns `start: null`. Settings still contains a
+Start button, but `needsRecreate` is true whenever `container === "stopped"`,
+so that button is unreachable; a stopped VM is sent down Delete and recreate.
+
+On 2026-08-21, `docker start` of the existing `openmausbot-computer` (layer v3,
+Exited 255 after Docker Desktop quit) came back in under a second: VNC 200,
+`cua-driver 0.20.0`, health `overall: ok`. The resume ban is a policy, not a
+fact about this image on Docker. Current code wants image layer **v4**, so a
+real app session would still recreate rather than start.
 
 ### B-07 · Chat can flash before `NoEngines` decides — `open`
 

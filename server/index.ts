@@ -60,6 +60,7 @@ import { apiKeyConfigured, withApiKeyEngine } from "./byok.ts";
 import { deleteModel, hasModel, pullModel, RECOMMENDED_MODEL, runtimeUp } from "./local-model.ts";
 import { APPROX_MODEL_BYTES, hasRoomOnDisk, modelForTier, readMachine, tierFor } from "./machine.ts";
 import { hermesInstalled, runHermesInstall } from "./hermes-install.ts";
+import { runPodmanSetup, runWslInstall, wslPresent } from "./podman-setup.ts";
 import { probeLocalInjects } from "./drivers/local-inject.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
@@ -4139,15 +4140,16 @@ const server = createServer(async (req, res) => {
 
     // ── the open-weights path (first run, path A) ──
     // What still stands between this machine and a local bot: a runtime, the
-    // model, and a custom-access agent CLI. Reported separately because each
-    // one needs different advice — a runtime that is up but empty and a runtime
-    // that is not running look identical through probeLocalInjects() alone.
+    // model, a custom-access agent CLI, and (optional) a Local VM. The VM
+    // never gates chat — wslReady/vmReady are so the arm can offer it.
     if (method === "GET" && path === "/api/local-model") {
-      const [machine, up, injected, described] = await Promise.all([
+      const [machine, up, injected, described, vm, wslReady] = await Promise.all([
         readMachine(DATA_DIR),
         runtimeUp(),
         probeLocalInjects(),
         registry.describe(),
+        containerComputerStatus(undefined, undefined, SHARED_LOCAL_VM_TARGET).catch(() => null),
+        process.platform === "win32" ? wslPresent() : Promise.resolve(true),
       ]);
       // sized to the hardware before the offer is made: the failure that cannot
       // be recovered from is someone waiting out a multi-gigabyte download to
@@ -4163,6 +4165,9 @@ const server = createServer(async (req, res) => {
         modelReady: hasModel(injected.map((row) => row.id), model),
         agentInstanceId: hermes?.instanceId ?? "",
         agentReady: Boolean(hermes) || hermesInstalled(),
+        wslReady,
+        vmReady: vm?.ready === true || vm?.container === "running",
+        vmProblem: vm?.problem ?? null,
       });
     }
 
@@ -4227,6 +4232,87 @@ const server = createServer(async (req, res) => {
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : "Hermes could not be installed";
         res.write(`${JSON.stringify({ error: message })}\n`);
+      }
+      res.end();
+      return;
+    }
+
+    if (method === "POST" && path === "/api/local-model/wsl") {
+      res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      try {
+        for await (const event of runWslInstall()) {
+          res.write(`${JSON.stringify(event)}\n`);
+        }
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : "WSL could not be installed";
+        res.write(`${JSON.stringify({ status: message, skip: true, reason: "setup-failed", done: true })}\n`);
+      }
+      res.end();
+      return;
+    }
+
+    if (method === "POST" && path === "/api/local-model/vm") {
+      res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      const failOpen = (message: string) => {
+        res.write(`${JSON.stringify({ status: message, skip: true, reason: "setup-failed", done: true, vm: false })}\n`);
+      };
+      try {
+        let podmanReady = process.platform !== "win32";
+        if (process.platform === "win32") {
+          for await (const event of runPodmanSetup()) {
+            res.write(`${JSON.stringify(event)}\n`);
+            if (event.skip) {
+              res.end();
+              return;
+            }
+            if (event.done) podmanReady = true;
+          }
+        }
+        if (!podmanReady) {
+          failOpen("Podman setup did not finish. Chat still works without a computer.");
+          res.end();
+          return;
+        }
+        resetPathCache();
+        if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(SHARED_LOCAL_VM_TARGET.key)) {
+          failOpen("Another Local VM setup action is still running. Chat still works without a computer.");
+          res.end();
+          return;
+        }
+        localVmImageBusy = true;
+        localVmLifecycleBusy.add(SHARED_LOCAL_VM_TARGET.key);
+        try {
+          res.write(`${JSON.stringify({ status: "Preparing the Cua desktop…" })}\n`);
+          let status = await containerComputerStatus(undefined, undefined, SHARED_LOCAL_VM_TARGET);
+          if (!status.image) {
+            status = await containerComputerAction("pull", undefined, undefined, SHARED_LOCAL_VM_TARGET);
+          }
+          if (status.container === "stopped" || (status.container !== "missing" && !status.imageMatches)) {
+            res.write(`${JSON.stringify({ status: "Replacing the existing Local VM…" })}\n`);
+            status = await containerComputerAction("remove", undefined, undefined, SHARED_LOCAL_VM_TARGET);
+          }
+          if (status.container === "missing") {
+            res.write(`${JSON.stringify({ status: "Starting the Local VM…" })}\n`);
+            status = await containerComputerAction("run", undefined, undefined, SHARED_LOCAL_VM_TARGET);
+            localVmIdleFor(SHARED_LOCAL_VM_TARGET).touch();
+          }
+          if (status.container === "running" || status.ready) {
+            for (const bot of store.bots) {
+              if (bot.hidden) continue;
+              if (bot.computer === "off" || bot.computer === "cloud" || bot.computer === "local") continue;
+              store.patchBot(bot.id, { computer: "vm" });
+            }
+            res.write(`${JSON.stringify({ status: "Local VM is ready", done: true, vm: true })}\n`);
+          } else {
+            failOpen(status.problem ?? "The Local VM did not come up. Chat still works without a computer.");
+          }
+        } finally {
+          localVmImageBusy = false;
+          localVmLifecycleBusy.delete(SHARED_LOCAL_VM_TARGET.key);
+        }
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : "the Local VM could not be set up";
+        failOpen(`${message}. Chat still works without a computer.`);
       }
       res.end();
       return;

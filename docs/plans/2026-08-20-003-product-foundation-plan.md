@@ -169,8 +169,9 @@ hardware and treat 3–4B as the floor for an unknown machine.
 harness doing multi-step MCP and ACP tool calls, which is the hardest workload
 for a small model. The best permissively-licensed 8B tool-callers score around
 83 on BFCL v3 — and that is *single-call* accuracy, which compounds badly across
-a twenty-step task. Set expectations accordingly; do not demo computer control
-on this path.
+a twenty-step task. Set expectations accordingly. Path A still **stands up** the Local VM
+(Podman + Cua sandbox) so a bot has a computer out of the box; a 3B model
+may use it poorly. Chat must remain available if that step fails.
 
 **Licence first, benchmark second — and our licence gate cannot help here.**
 Weights are not npm packages, so `pnpm check:licenses` will never see them.
