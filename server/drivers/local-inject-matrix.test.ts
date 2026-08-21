@@ -485,8 +485,10 @@ describe("Qwen / Hermes ACP turns", () => {
         params: { sessionId: "fake-acp-session", modelId: "custom:omlx:gemma-4-31b-it-bf16" },
       });
       const yaml = readFileSync(join(home, ".hermes", "config.yaml"), "utf8");
-      expect(yaml).toContain("provider: auto");
+      expect(yaml).toContain("provider: omlx");
+      expect(yaml).not.toContain("provider: auto");
       expect(yaml).toContain("  omlx:");
+      expect(yaml).toContain("https://openrouter.ai/api/v1");
     } finally {
       await instance.dispose();
     }

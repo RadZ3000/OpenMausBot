@@ -45,7 +45,7 @@ ours.
 
 | Id | What |
 |---|---|
-| B-23 | The Hermes driver has the *same* bug as B-14: `ensureHermesInjectProvider` writes a `providers:` block and never selects it, so ACP `session/new` fails with `-32603 Internal error` / "No LLM provider configured". Hermes checks for a chosen provider *before* our `session/set_model` arrives. `droid`, `kimi`, `opencode-go` and `grok` write vendor config the same way and are unexercised. |
+| B-23 | Hermes `session/new` failed with "No LLM provider configured" because the driver declared `providers.<host>` and never selected it. Fixed by writing `model.provider` into the running CLI's config.yaml (`selectHermesInjectProvider`). Isolated `HERMES_HOME` was tried and hangs; `--provider` on argv does not reach `acp`. `droid`, `kimi`, `opencode-go` and `grok` still unexercised. |
 
 **Open, and the live question**
 
@@ -98,13 +98,11 @@ logic in `server/machine.ts` is built around this.
 
 ## 4. Next steps, in order
 
-**1 — Fix B-23 in the Hermes driver.** The smallest, highest-certainty change,
-and it is the same shape as the B-14 fix already in the tree: alongside the
-`providers:` block, `ensureHermesInjectProvider` must select the provider (and
-likely a default model) so `session/new` succeeds. Copy the merge-don't-clobber
-approach used in `qwen.ts` and cover it the same way in
-`local-inject-matrix.test.ts`. Then audit `droid`, `kimi`, `opencode-go` and
-`grok` for the identical omission rather than waiting to hit each one.
+**1 — Fix B-23 in the Hermes driver.** Done: `selectHermesInjectProvider`
+writes `model.provider` into the config the running CLI already uses. Isolated
+`HERMES_HOME` hangs; `--provider` does not reach `acp`. Audit `droid`, `kimi`,
+`opencode-go` and `grok` for the identical omission rather than waiting to hit
+each one.
 
 **2 — Settle B-24(a): do our MCP servers suppress tool calls?** In the app,
 `session/new` attaches two — `agents` and `composio`, both spawned as

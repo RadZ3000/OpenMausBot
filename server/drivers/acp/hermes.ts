@@ -2,8 +2,9 @@
 // a BYOK/local harness. ACP ignores `hermes -m` (cmd_acp does not forward
 // it), and setting OPENAI_API_KEY makes provider:auto resolve to OpenRouter
 // without an OpenRouter key — that is the "HTTP 401: Missing Authentication
-// header" failure. Inject writes providers.<host> and session/set_model
-// `custom:<host>:<model>` instead.
+// header" failure. Inject writes providers.<host>, selects model.provider,
+// and session/set_model `custom:<host>:<model>`. `session/new` reads the
+// selected provider before set_model can arrive.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,41 @@ function replaceHermesHostBlock(text: string, hostId: string, block: string): st
   return [...lines.slice(0, start), ...block.replace(/\n$/, "").split("\n"), ...lines.slice(end)].join("\n");
 }
 
+function readHermesConfig(env: Record<string, string | undefined>) {
+  const dir = hermesHome(env);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "config.yaml");
+  let text = "";
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    text = "";
+  }
+  return { path, text };
+}
+
+/** Replace the uncommented `provider:` key inside the top-level `model:` block. */
+function upsertHermesModelProvider(text: string, hostId: string): string {
+  const quoted = quoteYaml(hostId);
+  const lines = text.split("\n");
+  const modelStart = lines.findIndex((line) => line === "model:");
+  if (modelStart < 0) {
+    const prefix = `model:\n  provider: ${quoted}\n`;
+    return text ? `${prefix}${text.endsWith("\n") ? text : `${text}\n`}` : prefix;
+  }
+  let modelEnd = modelStart + 1;
+  while (modelEnd < lines.length) {
+    const line = lines[modelEnd]!;
+    if (line !== "" && /^\S/.test(line)) break;
+    modelEnd++;
+  }
+  const section = lines.slice(modelStart, modelEnd);
+  const providerAt = section.findIndex((line) => /^  provider:\s*/.test(line));
+  if (providerAt >= 0) section[providerAt] = `  provider: ${quoted}`;
+  else section.splice(1, 0, `  provider: ${quoted}`);
+  return [...lines.slice(0, modelStart), ...section, ...lines.slice(modelEnd)].join("\n");
+}
+
 /** Register an OpenAI-compatible host so ACP can `session/set_model custom:host:model`. */
 export function ensureHermesInjectProvider(
   modelId: string,
@@ -61,16 +97,32 @@ export function ensureHermesInjectProvider(
   const host = localHost(inject.host);
   if (!host) return modelId;
 
-  const dir = hermesHome(env);
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, "config.yaml");
-  let text = "";
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    text = "";
-  }
+  const { path, text } = readHermesConfig(env);
   const next = upsertHermesProvider(text, inject.host, host.baseUrl, hostApiKey(host, env));
+  if (next !== text) writeFileSync(path, next);
+  return hermesAcpModelId(modelId) ?? modelId;
+}
+
+/** Select the injected host so ACP `session/new` has a resolvable provider.
+ *
+ * Declaring `providers.<host>` is not enough: Hermes resolves a provider at
+ * `session/new`, before `session/set_model` can arrive, and fails with
+ * "No LLM provider configured" when `model.provider` is `auto`. Global flags
+ * do not reach `hermes acp`. Pointing `HERMES_HOME` at a blank directory
+ * selects the provider and then hangs building the agent — the only path
+ * that returns a session id is writing `model.provider` into the config the
+ * running CLI already uses. `model.default` is left alone; `session/set_model`
+ * still pins the pick. */
+export function selectHermesInjectProvider(
+  modelId: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const inject = decodeInjectId(modelId);
+  if (!inject) return modelId;
+  if (!localHost(inject.host)) return modelId;
+
+  const { path, text } = readHermesConfig(env);
+  const next = upsertHermesModelProvider(text, inject.host);
   if (next !== text) writeFileSync(path, next);
   return hermesAcpModelId(modelId) ?? modelId;
 }
@@ -109,6 +161,7 @@ const support: AcpSupport = {
   resolveTurnModel: (model, env) => {
     if (!model) return model;
     ensureHermesInjectProvider(model, env);
+    selectHermesInjectProvider(model, env);
     return model;
   },
   defaultCli: "hermes",
@@ -123,10 +176,6 @@ const support: AcpSupport = {
     docsUrl: "https://hermes-agent.nousresearch.com/docs/getting-started/quickstart",
     signInCommand: "hermes setup",
   },
-  // B-23: an injected session dies at session/new with "No LLM provider
-  // configured" unless config.yaml names a resolvable provider. Global flags
-  // do not reach this subcommand — `hermes --provider ollama acp` fails
-  // identically to `hermes acp` — so the fix has to live elsewhere.
   spawnArgs: () => ["acp"],
   transformEnv: (env) => {
     // A leftover OPENAI_API_KEY makes Hermes auto-resolve to OpenRouter and
@@ -139,9 +188,9 @@ const support: AcpSupport = {
   authFailure: "continue",
   isAuthenticated: () => true,
   async configureSession({ request, sessionId, turn }) {
-    // Decode only — resolveTurnModel already wrote the named provider using
-    // the instance HOME. Calling ensure* again here would hit process.env
-    // and rewrite the user's real ~/.hermes/config.yaml.
+    // Decode only — resolveTurnModel already wrote the named provider and
+    // selected it using the instance HOME. Calling ensure*/select* again
+    // here would hit process.env and rewrite the user's real config.yaml.
     const native = hermesAcpModelId(turn.model);
     if (!native) return;
     await applySetting(

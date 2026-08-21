@@ -13,7 +13,7 @@ import { AntigravityDriver } from "./antigravity.ts";
 const FAKE_ACP = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-acp-cli.ts");
 const FAKE_AGY = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-agy-cli.ts");
 import { recordEvents } from "../testing/events.ts";
-import { ensureHermesInjectProvider } from "./acp/hermes.ts";
+import { ensureHermesInjectProvider, selectHermesInjectProvider } from "./acp/hermes.ts";
 import { ensureQwenInjectModel } from "./acp/qwen.ts";
 import {
   applyClaudeInject,
@@ -459,6 +459,57 @@ describe("ensureHermesInjectProvider", () => {
     expect(text).not.toContain("nested: keep-sibling-not-this");
     expect(text).not.toContain("http://old");
     expect(text.match(/^  omlx:$/gm)?.length).toBe(1);
+  });
+});
+
+describe("selectHermesInjectProvider", () => {
+  it("selects the host and leaves model.default and model.base_url alone", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-select-"));
+    scratchDirs.push(home);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(
+      join(home, ".hermes", "config.yaml"),
+      "model:\n  default: anthropic/claude-opus-4.6\n  provider: auto\n  base_url: https://openrouter.ai/api/v1\n",
+    );
+    expect(selectHermesInjectProvider("ollama::ibm/granite4.1:3b", { HOME: home })).toBe(
+      "custom:ollama:ibm/granite4.1:3b",
+    );
+    const text = readFileSync(join(home, ".hermes", "config.yaml"), "utf8");
+    expect(text).toContain("provider: ollama");
+    expect(text).not.toContain("provider: auto");
+    expect(text).toContain("default: anthropic/claude-opus-4.6");
+    expect(text).toContain("https://openrouter.ai/api/v1");
+  });
+
+  it("replaces a quoted auto value the installer writes", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-quoted-"));
+    scratchDirs.push(home);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(join(home, ".hermes", "config.yaml"), 'model:\n  provider: "auto"\n');
+    selectHermesInjectProvider("ollama::ibm/granite4.1:3b", { HOME: home });
+    expect(readFileSync(join(home, ".hermes", "config.yaml"), "utf8")).toContain("provider: ollama");
+  });
+
+  it("writes into HERMES_HOME, not ~/.hermes", () => {
+    const user = mkdtempSync(join(tmpdir(), "omb-hermes-user-"));
+    const profile = mkdtempSync(join(tmpdir(), "omb-hermes-profile-"));
+    scratchDirs.push(user, profile);
+    mkdirSync(join(user, ".hermes"), { recursive: true });
+    const original = "model:\n  provider: auto\n";
+    writeFileSync(join(user, ".hermes", "config.yaml"), original);
+    selectHermesInjectProvider("ollama::ibm/granite4.1:3b", { HOME: user, HERMES_HOME: profile });
+    expect(readFileSync(join(user, ".hermes", "config.yaml"), "utf8")).toBe(original);
+    expect(readFileSync(join(profile, "config.yaml"), "utf8")).toContain("provider: ollama");
+  });
+
+  it("does not rewrite a cloud slug", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-cloudsel-"));
+    scratchDirs.push(home);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    const original = "model:\n  provider: auto\n";
+    writeFileSync(join(home, ".hermes", "config.yaml"), original);
+    expect(selectHermesInjectProvider("anthropic/claude-opus-4.6", { HOME: home })).toBe("anthropic/claude-opus-4.6");
+    expect(readFileSync(join(home, ".hermes", "config.yaml"), "utf8")).toBe(original);
   });
 });
 
