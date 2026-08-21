@@ -16,10 +16,32 @@ interface LocalModelStatus {
   runtimeUp: boolean;
   modelReady: boolean;
   agentInstanceId: string;
+  agentReady: boolean;
   wslReady: boolean;
   vmReady: boolean;
   vmProblem: string | null;
   canInstallRuntime: boolean;
+}
+
+export type PathAPane = "runtime" | "model" | "agent" | "ready";
+
+function agentPresent(status: { agentReady?: boolean; agentInstanceId: string }): boolean {
+  return Boolean(status.agentReady || status.agentInstanceId);
+}
+
+/** Next required step. Hermes is last; if it is installed, the runtime/model
+ * rows can go empty without sending the person back to the install CTAs.
+ * Same idea as EngineSetup.needsCli: the binary, not a session watermark. */
+export function pathAPane(status: {
+  runtimeUp: boolean;
+  modelReady: boolean;
+  agentInstanceId: string;
+  agentReady?: boolean;
+}): PathAPane {
+  if (agentPresent(status)) return "ready";
+  if (!status.runtimeUp) return "runtime";
+  if (!status.modelReady) return "model";
+  return "agent";
 }
 
 interface NdjsonEvent {
@@ -54,7 +76,7 @@ function Checklist({ status }: { status: LocalModelStatus }) {
   const rows: Array<{ done: boolean; label: string }> = [
     { done: status.runtimeUp, label: "Ollama running" },
     { done: status.modelReady, label: `Model ${status.model}` },
-    { done: Boolean(status.agentInstanceId), label: "Hermes agent" },
+    { done: agentPresent(status), label: "Hermes agent" },
     { done: status.vmReady, label: status.vmReady ? "Local computer" : "Local computer (optional)" },
   ];
   return (
@@ -103,6 +125,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const vmKickoff = useRef(false);
+  const pane = status ? pathAPane(status) : null;
 
   const refresh = useCallback(async () => {
     try {
@@ -176,11 +199,16 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     try {
       const response = await fetch("/api/local-model/vm", { method: "POST" });
       const last = await readNdjson(response, (event) => {
+        if (event.skip || event.done) {
+          setProgress(null);
+          return;
+        }
         if (event.status) setProgress({ label: event.status, fraction: null });
       });
       if (last?.skip) {
         setNotice(last.status ?? "The Local computer could not start. You can still chat.");
       }
+      setProgress(null);
       await refresh();
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "The Local computer could not start. You can still chat.");
@@ -196,6 +224,10 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     try {
       const response = await fetch("/api/local-model/wsl", { method: "POST" });
       const last = await readNdjson(response, (event) => {
+        if (event.skip || event.done) {
+          setProgress(null);
+          return;
+        }
         if (event.status) setProgress({ label: event.status, fraction: null });
       });
       if (last?.skip) {
@@ -203,6 +235,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
       } else {
         vmKickoff.current = false;
       }
+      setProgress(null);
       await refresh();
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "WSL did not finish. You can still chat.");
@@ -212,7 +245,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
   };
 
   useEffect(() => {
-    if (!status?.runtimeUp || !status.modelReady || !status.agentInstanceId) return;
+    if (!status?.runtimeUp || !status.modelReady || !agentPresent(status)) return;
     if (status.vmReady || !status.wslReady || progress) return;
     if (vmKickoff.current) return;
     vmKickoff.current = true;
@@ -265,7 +298,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     );
   }
 
-  if (!status.runtimeUp) {
+  if (pane === "runtime") {
     return (
       <>
         <Checklist status={status} />
@@ -300,6 +333,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
             Get Ollama
           </a>
         )}
+        {notice && <div className="mt-2 w-full text-[12.5px] leading-snug text-ink-secondary">{notice}</div>}
         {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
         <button
           type="button"
@@ -312,7 +346,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     );
   }
 
-  if (!status.modelReady) {
+  if (pane === "model") {
     return (
       <>
         <Checklist status={status} />
@@ -337,6 +371,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
             Download the model
           </button>
         )}
+        {notice && <div className="mt-2 w-full text-[12.5px] leading-snug text-ink-secondary">{notice}</div>}
         {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
         <p className="mt-4 text-center text-[12px] leading-snug text-ink-secondary">
           {status.tier === "tight"
@@ -348,7 +383,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     );
   }
 
-  if (!status.agentInstanceId) {
+  if (pane === "agent") {
     return (
       <>
         <Checklist status={status} />
@@ -370,6 +405,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
             Install Hermes
           </button>
         )}
+        {notice && <div className="mt-2 w-full text-[12.5px] leading-snug text-ink-secondary">{notice}</div>}
         {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
       </>
     );

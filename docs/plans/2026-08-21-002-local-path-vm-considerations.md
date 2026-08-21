@@ -91,8 +91,8 @@ Treat these as questions with a preferred guess, not as requirements.
    install it. A one-time UAC is acceptable if WSL is missing (`wsl --install`).
    The CLI itself installs per-user with no admin. Fetch the checksum-pinned MSI
    and `msiexec` with argv (`MSIINSTALLPERUSER=1 MACHINE_PROVIDER=wsl`) rather
-   than a "Get Podman" clipboard command. Then `machine init`, raise the default
-   **2 GiB** guest above our 4 GB container cap, and `machine start`. See the
+   than a "Get Podman" clipboard command. Then `machine init --memory 6144`
+   (WSL rejects `machine set --memory` after create) and `machine start`. See the
    Podman probe below.
 5. **Bot default.** If the VM is ready, pointing the starter bot at
    `computer: "vm"` (Computer panel's Local VM destination, not host `local`
@@ -185,22 +185,39 @@ already scan Hermes.
 **167 s**, pulled `quay.io/podman/machine-os:6.0`, registered WSL distro
 `podman-machine-default`. Defaults: **3 CPUs, 2 GiB RAM, 100 GiB disk**
 (sparse). Our Cua container is `--memory 4g`. A default machine cannot host
-it; first-run must `podman machine set --memory` (at least 4096, likely more
-once Granite is resident) **before** `run`.
+it.
 
-**Machine start failed on this box.** Two attempts, ~38 s, exit 125:
-`CreateFile \\.\pipe\podman-machine-default: All pipe instances are busy`
-(Docker-API forwarding; Desktop was running) and then
-`ssh error: machine not in running state` / `127.0.0.1:58980` refused.
-`wsl -d podman-machine-default -- echo wsl-ok` worked and listed the distro
-**Running**, but the Podman client still could not open a session. Same
-failure class as Podman issues about Docker Desktop occupying the
-compatibility pipe. **Not measured:** start on a machine with no Docker.
-That is the Path A customer. Do not treat this mixed-dev box as the
-layperson result.
+**WSL cannot raise guest RAM after create.** Path A first-run 2026-08-21,
+Podman 6.0.2, host ~48 GB: `podman machine set --memory 6144` exited 125
+with `changing memory not supported for WSL machines`. `--memory` is valid
+on `machine init`. First-run now inits with `--memory 6144` and recreates
+an existing undersized guest (`machine rm --force` then init). Do not treat
+that skip string as "the laptop is too small."
+
+**Machine start failed on this box (2026-08-21, later the same day).** After
+the guest was correctly sized to 6 GiB, `podman machine start` still exited
+125 in ~38–48 s with Podman's
+`Error: machine did not transition into running state: ssh error: machine not in running state`.
+`podman info` then refused `127.0.0.1:63051`. Docker-API forwarding often
+printed `All pipe instances are busy` first; that is a warning. **Quitting
+Docker Desktop did not make start succeed.**
+
+Inside the guest, Podman's `/root/bootstrap` nested systemd
+(`unshare --kill-child --fork … /lib/systemd/systemd`) appears and dies in
+about a second; nothing listens on the SSH port. Writing `[boot] systemd=true`
+into the distro then terminating it yielded `Wsl/Service/E_UNEXPECTED` until
+`podman machine rm --force` and re-init.
+
+This mixed-dev box was **WSL 2.2.4 / kernel 5.15** for those probes, then
+`wsl --update` to **2.7.12 / kernel 6.18** (start not re-measured). The Path A
+customer is still "no Docker, current WSL". Do not encode Docker-kill, guest
+`systemd=true`, or `wsl --update` into the installer. Skip with the `Error:`
+line; Continue is never gated on the VM.
+
+Walk log: [`2026-08-21-005-path-a-live-walk.md`](2026-08-21-005-path-a-live-walk.md).
 
 Settings today only copies `winget install -e --id Podman.CLI`. That is not
-enough: WSL, silent MSI + provider, `machine init`, memory, `machine start`,
+enough: WSL, silent MSI + provider, `machine init --memory`, `machine start`,
 and PATH scan are all load-bearing.
 
 Still unmeasured, and still load-bearing for putting this on Path A:

@@ -4,8 +4,9 @@
 // "continue without a computer", not as a broken first run.
 //
 // Install is the official per-user MSI (checksum-pinned). WSL is a one-time
-// UAC when missing. Guest RAM is raised above our 4 GB container cap — the
-// MSI default is 2 GiB. Do not shell:true; msiexec and wsl travel as argv.
+// UAC when missing. Guest RAM is set at `machine init` — WSL cannot
+// `machine set --memory` after create, and the MSI default is 2 GiB. Do not
+// shell:true; msiexec and wsl travel as argv.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -28,6 +29,26 @@ const MSI_BYTES_MAX = 80 * 1024 * 1024;
 /** Cua container is `--memory 4g`; the guest default is 2 GiB. */
 export const PODMAN_MACHINE_MEMORY_MIB = 6144;
 const MACHINE_NAME = "podman-machine-default";
+
+/** WSL guests cannot `machine set --memory` after create (Podman 6: "changing
+ * memory not supported for WSL machines"). Size the VM at init. */
+export function podmanMachineInitArgs(): string[] {
+  return ["machine", "init", "--provider", "wsl", "--memory", String(PODMAN_MACHINE_MEMORY_MIB)];
+}
+
+/** The line that actually failed, not WSL's pipe-TTY warning and not the
+ * rootless advertisement. `Error:` is Podman's own summary. */
+export function podmanCliDetail(stderr: string, stdout = ""): string {
+  const lines = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !/screen size is bogus/i.test(line));
+  const errorLine = lines.find((line) => /^error:/i.test(line));
+  if (errorLine) return errorLine.replace(/^error:\s*/i, "");
+  const pipeLine = lines.find((line) => /pipe instances are busy/i.test(line));
+  if (pipeLine) return pipeLine;
+  return lines[0] ?? "";
+}
 
 export type PodmanSkipReason = "wsl-missing" | "not-windows" | "setup-failed";
 
@@ -106,7 +127,7 @@ async function defaultRun(command: string, args: string[], timeoutMs: number): P
       windowsHide: true,
       encoding: "buffer",
       maxBuffer: 16 * 1024 * 1024,
-      env: { ...process.env, PATH: augmentedPath() },
+      env: { ...process.env, PATH: augmentedPath(), COLUMNS: "80", LINES: "24" },
     });
     return { code: 0, stdout: decodeCliBuffer(result.stdout), stderr: decodeCliBuffer(result.stderr) };
   } catch (cause) {
@@ -182,6 +203,14 @@ export async function wslPresent(
 
 function skip(status: string, reason: PodmanSkipReason): PodmanSetupEvent {
   return { status, skip: true, reason, done: true };
+}
+
+function skipFromCli(prefix: string, result: CommandResult): PodmanSetupEvent {
+  const detail = podmanCliDetail(result.stderr, result.stdout).slice(0, 200);
+  const status = detail
+    ? `${prefix}: ${detail}. Chat still works without a computer.`
+    : `${prefix}. Chat still works without a computer.`;
+  return skip(status, "setup-failed");
 }
 
 async function podman(
@@ -269,12 +298,9 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
   const haveMachine = listed.code === 0 && listed.stdout.trim().startsWith("[");
   if (!haveMachine) {
     yield { status: "Creating the Podman machine (first time, a few minutes)…" };
-    const inited = await podman(hooks, ["machine", "init", "--provider", "wsl"], 15 * 60_000);
+    const inited = await podman(hooks, podmanMachineInitArgs(), 15 * 60_000);
     if (inited.code !== 0) {
-      yield skip(
-        `Podman machine init failed: ${(inited.stderr || inited.stdout).trim().slice(0, 240) || inited.code}. Chat still works without a computer.`,
-        "setup-failed",
-      );
+      yield skipFromCli("Podman machine init failed", inited);
       return;
     }
   }
@@ -295,22 +321,26 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
       await podman(hooks, ["machine", "stop"], 60_000);
       state = { ...state, running: false };
     }
-    yield { status: `Setting Podman machine memory to ${PODMAN_MACHINE_MEMORY_MIB} MiB…` };
-    const sized = await podman(hooks, ["machine", "set", "--memory", String(PODMAN_MACHINE_MEMORY_MIB)], 30_000);
-    if (sized.code !== 0) {
-      yield skip("Could not raise Podman machine memory. Chat still works without a computer.", "setup-failed");
+    // `machine set --memory` is a no-op on WSL. Recreate with --memory on init.
+    yield { status: `Recreating the Podman machine with ${PODMAN_MACHINE_MEMORY_MIB} MiB…` };
+    const removed = await podman(hooks, ["machine", "rm", "--force", MACHINE_NAME], 60_000);
+    if (removed.code !== 0) {
+      yield skipFromCli("Could not replace the undersized Podman machine", removed);
       return;
     }
+    const resized = await podman(hooks, podmanMachineInitArgs(), 15 * 60_000);
+    if (resized.code !== 0) {
+      yield skipFromCli("Podman machine init failed", resized);
+      return;
+    }
+    state = { running: false, memoryMiB: PODMAN_MACHINE_MEMORY_MIB };
   }
 
   if (!state.running) {
     yield { status: "Starting the Podman machine…" };
     const started = await podman(hooks, ["machine", "start"], 2 * 60_000);
     if (started.code !== 0) {
-      yield skip(
-        `Podman machine would not start. Chat still works without a computer.`,
-        "setup-failed",
-      );
+      yield skipFromCli("Podman machine would not start", started);
       return;
     }
   }

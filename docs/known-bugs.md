@@ -328,6 +328,17 @@ Two separate faults, then:
 Both are open. (1) still points at what we attach in `session/new`; (2) points at
 Hermes' execution backend and its `backend`/`container_*` configuration.
 
+**2026-08-21 follow-up.** A Windows Path A first-run with one Hermes bot, no
+Composio key, and no VM sends `mcpServers: []` — `agents` only mounts when
+another bot exists, host Cua Auto is darwin-only. So (1) is the multi-bot /
+VM / connected-apps path; the empty first-run path is (2). Hermes logs (2) in
+`tools/file_tools.py` immediately before `_create_environment`. Ranked probes:
+[`docs/plans/2026-08-21-004-b24-investigation.md`](plans/2026-08-21-004-b24-investigation.md).
+
+Path A on this box later **did** install Hermes + Granite in a throwaway
+data dir; the B-24 prompt was not sent. Walk:
+[`docs/plans/2026-08-21-005-path-a-live-walk.md`](plans/2026-08-21-005-path-a-live-walk.md).
+
 *Note for whoever picks this up:* an ACP client must answer **every**
 server-initiated request, not just `session/request_permission`. Ignoring one
 blocks the agent indefinitely — a first attempt at this probe hung for that

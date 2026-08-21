@@ -94,4 +94,6 @@ you, that is a signal about the design, not an invitation to cast.
 `CONTRIBUTING.md` is the fuller version of the constraints above and governs
 anything this file does not cover. Known defects, including ones in upstream code
 we ship, are listed in [`docs/known-bugs.md`](docs/known-bugs.md) — check it
-before assuming something you just hit is new.
+before assuming something you just hit is new. The 2026-08-21 Path A live walk
+(throwaway data dir, what Continue actually had, why the Local VM skipped) is
+[`docs/plans/2026-08-21-005-path-a-live-walk.md`](docs/plans/2026-08-21-005-path-a-live-walk.md).

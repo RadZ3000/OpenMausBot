@@ -9,6 +9,8 @@ import {
   podmanExe,
   podmanInstalled,
   PODMAN_MACHINE_MEMORY_MIB,
+  podmanCliDetail,
+  podmanMachineInitArgs,
   PODMAN_MSI_SHA256,
   PODMAN_MSI_URL,
   runPodmanSetup,
@@ -36,6 +38,21 @@ function scratchDir(): string {
 function ok(stdout = "", stderr = ""): CommandResult {
   return { code: 0, stdout, stderr };
 }
+
+describe("podmanCliDetail", () => {
+  it("prefers Podman's Error line over the WSL TTY warning", () => {
+    const stderr = [
+      "your 131072x1 screen size is bogus. expect trouble",
+      "API forwarding for Docker API clients is not available due to the following startup failures.",
+      "CreateFile \\\\.\\pipe\\podman-machine-default: All pipe instances are busy.",
+      "Podman clients are still able to connect.",
+      "Error: machine did not transition into running state: ssh error: machine not in running state",
+    ].join("\n");
+    expect(podmanCliDetail(stderr)).toBe(
+      "machine did not transition into running state: ssh error: machine not in running state",
+    );
+  });
+});
 
 describe("msiexecSpawn", () => {
   it("installs per-user with WSL as the machine provider, never a shell one-liner", () => {
@@ -133,7 +150,18 @@ describe("runPodmanSetup", () => {
     expect(events.at(-1)).toEqual({ status: "Podman is ready", done: true });
   });
 
-  it("raises guest RAM above the Cua container cap before starting", async () => {
+  it("sizes a new machine at init, not via machine set", () => {
+    expect(podmanMachineInitArgs()).toEqual([
+      "machine",
+      "init",
+      "--provider",
+      "wsl",
+      "--memory",
+      String(PODMAN_MACHINE_MEMORY_MIB),
+    ]);
+  });
+
+  it("recreates an undersized WSL machine instead of machine set --memory", async () => {
     const local = scratchDir();
     const bin = join(local, "Programs", "Podman");
     mkdirSync(bin, { recursive: true });
@@ -149,7 +177,7 @@ describe("runPodmanSetup", () => {
         if (args.includes("inspect")) {
           return ok(JSON.stringify([{ State: "running", Resources: { Memory: 2048 } }]));
         }
-        if (args.includes("stop") || args.includes("set") || args.includes("start") || args[0] === "info") {
+        if (args.includes("stop") || args.includes("rm") || args.includes("init") || args.includes("start") || args[0] === "info") {
           return ok("{}");
         }
         return { code: 1, stdout: "", stderr: args.join(" ") };
@@ -158,9 +186,79 @@ describe("runPodmanSetup", () => {
       events.push(event);
     }
     expect(seen.some((row) => row.includes("machine stop"))).toBe(true);
-    expect(seen.some((row) => row.includes(`machine set --memory ${PODMAN_MACHINE_MEMORY_MIB}`))).toBe(true);
+    expect(seen.some((row) => row.includes("machine rm --force"))).toBe(true);
+    expect(seen.some((row) => row.includes(`machine init --provider wsl --memory ${PODMAN_MACHINE_MEMORY_MIB}`))).toBe(
+      true,
+    );
+    expect(seen.some((row) => row.includes("machine set --memory"))).toBe(false);
     expect(seen.some((row) => row.includes("machine start"))).toBe(true);
     expect(events.at(-1)).toEqual({ status: "Podman is ready", done: true });
+  });
+
+  it("inits a missing machine with guest RAM already sized", async () => {
+    const local = scratchDir();
+    const bin = join(local, "Programs", "Podman");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "podman.exe"), "");
+    const seen: string[] = [];
+    const events = [];
+    for await (const event of runPodmanSetup({
+      platform: "win32",
+      env: { LOCALAPPDATA: local, SystemRoot: "C:\\Windows" },
+      run: async (_command, args) => {
+        seen.push(args.join(" "));
+        if (args[0] === "-l") return ok("docker-desktop");
+        if (args.includes("inspect")) {
+          if (args.includes("init") || seen.some((row) => row.includes("machine init"))) {
+            return ok(JSON.stringify([{ State: "stopped", Resources: { Memory: PODMAN_MACHINE_MEMORY_MIB } }]));
+          }
+          return { code: 1, stdout: "", stderr: "no machine" };
+        }
+        if (args.includes("init") || args.includes("start") || args[0] === "info") return ok("{}");
+        return { code: 1, stdout: "", stderr: args.join(" ") };
+      },
+    })) {
+      events.push(event);
+    }
+    expect(seen.some((row) => row.includes(`machine init --provider wsl --memory ${PODMAN_MACHINE_MEMORY_MIB}`))).toBe(
+      true,
+    );
+    expect(events.at(-1)).toEqual({ status: "Podman is ready", done: true });
+  });
+
+  it("skips machine start with the real CLI error, not a generic line", async () => {
+    const local = scratchDir();
+    const bin = join(local, "Programs", "Podman");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "podman.exe"), "");
+    const events = [];
+    for await (const event of runPodmanSetup({
+      platform: "win32",
+      env: { LOCALAPPDATA: local, SystemRoot: "C:\\Windows" },
+      run: async (_command, args) => {
+        if (args[0] === "-l") return ok("docker-desktop");
+        if (args.includes("inspect")) {
+          return ok(JSON.stringify([{ State: "stopped", Resources: { Memory: PODMAN_MACHINE_MEMORY_MIB } }]));
+        }
+        if (args.includes("start")) {
+          return {
+            code: 125,
+            stdout: "",
+            stderr: [
+              "your 131072x1 screen size is bogus. expect trouble",
+              "CreateFile \\\\.\\pipe\\podman-machine-default: All pipe instances are busy.",
+              "Error: machine did not transition into running state: ssh error: machine not in running state",
+            ].join("\n"),
+          };
+        }
+        return { code: 1, stdout: "", stderr: args.join(" ") };
+      },
+    })) {
+      events.push(event);
+    }
+    expect(events.at(-1)?.skip).toBe(true);
+    expect(events.at(-1)?.status).toMatch(/machine did not transition into running state/i);
+    expect(events.at(-1)?.status).not.toMatch(/screen size is bogus/i);
   });
 
   it("skips a checksum-mismatched installer rather than throwing", async () => {

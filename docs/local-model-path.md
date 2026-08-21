@@ -89,16 +89,20 @@ VM, not Hermes' own CUA). Chat **still works** if WSL, Podman, `machine start`,
 or the image pull fails — Continue is never gated on the VM.
 
 Windows first-run: WSL if missing (one UAC), checksum-pinned per-user Podman
-MSI, `machine init`, raise guest RAM above the 4 GB container cap, `machine
-start`, then existing `POST /api/local-computer/pull` and `run`. Never Docker
-Desktop. Call those routes from `LocalModelArm.tsx` (ours); do not fork
-upstream Settings cards.
+MSI, `machine init --memory 6144` (WSL cannot `machine set --memory` after
+create — measured 2026-08-21, Podman 6.0.2), `machine start`, then existing
+`POST /api/local-computer/pull` and `run`. An existing 2 GiB guest is
+removed and re-inited. Never Docker Desktop. Call those routes from
+`LocalModelArm.tsx` (ours); do not fork upstream Settings cards.
 
 A 3B model may drive the desktop poorly — that is copy, not a reason to skip
 the sandbox. 16 GB + Granite + VM is still unmeasured. Docker Desktop
-coexistence (`machine start` pipe/SSH failure) is a support trap, not the
-customer path. Details in
-[plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md).
+coexistence is a support trap, not the customer path: on this mixed-dev box
+`machine start` failed because the guest nested systemd died, not because the
+host was short of RAM, and quitting Docker did not fix it. Details in
+[plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md)
+and the live walk
+[plan 2026-08-21-005](plans/2026-08-21-005-path-a-live-walk.md).
 
 **Sequencing caveat:** [B-15](known-bugs.md) may outrank all of it. A setup flow
 does not help a customer whose machine refuses to install the app.
