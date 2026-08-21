@@ -35,8 +35,8 @@ describe("tierFor", () => {
 
 describe("modelForTier", () => {
   it("offers the small model where memory is tight, and nothing below that", () => {
-    expect(modelForTier("comfortable")).toBe("qwen3:4b");
-    expect(modelForTier("tight")).toBe("qwen3:1.7b");
+    expect(modelForTier("comfortable")).toBe("ibm/granite4.1:3b");
+    expect(modelForTier("tight")).toBe("ibm/granite4.1:3b");
     expect(modelForTier("unsupported")).toBeNull();
   });
 });

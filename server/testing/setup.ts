@@ -12,6 +12,9 @@ import { removeTempDir } from "./cleanup.ts";
 const home = mkdtempSync(join(tmpdir(), "omb-test-home-"));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
+// Windows Hermes (and a few other CLIs) read %LOCALAPPDATA%, not ~/.hermes.
+// Leave it pointing at the real user and inject tests rewrite their config.
+process.env.LOCALAPPDATA = join(home, "AppData", "Local");
 // OMB_DATA_DIR is an intentional production override, but tests must never
 // let it escape the throwaway home they are about to delete.
 delete process.env.OMB_DATA_DIR;

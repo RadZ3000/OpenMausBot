@@ -59,9 +59,11 @@ export function tierFor(spec: MachineSpec): MachineTier {
  * Both are Apache-2.0, which is the gate that comes before benchmarks: weights
  * are not npm packages, so `pnpm check:licenses` will never see them. */
 export function modelForTier(tier: MachineTier): string | null {
-  if (tier === "comfortable") return "qwen3:4b";
-  if (tier === "tight") return "qwen3:1.7b";
-  return null;
+  if (tier === "unsupported") return null;
+  // Same Apache-2.0 3B weight on both runnable tiers. The 8B class does not
+  // fit a 16 GB laptop once the OS, this app, and a 32k KV cache sit on top;
+  // Qwen 3 1.7B would fit the tight tier but is not the agent we ship.
+  return "ibm/granite4.1:3b";
 }
 
 /** A conservative stand-in for the download, used for the disk check before a

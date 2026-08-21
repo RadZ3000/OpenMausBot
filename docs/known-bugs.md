@@ -48,35 +48,20 @@ fetch, since it manages that internally. **Measure before designing** — if the
 pull continues regardless, a cancel button that leaves gigabytes downloading is
 B-01 again with more steps.
 
-### B-11 · The arm reveals its three requirements one at a time — `open`
+### B-11 · The arm reveals its three requirements one at a time — `fixed`
 
-`src/components/LocalModelArm.tsx`. The screen asks for a runtime, then a model,
-then an agent CLI, each appearing only once the previous one is satisfied. So the
-work never looks finite, and every step feels like an unexpected new demand.
-
-It is made worse by the wording. After the 2.33 GB model download finishes, the
-screen says *"one local agent CLI still needs installing"* — accurate, and
-meaningless to anyone not already fluent in this architecture. The naming makes
-it actively misleading: Alibaba publishes both the **Qwen3** model family and the
-**Qwen Code** agent, so a first run downloads "Qwen" twice, minutes apart, for
-entirely different reasons.
-
-**Evidence: the person who designed the flow mistook the second download for a
-repeat of the first**, while testing it. That is about as strong a signal as this
-kind of thing gets.
-
-**Fix:** show all three pieces up front as a short checklist with ticks —
-runtime, model, agent — so remaining work is visible from the start and "one more
-piece" is legibly a *different* piece. Name them in plain terms rather than
-calling anything a CLI. See also the decision in
-[`local-model-path.md`](local-model-path.md) that these should install together
-rather than in sequence.
+`src/components/LocalModelArm.tsx` now shows a three-row checklist (Ollama,
+Granite, Hermes) from the first screen, and installs Hermes in-app instead of
+handing off to EngineSetup / Qwen Code. Ollama itself is still a browser
+download — that remaining hole is the fresh-machine runtime, not the naming.
 
 ### B-12 · A CLI installed while the app runs stays invisible until restart — `open`
 
 Confirmed on Windows, 2026-08-20. After installing Qwen Code the binary was
 present at `%LOCALAPPDATA%\qwen-code\bin\qwen.cmd`, while the running app still
-reported ``` `qwen` CLI not found ```.
+reported ``` `qwen` CLI not found ```. Hermes is now scanned at
+`%LOCALAPPDATA%\hermes\hermes-agent\bin` after `resetPathCache()`, which is
+what first-run install uses.
 
 `GET /api/instances` calls `resetPathCache()`, but `augmentedPath()` rebuilds
 from `process.env.PATH`, which Windows freezes at process start — so the refresh
@@ -91,9 +76,9 @@ the platform provides no notification to a running process.
 
 ### B-13 · Qwen Code cannot be launched on Windows — `open`
 
-Confirmed 2026-08-20. **This blocks the whole local-model path on Windows for the
-agent we recommend alongside the model we recommend.** The engine is found and
-then fails with `spawn EINVAL`.
+Confirmed 2026-08-20. The local-model path now installs Hermes rather than Qwen
+Code, so this no longer blocks first run. It still blocks anyone who picks Qwen
+from the engine picker on Windows.
 
 `resolveCliSpawn` cannot spawn a `.cmd` directly — Node refuses since the
 CVE-2024-27980 fix — so `parseCmdShim` reads the shim and spawns its real target
@@ -358,8 +343,11 @@ declaring one without selecting it fails every turn.
 
 The Qwen case is fixed ([B-14](#b-14--qwen-code-demanded-a-cloud-login-for-a-local-model--open)).
 Hermes is fixed by writing `model.provider` to the config the running CLI
-already uses. `model.default` is left alone; `session/set_model` still pins the
-pick. Two other approaches were measured and discarded:
+already uses, which on Windows is `%LOCALAPPDATA%\hermes` (the installer
+sets `HERMES_HOME` there), not `~/.hermes`. The spawned `hermes acp` child
+gets that same `HERMES_HOME` so session/new reads the file we just wrote.
+`model.default` is left alone; `session/set_model` still pins the pick. Two
+other approaches were measured and discarded:
 
 - **`--provider` on the command line.** `hermes --provider ollama acp` fails
   at `session/new` identically to bare `hermes acp`. Global flags do not reach

@@ -19,14 +19,10 @@
 // See docs/plans/2026-08-20-005-three-path-first-run-plan.md.
 import { z } from "zod";
 
-/** Apache-2.0, ~2.5 GB at Q4, ~4 GB of memory — and already the worked example
- * in src/lib/distribution.ts, so the codebase had effectively chosen it.
- *
- * Licence decides before benchmark here, because weights are not npm packages
- * and `pnpm check:licenses` will never see them. Clean: Apache-2.0 (Qwen,
- * Granite 4.0, ToolACE-2, MiniCPM5) and MIT (Phi-4-mini, Functionary). The xLAM
- * family tops its size class and is CC-BY-NC-4.0, so it cannot ship. */
-export const RECOMMENDED_MODEL = "qwen3:4b";
+/** Apache-2.0 Granite 4.1 3B — the local weight that issued correct tool
+ * calls on this path. Qwen 3 is still a legal weight; it is no longer the
+ * one we download, because the Qwen *agent* cannot complete a local turn. */
+export const RECOMMENDED_MODEL = "ibm/granite4.1:3b";
 
 /** The `/v1` base in LOCAL_HOSTS is the OpenAI-compatible surface; pull lives on
  * Ollama's native API at the origin. */

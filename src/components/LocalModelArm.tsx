@@ -3,21 +3,15 @@ import { Loader2 } from "lucide-react";
 
 // Path A of the first-run chooser: an open-weights model on this machine.
 //
-// Four things have to be true before a local bot answers — a runtime running,
-// the model pulled, a custom-access agent CLI installed, and the bot pointed at
-// it. Only the download is both slow and fully ours to do, so that is what this
-// screen does; the other three are reported honestly and handed off.
-//
-// The CLI step is deliberately NOT reimplemented here. Upstream's EngineSetup
-// already does it well and appears on the very next screen, so this arm stops
-// at "the model is here" and lets that take over.
+// Three things have to be true: Ollama running, Granite pulled, Hermes
+// installed. The model download and the Hermes install both happen here —
+// Qwen Code used to be the "light" CLI on the next screen, and it cannot
+// complete a local turn.
 //
 // See docs/plans/2026-08-20-005-three-path-first-run-plan.md.
 
 interface LocalModelStatus {
   model: string;
-  /** Sized from this machine's memory, so the offer is never made to a laptop
-   * that cannot keep it. */
   tier: "comfortable" | "tight" | "unsupported";
   enoughDisk: boolean;
   runtimeUp: boolean;
@@ -41,6 +35,47 @@ function ProgressBar({ fraction }: { fraction: number | null }) {
       />
     </div>
   );
+}
+
+function Checklist({ status }: { status: LocalModelStatus }) {
+  const rows: Array<{ done: boolean; label: string }> = [
+    { done: status.runtimeUp, label: "Ollama running" },
+    { done: status.modelReady, label: `Model ${status.model}` },
+    { done: Boolean(status.agentInstanceId), label: "Hermes agent" },
+  ];
+  return (
+    <ul className="mt-4 w-full space-y-1.5 text-left text-[13px]">
+      {rows.map((row) => (
+        <li key={row.label} className="flex items-center gap-2 text-ink-secondary">
+          <span className={row.done ? "text-success" : "text-ink-secondary/50"}>{row.done ? "✓" : "○"}</span>
+          {row.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+async function readNdjson(
+  response: Response,
+  onEvent: (event: { status?: string; fraction?: number | null; error?: string }) => void,
+): Promise<void> {
+  if (!response.ok || !response.body) throw new Error("The request could not be started.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      const event: { status?: string; fraction?: number | null; error?: string } = JSON.parse(part);
+      if (event.error) throw new Error(event.error);
+      onEvent(event);
+    }
+  }
 }
 
 export function LocalModelArm({ onReady }: { onReady: () => void }) {
@@ -72,28 +107,28 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
         method: "POST",
         headers: { "content-type": "application/json" },
       });
-      if (!response.ok || !response.body) throw new Error("The download could not be started.");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      // the server streams NDJSON, and a chunk boundary lands mid-object often
-      // enough that the leftover has to be carried forward
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n");
-        buffer = parts.pop() ?? "";
-        for (const part of parts) {
-          if (!part.trim()) continue;
-          const event: { status?: string; fraction?: number | null; error?: string } = JSON.parse(part);
-          if (event.error) throw new Error(event.error);
-          if (event.status) setProgress({ label: event.status, fraction: event.fraction ?? null });
-        }
-      }
+      await readNdjson(response, (event) => {
+        if (event.status) setProgress({ label: event.status, fraction: event.fraction ?? null });
+      });
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The download failed.");
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const installAgent = async () => {
+    setError(null);
+    setProgress({ label: "Installing Hermes…", fraction: null });
+    try {
+      const response = await fetch("/api/local-model/agent", { method: "POST" });
+      await readNdjson(response, (event) => {
+        if (event.status) setProgress({ label: event.status, fraction: null });
+      });
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Hermes could not be installed.");
     } finally {
       setProgress(null);
     }
@@ -126,8 +161,6 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     );
   }
 
-  // Checked before anything is downloaded. Finding this out after a
-  // multi-gigabyte wait is the one failure here with no recovery.
   if (status.tier === "unsupported") {
     return (
       <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
@@ -150,6 +183,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
   if (!status.runtimeUp) {
     return (
       <>
+        <Checklist status={status} />
         <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
           This needs Ollama running on this machine to hold the model. Install it, start it, then
           come back &mdash; nothing else here needs an account.
@@ -176,6 +210,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
   if (!status.modelReady) {
     return (
       <>
+        <Checklist status={status} />
         <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
           Downloads <span className="text-ink">{status.model}</span> &mdash; about 2.5 GB, and it
           runs entirely on this machine. Nothing you type will leave it.
@@ -198,7 +233,6 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
           </button>
         )}
         {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
-        {/* said before they commit the download, not discovered afterwards */}
         <p className="mt-4 text-center text-[12px] leading-snug text-ink-secondary">
           {status.tier === "tight"
             ? "This computer can run a model, but only a small one, and answers will take minutes rather than seconds. "
@@ -209,12 +243,38 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     );
   }
 
+  if (!status.agentInstanceId) {
+    return (
+      <>
+        <Checklist status={status} />
+        <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
+          The model is here. Next is Hermes, the local agent that talks to it. No account, and the
+          installer skips its own setup wizard &mdash; we already know the model.
+        </p>
+        {progress ? (
+          <>
+            <ProgressBar fraction={progress.fraction} />
+            <div className="mt-2 max-h-24 overflow-y-auto text-[12.5px] text-ink-secondary">{progress.label}</div>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void installAgent()}
+            className="mt-5 w-full rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white"
+          >
+            Install Hermes
+          </button>
+        )}
+        {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
+      </>
+    );
+  }
+
   return (
     <>
+      <Checklist status={status} />
       <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
-        <span className="text-ink">{status.model}</span> is on this machine and ready.
-        {!status.agentInstanceId &&
-          " One local agent CLI still needs installing — the next screen walks through it."}
+        <span className="text-ink">{status.model}</span> and Hermes are ready on this machine.
       </p>
       <button
         type="button"
@@ -226,8 +286,6 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
       {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
       {confirming ? (
         <div className="mt-4 w-full rounded-xl bg-card p-3">
-          {/* no byte count offered on purpose: the runtime shares layers between
-              models, so what is actually freed depends on what else is here */}
           <div className="text-[12.5px] leading-snug text-ink-secondary">
             Remove {status.model} from this computer? It can be downloaded again, but any bot using
             it will need a different model.

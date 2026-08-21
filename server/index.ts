@@ -59,6 +59,7 @@ import {
 import { apiKeyConfigured, withApiKeyEngine } from "./byok.ts";
 import { deleteModel, hasModel, pullModel, RECOMMENDED_MODEL, runtimeUp } from "./local-model.ts";
 import { APPROX_MODEL_BYTES, hasRoomOnDisk, modelForTier, readMachine, tierFor } from "./machine.ts";
+import { hermesInstalled, runHermesInstall } from "./hermes-install.ts";
 import { probeLocalInjects } from "./drivers/local-inject.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
@@ -298,6 +299,15 @@ let bootSelection = { instanceId: "", model: "" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
+
+async function bindEmptyBotsToDefault(): Promise<void> {
+  const selection = await defaultSelection();
+  if (!selection.instanceId) return;
+  for (const bot of store.bots) {
+    if (bot.modelSelection.instanceId) continue;
+    store.patchBot(bot.id, { modelSelection: selection });
+  }
+}
 
 /** A bot as a client may see it: no provider session bookkeeping.
  *
@@ -4144,14 +4154,15 @@ const server = createServer(async (req, res) => {
       // discover their machine was never going to run it
       const tier = tierFor(machine);
       const model = modelForTier(tier) ?? RECOMMENDED_MODEL;
-      const agent = described.find((row) => row.access === "custom" && row.snapshot.state === "available");
+      const hermes = described.find((row) => row.driverKind === "hermesAgent" && row.snapshot.state === "available");
       return json(res, 200, {
         model,
         tier,
         enoughDisk: hasRoomOnDisk(machine, APPROX_MODEL_BYTES),
         runtimeUp: up,
         modelReady: hasModel(injected.map((row) => row.id), model),
-        agentInstanceId: agent?.instanceId ?? "",
+        agentInstanceId: hermes?.instanceId ?? "",
+        agentReady: Boolean(hermes) || hermesInstalled(),
       });
     }
 
@@ -4176,6 +4187,7 @@ const server = createServer(async (req, res) => {
         }
         // the model only becomes selectable once the catalog is rebuilt
         await reloadProviders();
+        await bindEmptyBotsToDefault();
         res.write(`${JSON.stringify({ done: true })}\n`);
       } catch (cause) {
         // the status line is already sent, so a failure has to travel in-band
@@ -4200,6 +4212,24 @@ const server = createServer(async (req, res) => {
       // the catalog still lists it until the fleet is rebuilt
       await reloadProviders();
       return json(res, 200, { model: wanted, removed: true });
+    }
+
+    if (method === "POST" && path === "/api/local-model/agent") {
+      res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      try {
+        for await (const event of runHermesInstall()) {
+          res.write(`${JSON.stringify(event)}\n`);
+        }
+        resetPathCache();
+        await reloadProviders();
+        await bindEmptyBotsToDefault();
+        res.write(`${JSON.stringify({ done: true })}\n`);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : "Hermes could not be installed";
+        res.write(`${JSON.stringify({ error: message })}\n`);
+      }
+      res.end();
+      return;
     }
 
     // ── app config (API keys — never echoed back, booleans only) ──

@@ -13,7 +13,7 @@ import { AntigravityDriver } from "./antigravity.ts";
 const FAKE_ACP = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-acp-cli.ts");
 const FAKE_AGY = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-agy-cli.ts");
 import { recordEvents } from "../testing/events.ts";
-import { ensureHermesInjectProvider, selectHermesInjectProvider } from "./acp/hermes.ts";
+import { ensureHermesInjectProvider, resolveHermesHome, selectHermesInjectProvider } from "./acp/hermes.ts";
 import { ensureQwenInjectModel } from "./acp/qwen.ts";
 import {
   applyClaudeInject,
@@ -985,6 +985,44 @@ describe("selectHermesInjectProvider", () => {
     selectHermesInjectProvider("ollama::ibm/granite4.1:3b", { HOME: user, HERMES_HOME: profile });
     expect(readFileSync(join(user, ".hermes", "config.yaml"), "utf8")).toBe(original);
     expect(readFileSync(join(profile, "config.yaml"), "utf8")).toContain("provider: ollama");
+  });
+
+  it("on Windows prefers %LOCALAPPDATA%\\hermes over ~/.hermes", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-win-home-"));
+    const local = mkdtempSync(join(tmpdir(), "omb-hermes-win-local-"));
+    scratchDirs.push(home, local);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    mkdirSync(join(local, "hermes"), { recursive: true });
+    writeFileSync(join(home, ".hermes", "config.yaml"), "model:\n  provider: auto\n");
+    writeFileSync(join(local, "hermes", "config.yaml"), "model:\n  provider: auto\n");
+    expect(resolveHermesHome({ HOME: home, LOCALAPPDATA: local }, "win32")).toBe(join(local, "hermes"));
+    selectHermesInjectProvider("ollama::ibm/granite4.1:3b", {
+      HOME: home,
+      LOCALAPPDATA: local,
+    });
+    // select uses process.platform; on this Windows box it must hit LocalAppData
+    if (process.platform === "win32") {
+      expect(readFileSync(join(local, "hermes", "config.yaml"), "utf8")).toContain("provider: ollama");
+      expect(readFileSync(join(home, ".hermes", "config.yaml"), "utf8")).toContain("provider: auto");
+    }
+  });
+
+  it("on POSIX ignores LOCALAPPDATA even when a native config exists", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-posix-"));
+    const local = mkdtempSync(join(tmpdir(), "omb-hermes-posix-local-"));
+    scratchDirs.push(home, local);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    mkdirSync(join(local, "hermes"), { recursive: true });
+    writeFileSync(join(home, ".hermes", "config.yaml"), "model:\n  provider: auto\n");
+    writeFileSync(join(local, "hermes", "config.yaml"), "model:\n  provider: auto\n");
+    expect(resolveHermesHome({ HOME: home, LOCALAPPDATA: local }, "linux")).toBe(join(home, ".hermes"));
+  });
+
+  it("on Windows defaults to %LOCALAPPDATA%\\hermes when neither config exists", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-win-empty-"));
+    const local = mkdtempSync(join(tmpdir(), "omb-hermes-win-empty-local-"));
+    scratchDirs.push(home, local);
+    expect(resolveHermesHome({ HOME: home, LOCALAPPDATA: local }, "win32")).toBe(join(local, "hermes"));
   });
 
   it("does not rewrite a cloud slug", () => {

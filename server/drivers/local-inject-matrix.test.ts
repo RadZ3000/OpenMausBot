@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DroidAgentDriver, droidInjectId, ensureDroidInjectModel } from "./acp/droid.ts";
 import { ensureGrokInjectSlug } from "./acp/grok.ts";
-import { HermesAgentDriver, ensureHermesInjectProvider, hermesAcpModelId } from "./acp/hermes.ts";
+import { HermesAgentDriver, ensureHermesInjectProvider, hermesAcpModelId, resolveHermesHome } from "./acp/hermes.ts";
 import { ensureKimiInjectAlias, KimiAgentDriver } from "./acp/kimi.ts";
 import { ensureOpenCodeInjectModel } from "./acp/opencode-go.ts";
 import { ensureQwenInjectModel, QwenAgentDriver } from "./acp/qwen.ts";
@@ -354,7 +354,7 @@ describe("Hermes writer — OpenRouter 401 class", () => {
     mkdirSync(join(home, ".hermes"), { recursive: true });
     ensureHermesInjectProvider("omlx::gemma-4-31b-it-bf16", { HOME: home });
     ensureHermesInjectProvider("omlx::GLM-5.2-fp8", { HOME: home });
-    const text = readFileSync(join(home, ".hermes", "config.yaml"), "utf8");
+    const text = readFileSync(join(resolveHermesHome({ HOME: home }), "config.yaml"), "utf8");
     expect(text.match(/^  omlx:$/gm)?.length).toBe(1);
   });
 });
@@ -506,6 +506,7 @@ describe("Qwen / Hermes ACP turns", () => {
       expect(seen.argv).toEqual(["acp"]);
       expect(seen.env.OPENAI_API_KEY).toBeUndefined();
       expect(seen.env.OPENROUTER_API_KEY).toBeUndefined();
+      expect(seen.env.HERMES_HOME).toBe(join(home, ".hermes"));
       const configCalls = JSON.parse(readFileSync(`${dump}.config.json`, "utf8")) as Array<{
         method: string;
         params: { modelId?: string };

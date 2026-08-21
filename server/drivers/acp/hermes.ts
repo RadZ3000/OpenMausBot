@@ -5,7 +5,7 @@
 // header" failure. Inject writes providers.<host>, selects model.provider,
 // and session/set_model `custom:<host>:<model>`. `session/new` reads the
 // selected provider before set_model can arrive.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -15,8 +15,26 @@ import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 const EMPTY: ModelCatalog = { default: "", options: [] };
 
+/** Directory Hermes actually reads. The Windows installer sets
+ * `HERMES_HOME=%LOCALAPPDATA%\hermes`; `~/.hermes` is the POSIX (and WSL)
+ * layout. Prefer an existing config.yaml so a machine that still uses
+ * `~/.hermes` is not rewritten into an empty LocalAppData profile. */
+export function resolveHermesHome(
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (env.HERMES_HOME) return env.HERMES_HOME;
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const posix = join(home, ".hermes");
+  if (platform !== "win32") return posix;
+  const native = join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "hermes");
+  if (existsSync(join(native, "config.yaml"))) return native;
+  if (existsSync(join(posix, "config.yaml"))) return posix;
+  return native;
+}
+
 function hermesHome(env: Record<string, string | undefined>): string {
-  return env.HERMES_HOME || join(env.HOME || env.USERPROFILE || homedir(), ".hermes");
+  return resolveHermesHome(env);
 }
 
 function quoteYaml(value: string): string {
@@ -183,6 +201,10 @@ const support: AcpSupport = {
     // named custom provider + session/set_model is the real route.
     delete env.OPENAI_API_KEY;
     delete env.OPENROUTER_API_KEY;
+    // Same directory we just wrote providers + model.provider into. Without
+    // this, Windows hermes.exe still follows the installer HERMES_HOME while
+    // we used to write ~/.hermes, and session/new never saw the selection.
+    env.HERMES_HOME = resolveHermesHome(env);
   },
   pickAuthMethod: () => null,
   authFailure: "continue",
