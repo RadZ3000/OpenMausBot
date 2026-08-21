@@ -307,7 +307,7 @@ interface InstanceCliUpdate {
  * OpenCode Go reads OPENCODE_API_KEY. Every other engine brings its own
  * login, so handing it a key it never uses would only put that key in the
  * environment of an unrelated child process. */
-function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string> {
+export function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "grok" && cfg.xai?.key) environment.set("XAI_API_KEY", cfg.xai.key);
   if (driver === "boxAgent" && cfg.box?.token) environment.set("BOX_TOKEN", cfg.box.token);

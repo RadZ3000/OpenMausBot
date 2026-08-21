@@ -67,9 +67,10 @@ permission boundaries, or a test for new server behaviour.
 ```sh
 pnpm typecheck
 pnpm test
-pnpm lint             # CI does not run this — run it yourself
-pnpm check:electron   # desktop-shell changes
-pnpm check:licenses   # any dependency change
+pnpm lint               # CI does not run this — run it yourself
+pnpm check:electron     # desktop-shell changes
+pnpm check:licenses     # any dependency change
+pnpm check:distribution # anything that ships a URL, endpoint, or key
 ```
 
 `pnpm lint` carries the `anti-slop` rules in `tools/oxlint/`, which reject
@@ -88,7 +89,9 @@ you, that is a signal about the design, not an invitation to cast.
 | `review-changes` | Reviewing a branch, a merge, or the work just done. |
 | `upstream-merges` | Merging upstream or resolving conflicts without widening divergence. |
 | `research` | A decision turns on how an agent CLI, protocol, or third-party API actually behaves. |
-| `windows-release` | Cutting or publishing the Windows desktop build. |
+| `windows-release` | Never as written — it is upstream's, and it publishes to upstream's feed. We have no release runbook yet; read `docs/plans/2026-08-20-004-release-channel-plan.md` instead. |
 
 `CONTRIBUTING.md` is the fuller version of the constraints above and governs
-anything this file does not cover.
+anything this file does not cover. Known defects, including ones in upstream code
+we ship, are listed in [`docs/known-bugs.md`](docs/known-bugs.md) — check it
+before assuming something you just hit is new.

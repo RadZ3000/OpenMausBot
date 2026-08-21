@@ -249,6 +249,39 @@ describe("Qwen writer × hosts", () => {
   it("leaves official Qwen slugs untouched", () => {
     expect(ensureQwenInjectModel("qwen3-coder-plus", { HOME: scratchHome("omb-qwen-cloud-") })).toBe("qwen3-coder-plus");
   });
+
+  // Declaring the provider is not enough. Without a selected auth type Qwen
+  // Code demands `/auth` interactively and refuses the turn — the cloud
+  // sign-in this whole path exists to avoid.
+  it("selects the openai protocol, so the CLI does not demand interactive auth", () => {
+    const home = scratchHome("omb-qwen-auth-");
+    mkdirSync(join(home, ".qwen"), { recursive: true });
+    ensureQwenInjectModel(encodeInjectId("ollama", "qwen3:4b"), { HOME: home });
+    // SAFETY: the writer under test produced this file one line above, so its
+    // shape is the assertion being made rather than an assumption about input.
+    const settings = JSON.parse(readFileSync(join(home, ".qwen", "settings.json"), "utf8")) as {
+      security: { auth: { selectedType: string } };
+    };
+    expect(settings.security.auth.selectedType).toBe("openai");
+  });
+
+  it("keeps anything else already under security.auth", () => {
+    const home = scratchHome("omb-qwen-keep-");
+    mkdirSync(join(home, ".qwen"), { recursive: true });
+    writeFileSync(
+      join(home, ".qwen", "settings.json"),
+      JSON.stringify({ security: { auth: { apiKey: "keep-me" }, folderTrust: true } }),
+    );
+    ensureQwenInjectModel(encodeInjectId("ollama", "qwen3:4b"), { HOME: home });
+    // SAFETY: this test wrote the file's prior contents and the writer under
+    // test produced the rest, so nothing here is unverified input.
+    const settings = JSON.parse(readFileSync(join(home, ".qwen", "settings.json"), "utf8")) as {
+      security: { auth: { selectedType: string; apiKey: string }; folderTrust: boolean };
+    };
+    expect(settings.security.auth.selectedType).toBe("openai");
+    expect(settings.security.auth.apiKey).toBe("keep-me");
+    expect(settings.security.folderTrust).toBe(true);
+  });
 });
 
 describe("Hermes writer — OpenRouter 401 class", () => {

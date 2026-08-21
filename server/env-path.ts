@@ -12,7 +12,7 @@
 import { execFile } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, extname, join } from "node:path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, normalize } from "node:path";
 
 /** nvm keeps every node version's bin dir separately; newest first so a
  * CLI installed under the latest node wins. */
@@ -249,9 +249,53 @@ function nodeExe(near: string): string | null {
   return (process.versions as Record<string, string | undefined>).electron ? null : process.execPath;
 }
 
+/** Substitute `%~dp0` and any `set "NAME=value"` the shim declares, so a target
+ * reached through a variable resolves the same as one written inline.
+ *
+ * Qwen Code's shim is the case this exists for: `set "ROOT=%~dp0.."` and then
+ * `"%ROOT%\lib\cli-entry.js"`. Exported for tests. */
+export function expandCmdVars(text: string, dir: string): string {
+  const withDp0 = text.replace(/%~dp0/gi, `${dir}\\`);
+  const vars = new Map<string, string>();
+  for (const match of withDp0.matchAll(/^[ \t]*set[ \t]+"([A-Za-z_]\w*)=([^"]*)"/gim)) {
+    vars.set(match[1].toUpperCase(), match[2]);
+  }
+  // depth-limited because a batch file may legitimately define a variable in
+  // terms of itself, and we are not writing an interpreter
+  const expand = (raw: string, depth: number): string =>
+    depth > 4
+      ? raw
+      : raw.replace(/%([A-Za-z_]\w*)%/g, (whole, name: string) => {
+          const found = vars.get(name.toUpperCase());
+          return found === undefined ? whole : expand(found, depth + 1);
+        });
+  return expand(withDp0, 0);
+}
+
+/** Every quoted path in the shim that exists on disk, once variables are gone. */
+function shimTargets(text: string, dir: string): string[] {
+  return [...expandCmdVars(text, dir).matchAll(/"([^"]+)"/g)]
+    .map((match) => (isAbsolute(match[1]) ? normalize(match[1]) : join(dir, match[1])))
+    .filter(isFile);
+}
+
+/** A launcher whose only job is to invoke the real shim: `call "…\x.cmd" %*`.
+ * Written by installers that place a stub on PATH and keep the payload
+ * elsewhere, and never in the %dp0% form. */
+function chainedShim(text: string, dir: string): string | null {
+  const call = /^[ \t]*call[ \t]+"([^"]+\.cmd)"/im.exec(text);
+  if (!call) return null;
+  const target = isAbsolute(call[1]) ? normalize(call[1]) : join(dir, call[1]);
+  return isFile(target) ? target : null;
+}
+
 /** npm/pnpm .cmd shims all spell their target as "%dp0%\..." (or
- * "%~dp0\..."). Whatever of those exists on disk is what the shim runs. */
-function parseCmdShim(shim: string): ResolvedSpawn | null {
+ * "%~dp0\..."). Whatever of those exists on disk is what the shim runs.
+ *
+ * Two further forms are tried only when that one finds nothing, so a shim that
+ * works today keeps resolving exactly as it did — this path spawns every CLI
+ * engine on Windows and a regression here takes Claude and Codex with it. */
+export function parseCmdShim(shim: string, depth = 0): ResolvedSpawn | null {
   let text: string;
   try {
     text = readFileSync(shim, "utf8");
@@ -268,7 +312,29 @@ function parseCmdShim(shim: string): ResolvedSpawn | null {
     if (node) return { command: node, args: [script] };
   }
   const exe = targets.find((p) => extname(p).toLowerCase() === ".exe");
-  return exe ? { command: exe, args: [] } : null;
+  if (exe) return { command: exe, args: [] };
+
+  // A shim that reaches its payload through a variable. Unlike the form above,
+  // a bundled node.exe here is the interpreter we want rather than noise to
+  // filter out — the shim ships its own runtime precisely so it does not
+  // depend on one being installed.
+  const expanded = shimTargets(text, dir);
+  const expandedScript = expanded.find((p) => /\.[cm]?js$/i.test(p));
+  if (expandedScript) {
+    const node = expanded.find((p) => basename(p).toLowerCase() === "node.exe") ?? nodeExe(dir);
+    if (node) return { command: node, args: [expandedScript] };
+  }
+  const expandedExe = expanded.find(
+    (p) => extname(p).toLowerCase() === ".exe" && basename(p).toLowerCase() !== "node.exe",
+  );
+  if (expandedExe) return { command: expandedExe, args: [] };
+
+  // A stub that calls the real shim. Depth-limited rather than trusted.
+  if (depth < 3) {
+    const next = chainedShim(text, dir);
+    if (next && next !== shim) return parseCmdShim(next, depth + 1);
+  }
+  return null;
 }
 
 /** `#!/usr/bin/env node` → `node <script>`. Only node: nothing else has a

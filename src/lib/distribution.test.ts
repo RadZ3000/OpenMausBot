@@ -12,6 +12,16 @@ describe("an unconfigured build", () => {
   it("has no analytics destination, which is what keeps it silent", () => {
     expect(resolveDistribution({}).analyticsKey).toBe("");
   });
+
+  it("offers every first-run path", () => {
+    expect(resolveDistribution({}).installPaths).toEqual(["local", "byok", "hosted"]);
+  });
+});
+
+describe("a single-path build", () => {
+  it("offers only the arm it was sold with", () => {
+    expect(resolveDistribution({ VITE_INSTALL_PATHS: "byok" }).installPaths).toEqual(["byok"]);
+  });
 });
 
 describe("a configured build", () => {
@@ -25,6 +35,7 @@ describe("a configured build", () => {
       productName: "Acme Agents",
       analyticsKey: "phc_acme",
       analyticsHost: "https://analytics.acme.test",
+      installPaths: ["local", "byok", "hosted"],
     });
   });
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Menu } from "lucide-react";
 import { StoreProvider, useStore } from "@/state/store";
+import { InstallPathChooser } from "@/components/InstallPathChooser";
 import { Onboarding } from "@/components/Onboarding";
 import { emailGateDone, initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
@@ -153,6 +154,9 @@ export default function App() {
           <Shell />
         </LightboxProvider>
         {gated && <Onboarding onDone={() => setGated(false)} />}
+        {/* after Onboarding on purpose: same z-50 tier, so DOM order keeps the
+            path choice on top until it is answered or deferred */}
+        <InstallPathChooser />
       </StoreProvider>
     </DesktopCapabilitiesProvider>
   );

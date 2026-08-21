@@ -41,6 +41,10 @@ import {
   EVENTS_DIR,
   NATIVE_DIR,
 } from "./config.ts";
+import { apiKeyConfigured, withApiKeyEngine } from "./byok.ts";
+import { deleteModel, hasModel, pullModel, RECOMMENDED_MODEL, runtimeUp } from "./local-model.ts";
+import { APPROX_MODEL_BYTES, hasRoomOnDisk, modelForTier, readMachine, tierFor } from "./machine.ts";
+import { probeLocalInjects } from "./drivers/local-inject.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
@@ -3810,6 +3814,106 @@ const server = createServer(async (req, res) => {
       } finally {
         providerConfigBusy = false;
       }
+    }
+
+    // ── enable the engine a pasted API key pays for (first run, path B) ──
+    // POST /api/engines/api-key — the only instance write the UI may make, and
+    // deliberately not a general "write the fleet" route: the patch schema omits
+    // instances on purpose, and a partial map deletes engines rather than adding
+    // one. byok.ts composes the whole fleet so that cannot happen here.
+    if (method === "POST" && path === "/api/engines/api-key") {
+      // same non-simple-request gate as the routes above: without it a page in
+      // a browser could POST to the loopback server with no preflight
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      if (!apiKeyConfigured(cfg)) return json(res, 400, { error: "save an API key first" });
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        saveConfig({ instances: withApiKeyEngine(cfg) });
+        Object.assign(cfg, loadConfig());
+        await reloadProviders();
+        resetPathCache();
+        return json(res, 200, { instances: await registry.describe() });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── the open-weights path (first run, path A) ──
+    // What still stands between this machine and a local bot: a runtime, the
+    // model, and a custom-access agent CLI. Reported separately because each
+    // one needs different advice — a runtime that is up but empty and a runtime
+    // that is not running look identical through probeLocalInjects() alone.
+    if (method === "GET" && path === "/api/local-model") {
+      const [machine, up, injected, described] = await Promise.all([
+        readMachine(DATA_DIR),
+        runtimeUp(),
+        probeLocalInjects(),
+        registry.describe(),
+      ]);
+      // sized to the hardware before the offer is made: the failure that cannot
+      // be recovered from is someone waiting out a multi-gigabyte download to
+      // discover their machine was never going to run it
+      const tier = tierFor(machine);
+      const model = modelForTier(tier) ?? RECOMMENDED_MODEL;
+      const agent = described.find((row) => row.access === "custom" && row.snapshot.state === "available");
+      return json(res, 200, {
+        model,
+        tier,
+        enoughDisk: hasRoomOnDisk(machine, APPROX_MODEL_BYTES),
+        runtimeUp: up,
+        modelReady: hasModel(injected.map((row) => row.id), model),
+        agentInstanceId: agent?.instanceId ?? "",
+      });
+    }
+
+    // Streams NDJSON progress straight back on this response rather than over
+    // the event bus: a first-run download is nobody else's business, and
+    // keeping it here means no new SSE kind and no change to the client store.
+    // The model is chosen by the product, not the caller — it is a licensing
+    // decision (see server/local-model.ts), so there is no body to parse.
+    if (method === "POST" && path === "/api/local-model/pull") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      // the tier picks the model, so a tight machine never downloads the large
+      // one just because the client asked
+      const tier = tierFor(await readMachine(DATA_DIR));
+      const wanted = modelForTier(tier);
+      if (!wanted) return json(res, 400, { error: "this machine does not have the memory to run a local model" });
+      res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      try {
+        for await (const event of pullModel(wanted)) {
+          res.write(`${JSON.stringify(event)}\n`);
+        }
+        // the model only becomes selectable once the catalog is rebuilt
+        await reloadProviders();
+        res.write(`${JSON.stringify({ done: true })}\n`);
+      } catch (cause) {
+        // the status line is already sent, so a failure has to travel in-band
+        const message = cause instanceof Error ? cause.message : "the download failed";
+        res.write(`${JSON.stringify({ error: message })}\n`);
+      }
+      res.end();
+      return;
+    }
+
+    // Reclaiming the space has to be possible from in here. Removing it by hand
+    // means `ollama rm` in a terminal, which is the same barrier as the install
+    // and strands several gigabytes on the machines of everyone who cannot.
+    if (method === "DELETE" && path === "/api/local-model") {
+      const tier = tierFor(await readMachine(DATA_DIR));
+      const wanted = modelForTier(tier) ?? RECOMMENDED_MODEL;
+      try {
+        await deleteModel(wanted);
+      } catch (cause) {
+        return json(res, 502, { error: cause instanceof Error ? cause.message : "the model could not be removed" });
+      }
+      // the catalog still lists it until the fleet is rebuilt
+      await reloadProviders();
+      return json(res, 200, { model: wanted, removed: true });
     }
 
     // ── app config (API keys — never echoed back, booleans only) ──

@@ -26,6 +26,7 @@
 // appId, the openmausbot:// scheme, the _openmausbot._tcp service, and the MCP
 // server names are compatibility surfaces. Renaming one does not rebrand the
 // product, it strands existing installs.
+import { INSTALL_PATHS, type InstallPath, parseInstallPaths } from "./install-path";
 
 /** The parts of a build that a distribution may set. */
 export interface Distribution {
@@ -35,6 +36,9 @@ export interface Distribution {
   analyticsKey: string;
   /** PostHog ingestion host. */
   analyticsHost: string;
+  /** First-run paths this build offers, in the order shown. A build sold to a
+   * customer who only ever wants their own key ships just that one. */
+  installPaths: InstallPath[];
 }
 
 /** Build-time overrides. Vite inlines these as string literals or not at all. */
@@ -42,12 +46,14 @@ export interface DistributionEnv {
   VITE_PRODUCT_NAME?: string;
   VITE_ANALYTICS_KEY?: string;
   VITE_ANALYTICS_HOST?: string;
+  VITE_INSTALL_PATHS?: string;
 }
 
 const DEFAULTS: Distribution = {
   productName: "OpenMausBot",
   analyticsKey: "",
   analyticsHost: "https://us.i.posthog.com",
+  installPaths: [...INSTALL_PATHS],
 };
 
 // An unset VITE_* variable arrives as undefined, but one set to "" in a CI
@@ -63,6 +69,7 @@ export function resolveDistribution(env: DistributionEnv): Distribution {
     productName: text(env.VITE_PRODUCT_NAME, DEFAULTS.productName),
     analyticsKey: text(env.VITE_ANALYTICS_KEY, DEFAULTS.analyticsKey),
     analyticsHost: text(env.VITE_ANALYTICS_HOST, DEFAULTS.analyticsHost),
+    installPaths: parseInstallPaths(env.VITE_INSTALL_PATHS),
   };
 }
 
@@ -76,4 +83,5 @@ export const distribution = resolveDistribution({
   VITE_PRODUCT_NAME: import.meta.env.VITE_PRODUCT_NAME,
   VITE_ANALYTICS_KEY: import.meta.env.VITE_ANALYTICS_KEY,
   VITE_ANALYTICS_HOST: import.meta.env.VITE_ANALYTICS_HOST,
+  VITE_INSTALL_PATHS: import.meta.env.VITE_INSTALL_PATHS,
 });

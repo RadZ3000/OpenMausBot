@@ -71,6 +71,28 @@ export function ensureQwenInjectModel(
     providers.openai = openai;
     settings.modelProviders = providers;
   }
+
+  // Declaring the provider is not enough: without a selected auth type Qwen
+  // Code asks the user to run /auth interactively and refuses the turn with
+  // "Authentication required", which is precisely the cloud sign-in this path
+  // exists to avoid. Its own docs are explicit — "without this, you'd need to
+  // run /auth interactively".
+  //
+  // This does reach outside our turn: someone who normally runs `qwen` on
+  // Qwen OAuth will find it switched to the openai protocol. That is the same
+  // trade already made by writing modelProviders into their real settings
+  // file, and the alternative is a local model that cannot answer at all.
+  const security =
+    settings.security && typeof settings.security === "object" && !Array.isArray(settings.security)
+      ? { ...(settings.security as Record<string, unknown>) }
+      : {};
+  const auth =
+    security.auth && typeof security.auth === "object" && !Array.isArray(security.auth)
+      ? { ...(security.auth as Record<string, unknown>) }
+      : {};
+  auth.selectedType = "openai";
+  security.auth = auth;
+  settings.security = security;
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
   try {
     chmodSync(path, 0o600);
