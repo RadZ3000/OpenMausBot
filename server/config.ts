@@ -16,6 +16,10 @@ const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 export const DEFAULT_ROOM_TURN_TIMEOUT_MINUTES = 5;
 export const MIN_ROOM_TURN_TIMEOUT_MINUTES = 1;
 export const MAX_ROOM_TURN_TIMEOUT_MINUTES = 1_440;
+export const DEFAULT_LOCAL_VM_MODE = "shared" as const;
+export const DEFAULT_LOCAL_VM_MAX_INSTANCES = 2;
+export const MIN_LOCAL_VM_MAX_INSTANCES = 1;
+export const MAX_LOCAL_VM_MAX_INSTANCES = 4;
 
 export function isValidSshAlias(value: unknown): value is string {
   return typeof value === "string" && SSH_ALIAS.test(value);
@@ -47,6 +51,15 @@ const roomConfigSchema = z.object({
     .min(MIN_ROOM_TURN_TIMEOUT_MINUTES)
     .max(MAX_ROOM_TURN_TIMEOUT_MINUTES),
 });
+const localVmConfigSchema = z.object({
+  mode: z.enum(["shared", "per-bot"]).optional(),
+  maxInstances: z
+    .number()
+    .int()
+    .min(MIN_LOCAL_VM_MAX_INSTANCES)
+    .max(MAX_LOCAL_VM_MAX_INSTANCES)
+    .optional(),
+});
 const instanceConfigSchema = z.object({
   driver: z.string().min(1),
   displayName: optionalText,
@@ -67,14 +80,19 @@ const appConfigSchema = z.object({
   opencodeGo: z.object({ apiKey: optionalText }).optional(),
   /** Voice credentials and the selected voice id. */
   tts: z.object({ key: optionalText, voice: optionalText }).optional(),
-  /** Image generation against any OpenAI-compatible /v1/images/generations —
-   * the hosted one, or a local diffusion server. Only the key is secret;
-   * baseUrl and model are shown back so the panel can say where images
-   * come from. */
-  imageGen: z.object({ apiKey: optionalText, baseUrl: optionalText, model: optionalText }).optional(),
+  /** `key` is the OS-stored secret for in-process avatars. `apiKey` / baseUrl /
+   * model also feed the generate_image MCP proxy (hosted or a local diffusion
+   * server). Only the keys are secret. */
+  imageGen: z.object({
+    key: optionalText,
+    apiKey: optionalText,
+    baseUrl: optionalText,
+    model: optionalText,
+  }).optional(),
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
+  localVm: localVmConfigSchema.optional(),
   instances: instanceConfigMapSchema.optional(),
 });
 const appConfigPatchSchema = appConfigSchema.omit({ instances: true });
@@ -88,9 +106,12 @@ export interface AppConfig {
   vps?: { sshAlias?: string };
   opencodeGo?: { apiKey?: string };
   tts?: { key?: string; voice?: string };
-  imageGen?: { apiKey?: string; baseUrl?: string; model?: string };
+  imageGen?: { key?: string; apiKey?: string; baseUrl?: string; model?: string };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
+  /** Shared preserves the historical singleton. Per-bot gives every bot a
+   * separate container, durable workspace, viewer and lease. */
+  localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
   instances?: InstanceConfigMap;
 }
 export type ConfigPatch = z.output<typeof appConfigPatchSchema>;
@@ -115,6 +136,14 @@ export function vpsSshAlias(cfg: AppConfig): string | null {
 
 export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
   return cfg.rooms?.turnTimeoutMinutes ?? DEFAULT_ROOM_TURN_TIMEOUT_MINUTES;
+}
+
+export function localVmMode(cfg: AppConfig): "shared" | "per-bot" {
+  return cfg.localVm?.mode ?? DEFAULT_LOCAL_VM_MODE;
+}
+
+export function localVmMaxInstances(cfg: AppConfig): number {
+  return cfg.localVm?.maxInstances ?? DEFAULT_LOCAL_VM_MAX_INSTANCES;
 }
 
 // OMB_DATA_DIR isolates test/soak rigs from the user's real fleet.
@@ -160,11 +189,12 @@ export function loadConfig(): AppConfig {
   if (process.env.OPENCODE_API_KEY !== undefined) cfg.opencodeGo.apiKey = process.env.OPENCODE_API_KEY;
   cfg.tts = { ...cfg.tts };
   if (process.env.OMB_TTS_KEY !== undefined) cfg.tts.key = process.env.OMB_TTS_KEY;
+  cfg.imageGen = { ...cfg.imageGen };
+  if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;
   // Deliberately its own variable rather than OPENAI_API_KEY: that name is
   // stripped from CLI children on purpose (drivers/codex.ts), and reusing it
   // here would put a key back into exactly the environments that protect
   // against it. This one only ever reaches the image proxy.
-  cfg.imageGen = { ...cfg.imageGen };
   if (process.env.OMB_IMAGE_API_KEY !== undefined) cfg.imageGen.apiKey = process.env.OMB_IMAGE_API_KEY;
   if (process.env.OMB_IMAGE_BASE_URL !== undefined) cfg.imageGen.baseUrl = process.env.OMB_IMAGE_BASE_URL;
   if (process.env.OMB_IMAGE_MODEL !== undefined) cfg.imageGen.model = process.env.OMB_IMAGE_MODEL;
@@ -185,6 +215,7 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
     [patch.box?.token, "BOX_TOKEN"],
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
     [patch.tts?.key, "OMB_TTS_KEY"],
+    [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
     [patch.imageGen?.apiKey, "OMB_IMAGE_API_KEY"],
   ];
   for (const [value, name] of secrets) {
@@ -204,6 +235,7 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
+  "OMB_OPENAI_IMAGE_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
   "OMB_IMAGE_API_KEY",
@@ -213,6 +245,24 @@ export const WORKSPACE_CREDENTIAL_ENV = [
 export function stripWorkspaceCredentialEnv(env: Record<string, string | undefined>): void {
   for (const key of WORKSPACE_CREDENTIAL_ENV) delete env[key];
 }
+
+/** Env names a provider CLI might read as its own billing identity. A spawned
+ * engine keeps only what its driver explicitly allows: a foreign key riding
+ * along in `...process.env` must not flip a subscription CLI onto
+ * pay-as-you-go billing the user never granted. */
+export const PROVIDER_CREDENTIAL_ENV = [
+  "ANTHROPIC_API_KEY",
+  "FACTORY_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "KIMI_API_KEY",
+  "MOONSHOT_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENCODE_API_KEY",
+  "XAI_API_KEY",
+  "CURSOR_API_KEY",
+  "CURSOR_AUTH_TOKEN",
+] as const;
 
 /** Merge a partial config into ~/.openmausbot/config.json (secrets never
  * echoed back — callers report configured-or-not booleans only). */
@@ -226,7 +276,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
-  for (const key of ["xai", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms"] as const) {
+  for (const key of ["xai", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -346,10 +396,12 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     computer: { driver: "boxAgent" },
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
+    pi: { driver: "piAgent" },
   };
   const CUSTOM_ONLY = {
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
+    pi: { driver: "piAgent" },
   } as const;
   // New default-fleet engines that existing product configs would otherwise
   // never see. Custom-only engines stay in CUSTOM_ONLY so a one-off test map
