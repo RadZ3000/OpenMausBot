@@ -61,6 +61,8 @@ import { deleteModel, hasModel, pullModel, RECOMMENDED_MODEL, runtimeUp } from "
 import { APPROX_MODEL_BYTES, hasRoomOnDisk, modelForTier, readMachine, tierFor } from "./machine.ts";
 import { hermesInstalled, runHermesInstall } from "./hermes-install.ts";
 import { runPodmanSetup, runWslInstall, wslPresent } from "./podman-setup.ts";
+import { ensureOwnedOllama, runOllamaSetup, stopOwnedOllama } from "./ollama-setup.ts";
+import { DEFAULT_CONTEXT_TOKENS, TIGHT_CONTEXT_TOKENS } from "./local-runtime.ts";
 import { probeLocalInjects } from "./drivers/local-inject.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
@@ -4168,6 +4170,7 @@ const server = createServer(async (req, res) => {
         wslReady,
         vmReady: vm?.ready === true || vm?.container === "running",
         vmProblem: vm?.problem ?? null,
+        canInstallRuntime: process.platform === "win32",
       });
     }
 
@@ -4313,6 +4316,22 @@ const server = createServer(async (req, res) => {
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : "the Local VM could not be set up";
         failOpen(`${message}. Chat still works without a computer.`);
+      }
+      res.end();
+      return;
+    }
+
+    if (method === "POST" && path === "/api/local-model/runtime") {
+      res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      try {
+        const machine = await readMachine(DATA_DIR);
+        const tokens = tierFor(machine) === "tight" ? TIGHT_CONTEXT_TOKENS : DEFAULT_CONTEXT_TOKENS;
+        for await (const event of runOllamaSetup({ dataDir: DATA_DIR, contextTokens: tokens })) {
+          res.write(`${JSON.stringify(event)}\n`);
+        }
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : "Ollama could not be installed";
+        res.write(`${JSON.stringify({ error: message })}\n`);
       }
       res.end();
       return;
@@ -4665,10 +4684,18 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
+  void (async () => {
+    const machine = await readMachine(DATA_DIR);
+    const tokens = tierFor(machine) === "tight" ? TIGHT_CONTEXT_TOKENS : DEFAULT_CONTEXT_TOKENS;
+    await ensureOwnedOllama({ dataDir: DATA_DIR, contextTokens: tokens });
+  })().catch((cause) => {
+    console.error("owned Ollama did not start:", cause instanceof Error ? cause.message : cause);
+  });
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
+    stopOwnedOllama();
     for (const idle of localVmIdles.values()) idle.cancel();
     watchdog.stop();
     routines?.stop();

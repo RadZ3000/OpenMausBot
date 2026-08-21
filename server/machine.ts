@@ -74,9 +74,11 @@ export const APPROX_MODEL_BYTES = 2.5 * GB;
 /** Bytes the download needs, with headroom for the runtime and the unpack.
  *
  * Deliberately generous. Running out of disk halfway through several gigabytes
- * is a worse experience than being told up front that it will not fit. */
+ * is a worse experience than being told up front that it will not fit. The extra
+ * five gigabytes cover the pinned Ollama zip (~1.36 GiB) plus unpack. */
 export function diskNeededBytes(modelBytes: number): number {
-  return modelBytes + 3 * GB;
+  // Model plus the pinned Ollama zip (~1.36 GiB) and unpack/working space.
+  return modelBytes + 5 * GB;
 }
 
 export function hasRoomOnDisk(spec: MachineSpec, modelBytes: number): boolean {

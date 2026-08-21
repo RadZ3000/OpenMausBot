@@ -43,7 +43,7 @@ describe("modelForTier", () => {
 
 describe("hasRoomOnDisk", () => {
   it("wants the model plus headroom for the runtime and the unpack", () => {
-    expect(diskNeededBytes(2.5 * GB)).toBe(5.5 * GB);
+    expect(diskNeededBytes(2.5 * GB)).toBe(7.5 * GB);
   });
 
   it("refuses when the drive cannot hold it", () => {

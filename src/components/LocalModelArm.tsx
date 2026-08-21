@@ -3,8 +3,9 @@ import { Loader2 } from "lucide-react";
 
 // Path A of the first-run chooser: an open-weights model on this machine.
 //
-// Chat needs Ollama, Granite, and Hermes. The Local VM (Cua desktop in
-// Podman) is offered on this arm too, but Continue is never gated on it.
+// Chat needs a local runtime, Granite, and Hermes. The arm fetches a pinned
+// Ollama zip and launches it (Windows). The Local VM is offered too, but
+// Continue is never gated on the VM.
 //
 // See docs/plans/2026-08-20-005-three-path-first-run-plan.md.
 
@@ -18,6 +19,7 @@ interface LocalModelStatus {
   wslReady: boolean;
   vmReady: boolean;
   vmProblem: string | null;
+  canInstallRuntime: boolean;
 }
 
 interface NdjsonEvent {
@@ -115,6 +117,22 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const installRuntime = async () => {
+    setError(null);
+    setProgress({ label: "Installing Ollama…", fraction: null });
+    try {
+      const response = await fetch("/api/local-model/runtime", { method: "POST" });
+      await readNdjson(response, (event) => {
+        if (event.status) setProgress({ label: event.status, fraction: event.fraction ?? null });
+      });
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Ollama could not be installed.");
+    } finally {
+      setProgress(null);
+    }
+  };
 
   const download = async () => {
     setError(null);
@@ -252,17 +270,37 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
       <>
         <Checklist status={status} />
         <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
-          This needs Ollama running on this machine to hold the model. Install it, start it, then
-          come back &mdash; nothing else here needs an account.
+          {status.canInstallRuntime
+            ? "This installs a local runtime on this machine to hold the model. About 1.4 GB, no account."
+            : "This needs Ollama running on this machine to hold the model. Install it, start it, then come back."}
         </p>
-        <a
-          href={RUNTIME_DOWNLOAD}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-5 w-full rounded-lg bg-accent py-2.5 text-center text-[15px] font-medium text-white"
-        >
-          Get Ollama
-        </a>
+        {progress ? (
+          <>
+            <ProgressBar fraction={progress.fraction} />
+            <div className="mt-2 text-[12.5px] text-ink-secondary">
+              {progress.label}
+              {progress.fraction !== null && ` — ${Math.round(progress.fraction * 100)}%`}
+            </div>
+          </>
+        ) : status.canInstallRuntime ? (
+          <button
+            type="button"
+            onClick={() => void installRuntime()}
+            className="mt-5 w-full rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white"
+          >
+            Install the local runtime
+          </button>
+        ) : (
+          <a
+            href={RUNTIME_DOWNLOAD}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-5 w-full rounded-lg bg-accent py-2.5 text-center text-[15px] font-medium text-white"
+          >
+            Get Ollama
+          </a>
+        )}
+        {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
         <button
           type="button"
           onClick={() => void refresh()}

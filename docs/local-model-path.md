@@ -24,7 +24,7 @@ them.
 
 | # | Precondition | Ours to do? |
 |---|---|---|
-| 1 | An inference runtime is running | Partly — we can start one, not install one, today |
+| 1 | An inference runtime is running | **Yes** — fetch a pinned zip and spawn it (Windows); see [plan 003](plans/2026-08-21-003-local-runtime-install-plan.md) |
 | 2 | A model is pulled into it | **Yes, entirely** — built |
 | 3 | A `custom`-access agent CLI is installed | Not yet, and this is the wall |
 | 4 | The bot points at `host::model` | Yes, trivially |
@@ -48,7 +48,7 @@ a piece we ship is a piece the checklist starts with already ticked.
 
 Defects tracked as [B-11 and B-12](known-bugs.md).
 
-### How each piece should arrive — **Decided, unbuilt**
+### How each piece should arrive — **Decided** (runtime: first cut on Windows)
 
 Settled after testing the arm end to end on 2026-08-20.
 
@@ -121,37 +121,34 @@ Gated on the licence check below.
 
 ### The runtime can be bundled, and Ollama endorses it — **Decided (fetch, not bundle)**
 
-Ollama is MIT, and its Windows docs publish `ollama-windows-amd64.zip`
-explicitly so you can "embed Ollama in existing applications". Its own installer
-is per-user and needs no admin, same as ours.
+Ollama is MIT (verified at tag v0.32.15). Its Windows docs publish
+`ollama-windows-amd64.zip` explicitly so you can "embed Ollama in existing
+applications". The tray installer is a different artefact and is the one that
+auto-updates.
 
-At ~1.39 GB, bundling it into the base installer would make a 103 MB download
-into ~1.5 GB, paid by everyone including the majority who never touch a local
-model. **Fetch it on first use of this path instead**, using the pattern already
-in `scripts/cua-linux-release.mjs`: a pinned release URL, a hard-coded SHA-256
-per asset, verified after download, with a comment requiring explicit review
-before a checksum changes.
+At ~1.36 GiB (v0.32.15: 1,460,302,386 bytes, SHA-256
+`a1d11d46a944f9c7521f5e9a3a5db51cd3365401da627d96c204698fc6914ff9`), bundling it
+into the base installer would make a ~100 MB download into ~1.5 GB, paid by
+everyone including the majority who never touch a local model. **Fetch it on
+first use of this path instead.** There is no CPU-only Windows amd64 zip;
+integrated-graphics machines still pay for NVIDIA libraries.
 
 The bundled variant remains right for an air-gapped customer, and
 `VITE_INSTALL_PATHS` plus packaging metadata is already the mechanism for
 shipping that as a separate build.
 
-### Ollama for Windows auto-updates itself, silently — **Open, verify before relying on it**
+Build notes: [plan 2026-08-21-003](plans/2026-08-21-003-local-runtime-install-plan.md).
 
-Reported (secondary source, **not yet confirmed against an official advisory**):
-the Windows build performs silent automatic updates, and its update path carried
-two flaws — a verification routine that returned success unconditionally, and a
-path traversal that together could stage an attacker-supplied executable into the
-Startup folder. Said to affect 0.12.10 through 0.17.5, fixed May 2026.
+### Ollama for Windows auto-updates itself, silently — **Decided (avoid the tray)**
 
-Whether or not the specific numbers hold, the structural point stands and matters
-for a product that is **sold**: telling a customer to install a component that
-then updates itself silently means shipping them an update channel we neither
-control nor audit. It is a further argument for the pinned portable zip over the
-installer — a version we choose, verify by checksum, and update deliberately.
+The silent-update CVE write-up is still **not** cited; it was secondary. The
+structural point is settled against first-party docs: auto-update lives in
+`OllamaSetup.exe`'s tray app (`ollama app.exe`). The standalone zip we fetch
+contains only the CLI and GPU libs; we spawn `ollama serve` and own the
+process. We never install the tray.
 
-**Do not cite the CVE numbers to anyone until they are checked against the
-vendor's own advisory.**
+If `127.0.0.1:11434` is already answering (a customer who installed Ollama
+themselves), we leave that daemon alone and the memory policy stays inert.
 
 ### LocalAI is not a substitute — **Decided**
 
