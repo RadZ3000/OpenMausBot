@@ -357,12 +357,38 @@ Both CLIs check for a *chosen* provider before a session exists — Hermes at
 declaring one without selecting it fails every turn.
 
 The Qwen case is fixed ([B-14](#b-14--qwen-code-demanded-a-cloud-login-for-a-local-model--open)).
-Hermes is confirmed by hand but **not yet fixed in the driver**:
-`ensureHermesInjectProvider` writes the provider block and stops.
+Hermes is **not fixed**, and one attempt has already failed:
+
+> **A fix was shipped and reverted the same night.** `spawnArgs` was changed to
+> pass `--provider <host>` ahead of the subcommand, on the theory that selecting
+> per invocation beats mutating the user's global config. Four unit tests
+> asserted the args array and passed. The build shipped. It made no difference:
+> `hermes --provider ollama acp` fails at `session/new` with the same
+> "No LLM provider configured" as bare `hermes acp` — **global flags do not
+> reach this subcommand**, the same way the driver's own header already
+> records that `cmd_acp` ignores `-m`. Green tests, dead feature. The tests
+> asserted the argument vector, which was never in doubt; nothing asserted the
+> session started. Reverted in full, tests included.
+
+**What is actually known to work:** a `model.provider` naming a real provider
+in `config.yaml`. Set by hand, `session/new` succeeds and the model runs.
+
+**Why that is not simply the fix:** the writer deliberately leaves
+`model.provider` alone, and six matrix tests assert it stays `auto` — flipping
+a user's global default to a local host is a side effect on the rest of their
+Hermes usage, not just our session.
+
+**Unexplored and promising:** point injected sessions at *our own*
+`HERMES_HOME` — the driver already controls that variable in `transformEnv` —
+seeded with a config that selects the host. The user's `~/.hermes` is never
+touched, both invariants hold, and it works on a machine that has never run
+`hermes setup`, which is the whole non-developer case. Cost: their Hermes
+settings would not apply to our sessions. **Not yet tried.**
 
 Worth fixing as one pattern rather than three patches. `droid`, `kimi`,
 `opencode-go` and `grok` all write vendor config the same way and none has been
-exercised end to end.
+exercised end to end. Whatever the fix, the acceptance test is a real
+`session/new` returning a session id — not the shape of a command line.
 
 ### B-22 · Hermes CLI runs its file tools in its own install directory — ~~`needs-probe`~~ **resolved: does not affect us**
 

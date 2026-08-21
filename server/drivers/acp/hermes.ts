@@ -123,6 +123,10 @@ const support: AcpSupport = {
     docsUrl: "https://hermes-agent.nousresearch.com/docs/getting-started/quickstart",
     signInCommand: "hermes setup",
   },
+  // B-23: an injected session dies at session/new with "No LLM provider
+  // configured" unless config.yaml names a resolvable provider. Global flags
+  // do not reach this subcommand — `hermes --provider ollama acp` fails
+  // identically to `hermes acp` — so the fix has to live elsewhere.
   spawnArgs: () => ["acp"],
   transformEnv: (env) => {
     // A leftover OPENAI_API_KEY makes Hermes auto-resolve to OpenRouter and
