@@ -3,6 +3,8 @@ name: commercial-fork
 description: How this fork stays sellable — what we own versus what we inherit, where proprietary code goes, the Apache-2.0 notices that must survive into a build, and the defaults that must never point at upstream. Use before adding a dependency, before editing a file upstream owns, when adding telemetry or any outbound network call, when touching branding or release configuration, and whenever asked what we may legally ship.
 ---
 
+
+
 # Commercial fork
 
 This repo is modified and sold. That does not change what the code should look
@@ -77,6 +79,8 @@ structure:
 - the shipped skills catalog in `skills/`
 - plain modules in `src/lib/`, components in `src/components/`
 
+
+
 ### Worked example
 
 Making telemetry consent-gated touched **four** existing files (two of them by
@@ -129,29 +133,44 @@ parallel scheme.
 A fork that inherits upstream's endpoints reports our customers to the person we
 forked from. Treat every such default as a bug.
 
+`pnpm check:distribution` enforces this list rather than trusting it to be read.
+It scans everything that ships, fails on an upstream reference it has not been
+told about, and — with `--release` — fails while any remain at all. Adding a
+bullet here means adding an `ACCEPTED` entry in `scripts/check-distribution.mjs`,
+and vice versa.
+
 - **Telemetry** — the analytics destination is build configuration
-  (`VITE_ANALYTICS_KEY`) and is unset by default; sending additionally waits on
-  explicit consent. Never reintroduce a hardcoded key. Never add an outbound
-  call that is on by default.
+(`VITE_ANALYTICS_KEY`) and is unset by default; sending additionally waits on
+explicit consent. Never reintroduce a hardcoded key. Never add an outbound
+call that is on by default.
 - **Update feed** — `electron-builder.yml` still publishes to and updates from
-  `milind-soni/openmausbot-releases`. **A build handed to anyone must not carry
-  this**, or it will update itself onto upstream's product.
+`milind-soni/openmausbot-releases`. **A build handed to anyone must not carry
+this**, or it will update itself onto upstream's product.
 - **Connected-apps broker** — `electron/main.mjs` falls back to
-  `openmausbot-composio.milindsoni201.workers.dev` whenever `app.isPackaged`.
-  So a packaged build routes a customer's Gmail, Slack, Calendar and Notion
-  traffic through upstream's Cloudflare Worker, on upstream's Composio key, with
-  a per-installation token in upstream's D1. It never fires in development,
-  which is exactly why it is easy to ship. Upstream's own README tells forks to
-  deploy their own Worker and set `OMB_COMPOSIO_BROKER_URL`; do that before any
-  build leaves. `cloudflare/composio-broker/` is also the right model for any
-  proxy of our own — per-install tokens hashed in D1, rate-limit namespaces, and
-  a `REGISTRATION_MODE` switch.
+`openmausbot-composio.milindsoni201.workers.dev` whenever `app.isPackaged`.
+So a packaged build routes a customer's Gmail, Slack, Calendar and Notion
+traffic through upstream's Cloudflare Worker, on upstream's Composio key, with
+a per-installation token in upstream's D1. It never fires in development,
+which is exactly why it is easy to ship. Upstream's own README tells forks to
+deploy their own Worker and set `OMB_COMPOSIO_BROKER_URL`; do that before any
+build leaves. `cloudflare/composio-broker/` is also the right model for any
+proxy of our own — per-install tokens hashed in D1, rate-limit namespaces, and
+a `REGISTRATION_MODE` switch.
 - **Documentation links** — `src/components/ApiKeys.tsx:273` and
-  `src/components/LinuxLocalControl.tsx:16` open upstream's GitHub repo. A
-  customer clicking "docs" and landing on the project we forked from undoes a
-  lot of the impression the rest of the build works for.
+`src/components/LinuxLocalControl.tsx:16` open upstream's GitHub repo. A
+customer clicking "docs" and landing on the project we forked from undoes a
+lot of the impression the rest of the build works for.
+- **Team library** — `server/team-library.ts:4-5` fetches starter teams from
+`milind-soni/openmausbot-teams` over `raw.githubusercontent.com` at runtime,
+and `src/components/TeamLibraryPanel.tsx:20` links the same repo. Content we
+ship, served from a repository upstream can change or delete. Either host our
+own or turn the feature off in our builds.
+- **Package metadata** — `package.json`'s `homepage`, `repository` and `author`
+are upstream's URLs and upstream's email, and they travel into installer
+metadata and the About surface. So does the Linux `maintainer` in
+`electron-builder.yml`.
 - **Brand** — `appId`, `productName`, the mascot, and the maintainer field are
-  upstream's marks, and Apache §6 does not license them.
+upstream's marks, and Apache §6 does not license them.
 
 `docs/identity-surface.md` maps the whole naming surface, including which names
 are *not* branding and must survive a rebrand untouched — data directories,
@@ -165,10 +184,19 @@ rebranding anything.
 - `pnpm check:licenses` passes, and any new `REVIEWED` entry has a real reason.
 - `LICENSE` and `NOTICE` ship, plus the `third_party/cua-driver/` notices.
 - Files we modified carry a modification notice; keep this cheap by not
-  modifying many.
-- No default points at an upstream endpoint, feed, or key.
+modifying many.
+- `pnpm check:distribution --release` passes — no default points at an upstream
+endpoint, feed, or key.
 - Our own copyright header goes on files we wholly wrote — not on files we
-  edited, which keep theirs and gain a "modified by" line.
+edited, which keep theirs and gain a "modified by" line.
+
+**There is no runbook for this yet, and the ones in the tree are traps.**
+`docs/releasing.md`, `.claude/skills/windows-release/SKILL.md` and
+`ios/AppStore/RELEASE.md` all arrived in the merge, are upstream's files
+unmodified, and describe publishing to upstream's release repo with upstream's
+credentials. Following them ships our product into their update feed.
+`docs/plans/2026-08-20-004-release-channel-plan.md` records what has to be
+decided before a runbook of ours can exist.
 
 ## What this is not
 

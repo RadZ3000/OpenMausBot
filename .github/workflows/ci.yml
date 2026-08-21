@@ -38,6 +38,9 @@ jobs:
       # every platform: the native dependencies fan out into per-OS builds, so
       # a copyleft binary can be present on one runner and absent on the others
       - run: pnpm check:licenses
+      # a text scan of tracked files, identical on every runner — once is enough
+      - run: pnpm check:distribution
+        if: matrix.os == 'ubuntu-latest'
       - name: production UI build
         if: matrix.os == 'ubuntu-latest'
         run: pnpm exec vite build
