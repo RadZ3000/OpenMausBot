@@ -549,7 +549,7 @@ describe("setupCommands", () => {
     expect(commands.run).not.toContain("--memory-swap");
   });
 
-  it("offers the supported Podman Desktop installer on Windows", () => {
-    expect(setupCommands(null, "win32").install).toBe("winget install -e --id RedHat.Podman-Desktop");
+  it("installs the Podman CLI on Windows, not the Desktop GUI", () => {
+    expect(setupCommands(null, "win32").install).toBe("winget install -e --id Podman.CLI");
   });
 });

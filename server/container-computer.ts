@@ -857,11 +857,18 @@ export function setupCommands(
   runtime: Runtime | null,
   platform: NodeJS.Platform = process.platform,
 ) {
+  // The CLI, not Podman Desktop: this module drives the runtime itself and
+  // serves its own viewer, so the ~227MB container-management GUI is weight
+  // nobody here uses. The identifier moved when Podman 6.0 joined the CNCF —
+  // RedHat.Podman is deprecated and frozen at 5.8.x, so it silently installs an
+  // old version. Prefer Podman over Docker Desktop deliberately: Docker's terms
+  // require a paid subscription above 250 employees or $10M revenue, which is
+  // the customer this fork is sold to.
   const install =
     platform === "darwin"
       ? "brew install podman; podman machine init; podman machine start"
       : platform === "win32"
-        ? "winget install -e --id RedHat.Podman-Desktop"
+        ? "winget install -e --id Podman.CLI"
         : null;
   const runtimeStart =
     runtime === "container"
