@@ -79,6 +79,33 @@ will never use. Unavoidable while VRAM stays unreadable — see the GPU entry.
 
 **Build order:** CLI first (smallest, unblocked, retires three bugs), then
 runtime ownership, then the checklist rework in [B-11](known-bugs.md).
+As of 2026-08-21 the arm installs Hermes in-app (not bundled) and shows the
+three-row checklist; the CLI-bundle vs fetch question is not reopened here.
+
+### Local VM on this arm — **Open** (research, not a spec)
+
+Recorded 2026-08-21 after the Hermes/Granite first-run landed, before anyone
+had walked a scratch reinstall of that installer. **Nothing below is decided.**
+The working notes, including what to measure, live in
+[plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md).
+
+The product question is whether "run a model on this computer" should also
+stand up OpenMausBot's Cua Linux sandbox (Settings → Local VM), which is a
+different stack from Hermes' own computer-use tools. Plan
+[003](plans/2026-08-20-003-product-foundation-plan.md) and
+[005](plans/2026-08-20-005-three-path-first-run-plan.md) currently say this
+arm should **not** offer computer control, because a 3B local model is a weak
+driver for long tool loops. Including the VM anyway may still be right if the
+promise is "this machine can host a desktop," not "Granite will use it well."
+That tension is the thing to research, not to paper over.
+
+Upstream already owns the VM (`server/container-computer.ts`,
+`src/components/LocalComputerSection.tsx`, `/api/local-computer/*`). A first-run
+implementation would call those routes from `LocalModelArm.tsx` (ours) rather
+than nesting their Settings cards. Podman/WSL is the Ollama of this layer: we
+do not yet know whether we can install it unelevated, how much RAM a 16 GB
+laptop has left after Granite, or whether `pull`/`run` belong before or after
+the first successful chat. Measure on a clean Windows box before writing code.
 
 **Sequencing caveat:** [B-15](known-bugs.md) may outrank all of it. A setup flow
 does not help a customer whose machine refuses to install the app.
@@ -482,3 +509,7 @@ Alibaba's Qwen Code). **Do this before any bundling work starts**, not after.
 3. **16 GB threshold** — see above.
 4. **Delete semantics** — what happens to bots pointing at a removed model.
 5. **Which agent CLI to bundle**, once licences are checked.
+6. **Whether first-run should stand up the Local VM**, and on which machines —
+   see [plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md).
+   Open until a scratch install of the Hermes/Granite arm has been walked and
+   the RAM / Podman / quality questions below have actual numbers.
