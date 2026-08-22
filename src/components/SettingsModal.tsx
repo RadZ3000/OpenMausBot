@@ -89,7 +89,7 @@ function UpdatesRow() {
           void updater.check();
         }}
         disabled={s?.status === "checking" || s?.status === "downloading"}
-        className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-raised disabled:opacity-40"
+        className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
       >
         {s?.status === "available"
           ? "Download"
@@ -174,7 +174,7 @@ export function SettingsModal() {
               aria-current={section === id ? "page" : undefined}
               className={cn(
                 "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[14px]",
-                section === id ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+                section === id ? "bg-control text-ink" : "text-ink-secondary hover:bg-control/50 hover:text-ink",
               )}
             >
               <Icon size={15} />
@@ -191,7 +191,7 @@ export function SettingsModal() {
             <button
               onClick={() => dispatch({ type: "toggleAppSettings", open: false })}
               aria-label="Close settings"
-              className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+              className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
             >
               <X size={18} />
             </button>
