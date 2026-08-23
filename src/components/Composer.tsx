@@ -38,11 +38,14 @@ export function Composer({
   group,
   members,
   onEditLast,
+  locked = false,
 }: {
   bot?: Bot;
   group?: Group;
   members?: Bot[];
   onEditLast?: () => void;
+  /** New rooms keep the composer inert until their setup is saved or skipped. */
+  locked?: boolean;
 }) {
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
@@ -150,13 +153,19 @@ export function Composer({
   };
 
   // Rooms hold one message client-side while a member speaks; it auto-sends
-  // the moment the room settles. 1:1 sends go straight to the server even
-  // mid-turn — the harness queues them (steer-queue), so the message shows
-  // in the transcript immediately with a queued affordance.
+  // the moment the room settles. 1:1 mid-turn sends still POST (the harness
+  // queue), but stay off the transcript until drain — the chip here is the
+  // pending row so they cannot become the active leaf mid-turn.
   const [queued, setQueued] = useState<string | null>(null);
+  const pendingChip = group
+    ? queued
+    : bot
+      ? state.pendingQueued?.[bot.threadId]?.map((entry) => entry.text).join("\n")
+      : undefined;
   // a chip on its own is a message: the send control has to appear for it
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
   const send = () => {
+    if (locked) return;
     if (attachments.some((attachment) => attachment.kind === "image") && !imageTargetsSupport(text)) {
       dispatch({ type: "error", message: "The selected responder does not support image attachments." });
       return;
@@ -174,13 +183,14 @@ export function Composer({
       track("message_sent", { room: true });
     } else if (bot) {
       dispatch({ type: "send", botId: bot.id, text: t });
-      track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy });
+      track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy && !canSteer });
     }
     setText("");
     setAttachments([]);
   };
   useEffect(() => {
-    if (!busy && queued && group) {
+    if (busy || !queued) return;
+    if (group) {
       if (queued.includes("<attached-image ") && !imageTargetsSupport(queued)) {
         dispatch({ type: "error", message: "The selected responder does not support image attachments." });
         setQueued(null);
@@ -188,8 +198,8 @@ export function Composer({
       }
       dispatch({ type: "sendGroup", groupId: group.id, text: queued });
       track("message_sent", { room: true, queued: true });
-      setQueued(null);
     }
+    setQueued(null);
   }, [busy, queued, group, members, state.instances, dispatch]);
 
   // native dictation: partials stream into the input while the Swift
@@ -243,19 +253,21 @@ export function Composer({
         </div>
       )}
       <div className="relative mx-auto max-w-[900px]">
-        {queued && (
+        {pendingChip && (
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[12.5px] text-ink-secondary">
             <Clock size={13} className="shrink-0" />
             <span className="min-w-0 flex-1 truncate">
-              Queued — sends when {busyName} finishes: “{queued}”
+              Queued — sends when {busyName} finishes: “{pendingChip}”
             </span>
-            <button
-              onClick={() => setQueued(null)}
-              aria-label="Discard queued message"
-              className="rounded p-0.5 hover:bg-raised hover:text-ink"
-            >
-              <X size={13} />
-            </button>
+            {group && (
+              <button
+                onClick={() => setQueued(null)}
+                aria-label="Discard queued message"
+                className="rounded p-0.5 hover:bg-raised hover:text-ink"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         )}
         {pickerOpen && (
@@ -288,7 +300,7 @@ export function Composer({
                   </span>
                 )}
                 <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{peer.name}</span>
-                <span className="shrink-0 text-xs text-ink-secondary">{peer.bot ? "Agent" : "Room"}</span>
+                <span className="shrink-0 text-xs text-ink-secondary">{peer.bot ? "Agent" : "Channel"}</span>
               </button>
             ))}
           </div>
@@ -395,9 +407,11 @@ export function Composer({
             }
             if (e.key === "Escape" && recording) setRecording(false);
           }}
-          disabled={Boolean(approval)}
+          disabled={Boolean(approval) || locked}
           placeholder={
-            approval
+            locked
+              ? "Finish room setup to start chatting"
+              : approval
               ? "Answer the approval above to continue"
               : recording
               ? "Listening…"
@@ -414,7 +428,7 @@ export function Composer({
           aria-label={`Message ${group ? group.name : (bot?.name ?? "")}`}
           className="max-h-40 w-full resize-none self-center bg-transparent py-1 text-[15px] leading-6 text-ink placeholder:text-ink-secondary focus:outline-none"
         />
-        {busy && (
+        {busy && !locked && (
           <button
             onClick={() => {
               if (group) dispatch({ type: "interruptGroup", groupId: group.id });
@@ -427,7 +441,7 @@ export function Composer({
             <Square size={14} className="fill-current" />
           </button>
         )}
-        {!busy && !hasContent && capabilities.dictation.available && (
+        {!locked && !busy && !hasContent && capabilities.dictation.available && (
           <button
             onClick={toggleMic}
             aria-label={recording ? "Stop dictation" : "Start dictation"}
@@ -442,7 +456,7 @@ export function Composer({
             <Mic size={18} />
           </button>
         )}
-        {hasContent && (
+        {hasContent && !locked && (
           <button
             onClick={send}
             aria-label={busy && canSteer ? "Send into the running turn" : busy ? "Queue message" : "Send message"}

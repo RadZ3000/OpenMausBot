@@ -18,6 +18,7 @@ import { RoutinesPage } from "@/components/RoutinesPage";
 import { NoEngines } from "@/components/NoEngines";
 import { CommandPalette } from "@/components/CommandPalette";
 import { LightboxProvider } from "@/components/Lightbox";
+import { SkillRecorderPage } from "@/components/SkillRecorderPage";
 
 function Shell() {
   const { state, dispatch } = useStore();
@@ -110,6 +111,8 @@ function Shell() {
       />
       {state.activeView === "routines" ? (
         <RoutinesPage />
+      ) : state.activeView === "skill-recorder" ? (
+        <SkillRecorderPage />
       ) : noEngines ? (
         <NoEngines />
       ) : group ? (

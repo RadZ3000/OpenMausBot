@@ -367,7 +367,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const canGenerateImages = engine?.capabilities?.imageGenMcp === true;
   const imageGenConfigured = state.config?.imageGen?.configured === true;
   const imageGenEnabled = bot.imageGen !== false;
-  const currentChief = state.bots.find((candidate) => candidate.chiefOfStaff);
+  const sectionName = bot.section?.trim() || "General";
+  const currentChief = state.bots.find(
+    (candidate) =>
+      candidate.chiefOfStaff &&
+      (candidate.section?.trim() || "") === (bot.section?.trim() || ""),
+  );
 
   return (
     <>
@@ -442,7 +447,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               </span>
               <div className="min-w-0 flex-1">
                 <div className="text-[15px] font-medium text-ink">Chief of Staff</div>
-                <div className="text-[11.5px] text-ink-secondary">One per workspace</div>
+                <div className="text-[11.5px] text-ink-secondary">One for {sectionName}</div>
               </div>
               <button
                 role="switch"
@@ -468,12 +473,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               {bot.chiefOfStaff && !canCoordinate
                 ? "This bot still holds the role, but its current engine cannot contact teammates. Choose a Claude or ACP engine to restore coordination."
                 : bot.chiefOfStaff
-                  ? "This is your primary contact. It can coordinate the other bots and combine their work into one answer."
+                  ? `This is the primary contact for ${sectionName}. It can create and coordinate specialists in this section, then combine their work into one answer.`
                 : !canCoordinate
                   ? "Choose a Claude or ACP engine to let this bot coordinate teammates."
                   : currentChief
-                    ? `Make this bot your primary contact and hand the role over from ${currentChief.name}.`
-                    : "Make this bot your primary contact for work that may involve several bots."}
+                    ? `Make this bot the ${sectionName} Chief and hand the role over from ${currentChief.name}.`
+                    : `Make this bot the primary contact for the ${sectionName} section.`}
             </div>
           </div>
 

@@ -87,6 +87,7 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import { isEffortLevel, type RequestOutcome, type RuntimeEvent } from "./contracts.ts";
 import { PREFERRED_ENGINE, startingModel } from "./distribution.ts";
+import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
@@ -99,8 +100,10 @@ import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerC
 import {
   mentionedBots,
   roomResponders,
+  sectionKey,
   Store,
   type GroupDefaultResponder,
+  type GroupRecord,
   type Message,
   type TaskRecord,
 } from "./store.ts";
@@ -124,6 +127,8 @@ import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
+import { fetchBotDirectory, matchDirectoryBots, type MatchedDirectoryBot } from "./bot-directory.ts";
+import { scoutProject, suggestTeam } from "./project-scout.ts";
 import { fetchGithubTeam, fetchLibraryTeam, fetchTeamCatalog } from "./team-library.ts";
 import { createTeamManifest, importedMemberProfile, parseTeamManifest } from "./team-manifest.ts";
 import { readThreadEvents } from "./thread-events.ts";
@@ -131,7 +136,7 @@ import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./
 import { memberTurnSelection } from "./member-turn.ts";
 import { WebhookManager } from "./webhooks.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
-import { loadBundledSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
+import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -172,6 +177,7 @@ const cfg = loadConfig();
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
 const bundledSkills = loadBundledSkills();
+const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
 const bus = new EventBus();
 bus.attach(registry.instances());
@@ -193,6 +199,7 @@ function authorizedComms(header: string | string[] | undefined): boolean {
 // a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
 // A→B is allowed but B→C (and A→B→A loops) never start.
 const MAX_COMMS_DEPTH = 1;
+const MAX_WORKSPACE_BOTS = 100;
 // Resolved from the server root — see server/proxy-paths.ts. This descending
 // path happened to survive bundling, but it goes through the same anchor so
 // there is exactly one way proxies are located.
@@ -1034,6 +1041,15 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     }
+    case "turn.retrying":
+      // the driver is about to relaunch the turn after a transient failure;
+      // the activity chip keeps the bot visibly busy through the backoff
+      pushMessage({
+        role: "bot",
+        kind: "activity",
+        tool: { name: `retrying — attempt ${event.attempt + 1}/${RETRY_MAX_ATTEMPTS} in ${Math.round(event.delayMs / 1000)}s — ${event.reason}`, ok: true },
+      });
+      break;
     case "runtime.error":
       pushMessage({
         role: "bot",
@@ -1078,7 +1094,9 @@ bus.subscribe((event: RuntimeEvent) => {
         if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
         store.patchBot(bot.id, { unread: true });
         if (routineRun?.status !== "failed") {
-          notify(buildNotification("done", bot, event.threadId, reply));
+          // the frame carries the bot's avatar so every desktop client can
+          // show the notification under that bot's own face
+          notify(buildNotification("done", bot, event.threadId, reply, { avatarUrl: bot.avatarUrl }));
         }
         if (screenPollers.has(bot.id)) {
           // the last live frame becomes a settled inline screen message —
@@ -1247,12 +1265,13 @@ bus.subscribe((event: RuntimeEvent) => {
 });
 
 function drainQueuedSends() {
-  drainSteeredMessages(store, (botId, threadId, prompt, userMessage) =>
+  drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds) =>
     // A plain attended turn — no automationSource, no unattended, no comms
     // depth: exactly what typing the same words into an idle bot would run.
-    // The messages are already in the transcript; userMessage keeps
-    // startTurn from appending the joined prompt as a duplicate.
-    startTurn(botId, prompt, { threadId, userMessage }).catch((err) => {
+    // Drain just appended the held lines; userMessage keeps startTurn
+    // from duplicating the last one, and excludeIds drops every drained
+    // line from the transcript-replay so they are not also in `prompt`.
+    startTurn(botId, prompt, { threadId, userMessage, excludeMessageIds: excludeIds }).catch((err) => {
       store.appendMessage(threadId, {
         role: "bot",
         kind: "activity",
@@ -1377,6 +1396,8 @@ async function startTurn(
   opts?: {
     commsDepth?: number;
     userMessage?: Message;
+    /** Extra transcript ids to omit (every drained queued line, not just the last). */
+    excludeMessageIds?: string[];
     /** Routines run in detached tasks; pin the destination for the whole turn. */
     threadId?: string;
     /** Cloud routines run the whole agent inside the bot's Box VM instead
@@ -1445,9 +1466,10 @@ async function startTurn(
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE
   // branch only — abandoned forks never reach the model
+  const skipTranscript = new Set<string>([userMessage.id, ...(opts?.excludeMessageIds ?? [])]);
   const transcript = store
     .activePath(threadId)
-    .filter((m) => m.kind === "text" && m.text && m.id !== userMessage.id)
+    .filter((m) => m.kind === "text" && m.text && !skipTranscript.has(m.id))
     .slice(-40)
     .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: m.text! }));
 
@@ -1495,12 +1517,11 @@ async function startTurn(
       const selectedSkills = selectBundledSkills(
         text,
         instance.adapter.capabilities.phoneMcp === true ? ["phoneMcp"] : [],
-        bundledSkills,
+        availableSkills(),
       );
       if (selectedSkills.some((skill) => skill.manifest.requiredCapabilities.includes("phoneMcp"))) {
         integrations.phone = phoneIntegration();
       }
-      const skillInstructions = renderSkillInstructions(selectedSkills);
       // the user's connected apps, but only to a driver that can mount
       // them — a key in the config says the connections exist, not that
       // this engine can reach them — and only to a bot the user has not
@@ -1520,6 +1541,9 @@ async function startTurn(
       // MEMORY.md lives. API/box engines have no local filesystem story.
       const worksInWorkspace = instance.driverKind !== "grok" && instance.driverKind !== "boxAgent";
       const privateWorkspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
+      const skillInstructions = renderSkillInstructions(selectedSkills, {
+        includeRoot: worksInWorkspace && opts?.runOn !== "cloud",
+      });
       // An explicit working folder wins for new tasks; otherwise they use
       // the private bot workspace. A legacy task with an existing provider
       // session deliberately pins to null (the old home-folder behavior),
@@ -1735,10 +1759,16 @@ async function startTurn(
       // integrations.agents gate below, the prompt hint) — a bot on a driver
       // without it must not be told about tools it cannot call. Any bot can
       // still be the TARGET of ask_bot regardless of its driver.
+      const sectionPeers = store.bots.filter(
+        (candidate) =>
+          candidate.id !== bot.id &&
+          !candidate.hidden &&
+          sectionKey(candidate.section) === sectionKey(bot.section),
+      );
       if (
         commsDepth < MAX_COMMS_DEPTH &&
         instance.adapter.capabilities.agentsMcp === true &&
-        store.bots.filter((b) => b.id !== bot.id && !b.hidden).length > 0
+        (bot.chiefOfStaff || sectionPeers.length > 0)
       ) {
         integrations.agents = agentsIntegration(bot.id, threadId, commsDepth);
       }
@@ -1748,13 +1778,13 @@ async function startTurn(
       const tagged = integrations.agents
         ? mentionedBots(
             text,
-            store.bots.filter((b) => b.id !== bot.id),
+            sectionPeers,
           )
         : [];
       const coordinationPrompt = bot.chiefOfStaff
         ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents))
         : integrations.agents
-          ? "You can work with the user's other bots through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
+          ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
           : "";
 
       // (activeVpsThreads was already claimed above, before the provision or
@@ -1993,7 +2023,7 @@ async function runGroupMemberTurn(
   const selectedSkills = selectBundledSkills(
     serializeRoomContext(group.threadId, userName),
     instance.adapter.capabilities.phoneMcp === true ? ["phoneMcp"] : [],
-    bundledSkills,
+    availableSkills(),
   );
   if (selectedSkills.some((skill) => skill.manifest.requiredCapabilities.includes("phoneMcp"))) {
     integrations.phone = phoneIntegration();
@@ -2068,7 +2098,7 @@ async function runGroupMemberTurn(
   const roomSystem =
     (workspace ? `${system}\n${memorySystemPrompt(bot.id).trim()}` : system) +
     imageGenPrompt(integrations.imageGen) +
-    renderSkillInstructions(selectedSkills);
+    renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) });
 
   // run the turn and wait for it to settle, folding the reply text so a
   // chained @mention can be routed afterwards
@@ -2153,21 +2183,54 @@ async function runGroupMemberTurn(
 function startGroupTurn(groupId: string, text: string) {
   const group = store.group(groupId);
   if (!group) throw Object.assign(new Error("no such group"), { status: 404 });
+  if (roomSetupPending(group)) {
+    throw Object.assign(new Error("finish room setup before sending the first message"), { status: 409 });
+  }
   store.appendMessage(group.threadId, { role: "user", kind: "text", text });
 
   const members = group.memberIds
     .map((id) => store.bot(id))
     .filter((b): b is NonNullable<typeof b> => Boolean(b));
+  const availableMembers = members.filter((member) => !member.hidden);
+  const archived = members.filter((member) => member.hidden);
+  const mentionedArchived = mentionedBots(text, archived.map(({ name }) => ({ name })))[0];
+  if (mentionedArchived) {
+    store.appendMessage(group.threadId, {
+      role: "bot",
+      kind: "activity",
+      tool: {
+        name: `${mentionedArchived.name} is archived and can't respond — restore it or mention an active room member.`,
+        ok: false,
+      },
+    });
+  }
   let responders = roomResponders(text, members, group.defaultResponder);
   // bot⇄bot channels: chipping in without a tag addresses the last speaker
   if (!responders.length && group.dm) {
     const lastSpeakerId = [...store.messagesFor(group.threadId)]
       .reverse()
       .find((msg) => msg.kind === "text" && msg.from)?.from?.botId;
-    const last = members.find((b) => b.id === lastSpeakerId) ?? members[0];
+    const last = availableMembers.find((b) => b.id === lastSpeakerId) ?? availableMembers[0];
     responders = last ? [last] : [];
   }
-  if (!responders.length) return;
+  if (!responders.length) {
+    const defaultArchivedId = group.defaultResponder.kind === "member" ? group.defaultResponder.botId : undefined;
+    const defaultArchived = archived.find((member) => member.id === defaultArchivedId);
+    let unavailableMessage: string | undefined;
+    if (!mentionedArchived && !availableMembers.length) {
+      unavailableMessage = "No active room members can respond — restore an archived bot or add an active member.";
+    } else if (!mentionedArchived && defaultArchived) {
+      unavailableMessage = `${defaultArchived.name} is archived and can't respond — restore it or mention an active room member.`;
+    }
+    if (unavailableMessage) {
+      store.appendMessage(group.threadId, {
+        role: "bot",
+        kind: "activity",
+        tool: { name: unavailableMessage, ok: false },
+      });
+    }
+    return;
+  }
 
   const prev = groupQueues.get(groupId) ?? Promise.resolve();
   const next = prev.then(async () => {
@@ -2188,6 +2251,19 @@ function startGroupTurn(groupId: string, text: string) {
     }
   });
   groupQueues.set(groupId, next.catch(() => {}));
+}
+
+function roomSetupPending(group: GroupRecord): boolean {
+  const hasMarker =
+    Object.prototype.hasOwnProperty.call(group, "setupCompletedAt") ||
+    Object.prototype.hasOwnProperty.call(group, "setupSkippedAt");
+  return (
+    !group.dm &&
+    hasMarker &&
+    group.setupCompletedAt == null &&
+    group.setupSkippedAt == null &&
+    store.messagesFor(group.threadId).length === 0
+  );
 }
 
 const CONNECTOR_SLUG = /^[a-z0-9][a-z0-9_-]{0,80}$/;
@@ -2571,10 +2647,17 @@ const server = createServer(async (req, res) => {
       }
       if (method === "GET" && path === "/api/internal/agents") {
         const self = url.searchParams.get("self");
+        const sender = self ? store.bot(self) : null;
+        if (!sender) return json(res, 403, { error: "unknown sender" });
         // title/description included so a "chief of staff"-style bot can
         // judge the team (who does what, who has no job description yet)
         const bots = store.bots
-          .filter((b) => b.id !== self && !b.hidden)
+          .filter(
+            (b) =>
+              b.id !== self &&
+              !b.hidden &&
+              sectionKey(b.section) === sectionKey(sender.section),
+          )
           .map((b) => ({
             id: b.id,
             name: b.name,
@@ -2636,6 +2719,9 @@ const server = createServer(async (req, res) => {
         // hard refusal — every peer turn has an accountable sender.
         const from = store.bot(fromBotId);
         if (!from) return json(res, 403, { error: "unknown sender" });
+        if (sectionKey(from.section) !== sectionKey(target.section)) {
+          return json(res, 403, { error: "that bot belongs to a different section" });
+        }
         const fromThreadId = String(body.fromThreadId ?? from.threadId);
         if (!store.taskByThread(from.id, fromThreadId)) {
           return json(res, 403, { error: "source thread does not belong to sender" });
@@ -2669,6 +2755,9 @@ const server = createServer(async (req, res) => {
           const freshFrom = store.bot(fromBotId);
           const freshTarget = store.bot(toBotId);
           if (!freshFrom || !freshTarget) return json(res, 404, { error: "no such bot" });
+          if (sectionKey(freshFrom.section) !== sectionKey(freshTarget.section)) {
+            return json(res, 200, { error: "that bot moved to a different section" });
+          }
           if (!store.taskByThread(freshFrom.id, fromThreadId)) {
             return json(res, 404, { error: "source task no longer exists" });
           }
@@ -2696,6 +2785,11 @@ const server = createServer(async (req, res) => {
         if (!toBotId || !message) return json(res, 400, { error: "toBotId and message required" });
         const from = store.bot(fromBotId);
         if (!from) return json(res, 404, { error: "no such bot" });
+        const target = store.bot(toBotId);
+        if (!target) return json(res, 404, { error: "no such bot" });
+        if (sectionKey(from.section) !== sectionKey(target.section)) {
+          return json(res, 403, { error: "that bot belongs to a different section" });
+        }
         const fromThreadId = String(body.fromThreadId ?? from.threadId);
         if (!store.taskByThread(from.id, fromThreadId)) {
           return json(res, 403, { error: "source thread does not belong to sender" });
@@ -2724,6 +2818,64 @@ const server = createServer(async (req, res) => {
           message: from.approvePeerComms
             ? `Queued for review — @${targetName} will only pick it up if the user approves after your turn finishes.`
             : `Delegation queued — @${targetName} will pick it up after your current turn finishes.`,
+        });
+      }
+      if (method === "POST" && path === "/api/internal/create-bot") {
+        const body = await readBody(req);
+        const fromBotId = String(body.fromBotId ?? "");
+        const chief = store.bot(fromBotId);
+        if (!chief) return json(res, 403, { error: "unknown sender" });
+        const fromThreadId = String(body.fromThreadId ?? chief.threadId);
+        if (!store.taskByThread(chief.id, fromThreadId)) {
+          return json(res, 403, { error: "source thread does not belong to sender" });
+        }
+        if (!chief.chiefOfStaff) {
+          return json(res, 403, { error: "only a section's Chief of Staff can create operator bots" });
+        }
+        if (store.bots.length >= MAX_WORKSPACE_BOTS) {
+          return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
+        }
+        const name = String(body.name ?? "").trim();
+        const role = String(body.role ?? "").trim();
+        const instructions = String(body.instructions ?? "").trim();
+        if (!name || !role || !instructions) {
+          return json(res, 400, { error: "name, role, and instructions are required" });
+        }
+        if (name.length > 80) return json(res, 400, { error: "name must be at most 80 characters" });
+        if (role.length > 120) return json(res, 400, { error: "role must be at most 120 characters" });
+        if (instructions.length > 1_000) {
+          return json(res, 400, { error: "instructions must be at most 1000 characters" });
+        }
+        const duplicate = store.bots.find(
+          (candidate) =>
+            !candidate.hidden &&
+            sectionKey(candidate.section) === sectionKey(chief.section) &&
+            candidate.name.trim().toLowerCase() === name.toLowerCase(),
+        );
+        if (duplicate) {
+          return json(res, 409, { error: `@${duplicate.name} already exists in this section; use list_bots` });
+        }
+        const created = store.createBot(
+          {
+            name,
+            title: role,
+            description: instructions,
+            modelSelection: { ...chief.modelSelection },
+            section: chief.section,
+          },
+          { seedMessages: false },
+        );
+        const safeBot = store.patchBot(created.id, {
+          composio: false,
+          autoApprove: false,
+          approvePeerComms: false,
+        })!;
+        return json(res, 201, {
+          id: safeBot.id,
+          name: safeBot.name,
+          title: safeBot.title,
+          section: safeBot.section || "General",
+          model: safeBot.modelSelection.model,
         });
       }
       if (method === "POST" && path === "/api/internal/connectors/mcp") {
@@ -3162,18 +3314,32 @@ const server = createServer(async (req, res) => {
       return res.end(lines.join("\n"));
     }
 
-    // ── rooms (group chats) ─────────────────────────────────────────────
+    // ── channels (persisted internally as groups) ───────────────────────
     if (method === "POST" && path === "/api/groups") {
       const body = await readBody(req);
-      const memberIds = (Array.isArray(body.memberIds) ? body.memberIds : []).filter(
-        (id: unknown): id is string => typeof id === "string" && Boolean(store.bot(id)),
-      );
-      if (memberIds.length === 0) return json(res, 400, { error: "a room needs at least one bot" });
-      const name =
-        typeof body.name === "string" && body.name.trim()
-          ? body.name.trim()
-          : `${store.bot(memberIds[0])!.name} & co.`;
-      const group = store.createGroup(name, memberIds);
+      const requestedMemberIds: unknown[] = Array.isArray(body.memberIds) ? body.memberIds : [];
+      const memberIds = [
+        ...new Set(
+          requestedMemberIds.filter(
+            (id): id is string => typeof id === "string" && Boolean(store.bot(id)),
+          ),
+        ),
+      ];
+      if (memberIds.length === 0) return json(res, 400, { error: "a channel needs at least one bot" });
+      if (body.name !== undefined && typeof body.name !== "string") {
+        return json(res, 400, { error: "channel name must be a string" });
+      }
+      const name = body.name?.trim() || `${store.bot(memberIds[0])!.name} & co.`;
+      if (name.length > 100) return json(res, 400, { error: "channel name must be at most 100 characters" });
+      let section: string | undefined;
+      if (body.section !== undefined && body.section !== null) {
+        if (typeof body.section !== "string") return json(res, 400, { error: "context must be a string" });
+        section = body.section.trim() || undefined;
+        if (section && section.length > 60) {
+          return json(res, 400, { error: "context must be at most 60 characters" });
+        }
+      }
+      const group = store.createGroup(name, memberIds, false, section);
       return json(res, 201, { group: { ...group, messages: [] } });
     }
     if (method === "POST" && path === "/api/teams/export") {
@@ -3230,6 +3396,38 @@ const server = createServer(async (req, res) => {
         const status = (error as { status?: number }).status === 404 ? 404 : 400;
         return json(res, status, { error: error instanceof Error ? error.message : "The GitHub team could not be loaded" });
       }
+    }
+    if (method === "GET" && path === "/api/teams/scout") {
+      // The scout reads a folder and answers with a suggestion — it creates
+      // nothing. Bots and the room come into being only when the human sends
+      // the suggested manifest through /api/teams/import, so "the agent
+      // proposes, the person imports" is enforced by the route split itself.
+      // The folder is whatever validateBotCwd accepts: the same local-user
+      // trust boundary as pointing any bot's working folder at a path.
+      // Deliberately offline — the community directory lives on its own
+      // route below, so a slow network can never delay the suggestion.
+      const validated = validateBotCwd(url.searchParams.get("cwd"));
+      if (!validated.ok) return json(res, 400, { error: validated.error });
+      if (!validated.cwd) return json(res, 400, { error: "scout needs a folder to read" });
+      const profile = scoutProject(validated.cwd);
+      return json(res, 200, { profile, suggestion: suggestTeam(profile) });
+    }
+    if (method === "GET" && path === "/api/teams/scout/directory") {
+      // Community bots that fit the scouted folder — a separate, lazy call
+      // so an unreachable directory degrades to "no extra candidates", never
+      // to a broken scout.
+      const validated = validateBotCwd(url.searchParams.get("cwd"));
+      if (!validated.ok) return json(res, 400, { error: validated.error });
+      if (!validated.cwd) return json(res, 400, { error: "scout needs a folder to read" });
+      let directory: MatchedDirectoryBot[] = [];
+      try {
+        directory = matchDirectoryBots(scoutProject(validated.cwd), await fetchBotDirectory());
+      } catch (error) {
+        // an unreachable directory is a fact of life, not an error — but an
+        // empty section should still be diagnosable from the server log
+        console.warn("bot directory lookup failed:", error instanceof Error ? error.message : String(error));
+      }
+      return json(res, 200, { directory });
     }
     if (method === "POST" && path === "/api/teams/import") {
       // Import is additive-only. A manifest is untrusted input (catalog,
@@ -3334,6 +3532,47 @@ const server = createServer(async (req, res) => {
         throw error;
       }
     }
+    m = path.match(/^\/api\/groups\/([\w-]+)\/setup$/);
+    if (m && method === "PATCH") {
+      const group = store.group(m[1]);
+      if (!group) return json(res, 404, { error: "no such room" });
+      if (group.dm) return json(res, 400, { error: "direct-message channels do not have room setup" });
+      const body = await readBody(req);
+      if (body.action !== "complete" && body.action !== "skip") {
+        return json(res, 400, { error: "action must be complete or skip" });
+      }
+      if (group.setupCompletedAt != null || group.setupSkippedAt != null) {
+        return json(res, 200, { group });
+      }
+      if (store.messagesFor(group.threadId).length > 0) {
+        return json(res, 409, { error: "room setup must be finished before the first message" });
+      }
+
+      const patch: Partial<Pick<GroupRecord, "cwd" | "defaultResponder" | "bulletin" | "setupCompletedAt" | "setupSkippedAt">> = {};
+      if (body.action === "complete") {
+        const checked = validateBotCwd(body.cwd ?? null);
+        if (!checked.ok) return json(res, 400, { error: checked.error });
+        if (typeof body.bulletin !== "string") return json(res, 400, { error: "bulletin must be a string" });
+        if (body.bulletin.length > 12_000) return json(res, 400, { error: "bulletin must be at most 12000 characters" });
+        const value = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
+        let responder: GroupDefaultResponder | null = null;
+        if (value?.kind === "everyone") responder = { kind: "everyone" };
+        else if (value?.kind === "mentions") responder = { kind: "mentions" };
+        else if (value?.kind === "member" && typeof value.botId === "string" && group.memberIds.includes(value.botId)) {
+          responder = { kind: "member", botId: value.botId };
+        }
+        if (!responder) return json(res, 400, { error: "invalid default responder" });
+        patch.cwd = checked.cwd ?? undefined;
+        patch.defaultResponder = responder;
+        patch.bulletin = body.bulletin;
+        patch.setupCompletedAt = Date.now();
+      } else {
+        patch.setupSkippedAt = Date.now();
+      }
+      const updated = store.patchGroup(m[1], patch);
+      if (!updated) return json(res, 404, { error: "no such room" });
+      return json(res, 200, { group: updated });
+    }
     m = path.match(/^\/api\/groups\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
@@ -3351,8 +3590,15 @@ const server = createServer(async (req, res) => {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (Array.isArray(body.memberIds)) {
-        const ids = body.memberIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(store.bot(id)));
-        if (ids.length) patch.memberIds = ids;
+        // A DM is the pair it was opened for; only real rooms have a roster.
+        if (existing.dm) return json(res, 400, { error: "direct-message channels cannot change members" });
+        const ids = [
+          ...new Set(
+            body.memberIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(store.bot(id))),
+          ),
+        ];
+        if (!ids.length) return json(res, 400, { error: "a room needs at least one bot" });
+        patch.memberIds = ids;
       }
       if (body.defaultResponder !== undefined) {
         const value = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
@@ -3383,6 +3629,17 @@ const server = createServer(async (req, res) => {
         else if (typeof body.pinnedMessageId === "string" && /^[\w-]+$/.test(body.pinnedMessageId)) {
           patch.pinnedMessageId = body.pinnedMessageId;
         } else return json(res, 400, { error: "pinnedMessageId must be a message id" });
+      }
+      // same contract as a bot's sidebar section: null/"" clears, 60 chars max
+      if (body.section !== undefined) {
+        if (body.section === null) patch.section = undefined;
+        else if (typeof body.section !== "string") return json(res, 400, { error: "section must be a string" });
+        else {
+          const trimmed = body.section.trim();
+          if (!trimmed) patch.section = undefined;
+          else if (trimmed.length > 60) return json(res, 400, { error: "section must be at most 60 characters" });
+          else patch.section = trimmed;
+        }
       }
       const group = store.patchGroup(m[1], patch);
       if (!group) return json(res, 404, { error: "no such room" });
@@ -3595,6 +3852,7 @@ const server = createServer(async (req, res) => {
         } else return json(res, 400, { error: "pinnedMessageId must be a message id" });
       }
       if (section !== undefined) patch.section = section ?? undefined;
+      if (body.chiefOfStaff === false) patch.chiefOfStaff = false;
       // per-bot gate on the workspace's connected apps (Composio)
       if (body.composio !== undefined) {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
@@ -3686,18 +3944,19 @@ const server = createServer(async (req, res) => {
           ?.adapter.interruptTurn(existingBot.threadId)
           .catch(() => {});
       }
+      const chiefMovedSections =
+        Boolean(existingBot?.chiefOfStaff) &&
+        body.chiefOfStaff !== false &&
+        section !== undefined &&
+        sectionKey(existingBot?.section) !== sectionKey(section);
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such bot" });
       const chiefChanges =
-        body.chiefOfStaff === true
+        body.chiefOfStaff === true || chiefMovedSections
           ? store.setChiefOfStaff(bot.id)
-          : body.chiefOfStaff === false && bot.chiefOfStaff
-            ? store.setChiefOfStaff(null)
-            : [];
+          : [];
       if (chiefChanges === null) return json(res, 404, { error: "no such bot" });
-      const changed = new Map([[bot.id, store.bot(bot.id)!]]);
-      for (const changedBot of chiefChanges) changed.set(changedBot.id, changedBot);
-      return json(res, 200, { bot: wireBot(bot) });
+      return json(res, 200, { bot: wireBot(store.bot(bot.id)!) });
     }
 
     if (method === "POST" && path === "/api/local-computer/interrupt") {
@@ -3838,8 +4097,8 @@ const server = createServer(async (req, res) => {
             return json(res, 202, { ok: true, steered: true });
           }
         }
-        const message = queueSteeredMessage(store, bot, text);
-        return json(res, 202, { ok: true, queued: true, messageId: message.id });
+        const queued = queueSteeredMessage(bot, text);
+        return json(res, 202, { ok: true, queued: true, queueId: queued.id, threadId: bot.threadId });
       }
       await startTurn(bot.id, text);
       return json(res, 202, { ok: true });

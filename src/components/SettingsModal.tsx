@@ -15,6 +15,7 @@ import { UsageSection } from "./UsageSection";
 import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { AnalyticsSettings } from "./AnalyticsSettings";
+import { TranscriptionSettings } from "./TranscriptionSettings";
 import { cn } from "@/lib/cn";
 
 const SECTIONS: Array<{ id: AppSettingsSection; label: string; icon: typeof User }> = [
@@ -97,6 +98,54 @@ function UpdatesRow() {
             ? "Restart and install"
             : "Check for updates"}
       </button>
+    </Card>
+  );
+}
+
+/** Writes a redacted diagnostics file to a location the user picks. The
+ * report holds versions, configured-or-not booleans and the server.log tail —
+ * never credential values (the desktop shell does not read secret fields). */
+function DiagnosticsRow() {
+  const [exporting, setExporting] = useState(false);
+  const [result, setResult] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+
+  const exportDiagnostics = async () => {
+    if (!window.ogb?.exportDiagnostics || exporting) return;
+    setExporting(true);
+    setResult(null);
+    try {
+      const path = await window.ogb.exportDiagnostics();
+      if (path) setResult({ kind: "success", message: `Saved to ${path}` });
+    } catch (e) {
+      setResult({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <Card
+      title="Diagnostics"
+      subtitle="Versions, configuration on/off state and a redacted server log tail. Review the file before sharing it."
+    >
+      <div className="flex min-w-0 flex-col items-end gap-2">
+        <button
+          onClick={() => void exportDiagnostics()}
+          disabled={exporting}
+          aria-label="Export diagnostics to a text file"
+          className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+        >
+          {exporting ? "Exporting…" : "Export Diagnostics…"}
+        </button>
+        {result ? (
+          <span
+            role={result.kind === "error" ? "alert" : "status"}
+            className={`max-w-64 break-all text-right text-[12px] ${result.kind === "error" ? "text-danger" : "text-success"}`}
+          >
+            {result.message}
+          </span>
+        ) : null}
+      </div>
     </Card>
   );
 }
@@ -206,11 +255,12 @@ export function SettingsModal() {
                 <Card title="Skin" subtitle="Applies instantly and is remembered on this machine.">
                   <SkinPicker />
                 </Card>
-                <Card title="Room turns" subtitle="Set one maximum duration for every bot turn in a room.">
+                <Card title="Channel turns" subtitle="Set one maximum duration for every bot turn in a channel.">
                   <RoomTurnTimeoutSettings />
                 </Card>
                 <AnalyticsSettings />
                 <UpdatesRow />
+                <DiagnosticsRow />
               </>
             )}
 
@@ -225,6 +275,7 @@ export function SettingsModal() {
                       Connected apps service is ready
                     </div>
                   ) : null}
+                  <TranscriptionSettings />
                   <ApiKeyRow section="box" />
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />

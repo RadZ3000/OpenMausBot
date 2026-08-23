@@ -5,11 +5,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc, setCuaStateListener } from "./cua.mjs";
 import { createAndroidDeviceController } from "./android-device.mjs";
+import { assemblyAICredential, mintAssemblyAIStreamingToken } from "./assemblyai.mjs";
 import { finishSpeech, startSpeech, stopSpeech } from "./speech.mjs";
 import { distributionEnv, readDistributionMetadata } from "./distribution.mjs";
+import {
+  recorderPermissionStatus,
+  saveSkillRecording,
+  startRecorder,
+  stopRecorder,
+} from "./skill-recorder.mjs";
 import { openBlankTerminal } from "./terminal-launch.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
+import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
+import { activateExistingWindow } from "./single-instance.mjs";
 import capabilitiesModule from "./capabilities.cjs";
 
 const { desktopCapabilities, nativeDesktopActions } = capabilitiesModule;
@@ -35,6 +44,17 @@ let desktopViewerContextId = null;
 // GNOME groups the window with its installed desktop entry only when both
 // identities match. This must run before Electron becomes ready.
 if (process.platform === "linux") app.setDesktopName("com.openmausbot.app.desktop");
+
+// One instance per user: without this lock a second launch forks a second
+// harness server on a fallback port and splits data dirs in two. The loser
+// exits before any child or window exists; the winner surfaces itself.
+if (!app.requestSingleInstanceLock()) {
+  console.log("[desktop] OpenMausBot is already running — focusing that window");
+  process.exit(0);
+}
+app.on("second-instance", () => {
+  activateExistingWindow(BrowserWindow.getAllWindows());
+});
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
 // and runs on Electron's own Node via utilityProcess. It serves the built
@@ -208,6 +228,53 @@ function slog(line) {
   } catch {
     /* logging must never break startup */
   }
+}
+
+const LOG_TAIL_BYTES = 256 * 1024;
+
+function readLogTail(logPath) {
+  try {
+    const size = fs.statSync(logPath).size;
+    const start = Math.max(0, size - LOG_TAIL_BYTES);
+    const handle = fs.openSync(logPath, "r");
+    try {
+      const buffer = Buffer.alloc(size - start);
+      fs.readSync(handle, buffer, 0, buffer.length, start);
+      return decodeLogTail(buffer, start > 0);
+    } finally {
+      fs.closeSync(handle);
+    }
+  } catch {
+    return null;
+  }
+}
+
+// Everything the bug-report bundle needs. The config summary comes from the
+// server's own booleans-only /api/config status (credentials are never
+// echoed), and the log goes through the redactor in diagnostics.mjs — so the
+// file is safe to paste into a public issue even if a future log line ever
+// carried a secret.
+async function gatherDiagnostics() {
+  const serverStatus = await fetch(`http://127.0.0.1:${SERVER_PORT}/api/config`, {
+    signal: AbortSignal.timeout(3_000),
+  })
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null);
+  const logPath = path.join(LOG_DIR, "server.log");
+  const log = readLogTail(logPath);
+  return buildDiagnosticsReport({
+    appInfo: {
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      electron: process.versions.electron,
+      node: process.versions.node,
+      packaged: app.isPackaged,
+      uptimeSeconds: Math.round(process.uptime()),
+    },
+    configSummary: serverStatus ?? {},
+    logTail: log?.tail ?? "",
+  });
 }
 
 async function startServerOn(port) {
@@ -626,6 +693,33 @@ ipcMain.handle("desktop:pick-folder", async (event, current) => {
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
+// One-click bug-report bundle. Secrets are never read; the report is
+// redacted again on the way out (diagnostics.mjs). null means the user
+// cancelled the save dialog.
+ipcMain.handle("desktop:export-diagnostics", async (event) => {
+  const owner = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+  const report = await gatherDiagnostics();
+  const result = await dialog.showSaveDialog(owner, {
+    title: "Export diagnostics",
+    defaultPath: diagnosticsFileName(),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (result.canceled || !result.filePath) return null;
+  if (process.platform === "win32") {
+    fs.writeFileSync(result.filePath, report, { mode: 0o600 });
+  } else {
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+    const handle = fs.openSync(result.filePath, flags, 0o600);
+    try {
+      fs.fchmodSync(handle, 0o600);
+      fs.writeFileSync(handle, report, "utf8");
+    } finally {
+      fs.closeSync(handle);
+    }
+  }
+  return result.filePath;
+});
+
 ipcMain.handle("desktop:open-external", async (_event, rawUrl) => {
   if (typeof rawUrl !== "string") throw new Error("A web address is required");
   let url;
@@ -696,6 +790,15 @@ ipcMain.handle("speech:finish", () => {
   if (nativeActions.appleSpeech) finishSpeech();
 });
 
+ipcMain.handle("skill-recorder:permissions", () => recorderPermissionStatus());
+ipcMain.handle("skill-recorder:start", (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) throw new Error("The recorder window is unavailable");
+  return startRecorder(win);
+});
+ipcMain.handle("skill-recorder:stop", () => stopRecorder());
+ipcMain.handle("skill-recorder:save", (_event, payload) => saveSkillRecording(payload));
+
 // ── companion sidecar ──────────────────────────────────────────────────
 // The renderer gets these five and nothing else: it can turn the companion
 // on and off, look at it, open or cancel a pairing window, and remove a
@@ -730,6 +833,28 @@ ipcMain.handle("desktop:capabilities", async () =>
     packaged: app.isPackaged,
     localConnection: await cuaReady,
   }),
+);
+
+ipcMain.handle("assemblyai:status", () => ({
+  configured: Boolean(assemblyAICredential(secureCredentials)),
+}));
+
+ipcMain.handle("assemblyai:set-key", async (_event, value) => {
+  if (typeof value !== "string") throw new Error("Unsupported credential");
+  if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+    throw new Error("The operating-system credential store is unavailable");
+  }
+  const secret = value.trim();
+  const nextCredentials = { ...secureCredentials };
+  if (secret) nextCredentials.assemblyAiApiKey = secret;
+  else delete nextCredentials.assemblyAiApiKey;
+  await saveSecureCredentials(nextCredentials);
+  secureCredentials = nextCredentials;
+  return { configured: Boolean(secret) };
+});
+
+ipcMain.handle("assemblyai:streaming-token", () =>
+  mintAssemblyAIStreamingToken(assemblyAICredential(secureCredentials)),
 );
 
 const CREDENTIAL_PATCH = {
@@ -805,8 +930,8 @@ setCuaStateListener((connection) => {
 
 app.whenReady().then(async () => {
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
+  secureCredentials = await loadSecureCredentials();
   if (app.isPackaged) {
-    secureCredentials = await loadSecureCredentials();
     await secureComposioConfig();
     await secureWorkspaceConfig();
     await ensureManagedComposioCredentials();
@@ -914,6 +1039,7 @@ app.on("before-quit", (e) => {
   // a live dictation session runs its own helper child that holds the mic —
   // stop it here so quitting never orphans a recording process
   if (nativeActions.appleSpeech) stopSpeech();
+  stopRecorder();
   const cleanup = Promise.race([
     stopCua().catch(() => {}),
     new Promise((resolve) => setTimeout(resolve, CUA_STOP_TIMEOUT_MS).unref()),
