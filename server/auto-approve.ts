@@ -1,3 +1,5 @@
+import { isLocalInjectComputerTool, windowsHostComputerMustCard } from "./computer-routing.ts";
+
 // Auto mode: when a bot may answer its own permission requests.
 //
 // Two ways in — the bot is in auto mode, or the user pressed "Always
@@ -83,6 +85,8 @@ export type AutoVerdictSource =
   | "auto-mode"
   | "unattended-block"
   | "local-computer-block"
+  | "inject-computer-block"
+  | "host-computer-block"
   | "destructive-guard"
   | "sensitive-guard"
   | "no-grant";
@@ -112,6 +116,8 @@ export function autoVerdict(
     unattended?: boolean;
     /** the request controls the user's active desktop */
     scope?: "local-computer";
+    /** Host Qwen computer_use__* must card on Windows (B-19). Tests pass this. */
+    platform?: NodeJS.Platform;
   },
 ): AutoVerdict {
   // the guards outrank the grants, so an "always allow" can never widen
@@ -153,6 +159,20 @@ export function autoVerdict(
     if (sensitive) return { approve: null, source: "sensitive-guard", rule: sensitive };
     return { approve: null, source: "no-grant" };
   }
+  if (isLocalInjectComputerTool(tool)) {
+    // Path A vm_* clicks the shared sandbox. Auto mode and always-allow
+    // must not drive it unsupervised — watch, or pick Claude / grokAgent.
+    if (grant) return { approve: null, source: "inject-computer-block", rule: grant.rule };
+    if (destructive) return { approve: null, source: "destructive-guard", rule: destructive };
+    if (sensitive) return { approve: null, source: "sensitive-guard", rule: sensitive };
+    return { approve: null, source: "no-grant" };
+  }
+  if (windowsHostComputerMustCard(tool, context?.platform ?? process.platform)) {
+    if (grant) return { approve: null, source: "host-computer-block", rule: grant.rule };
+    if (destructive) return { approve: null, source: "destructive-guard", rule: destructive };
+    if (sensitive) return { approve: null, source: "sensitive-guard", rule: sensitive };
+    return { approve: null, source: "no-grant" };
+  }
   if (destructive) return { approve: null, source: "destructive-guard", rule: destructive };
   if (sensitive) return { approve: null, source: "sensitive-guard", rule: sensitive };
   if (grant) return { approve: grant.approve, source: grant.source, rule: grant.rule };
@@ -169,6 +189,7 @@ export function autoDecision(
     unattended?: boolean;
     /** the request controls the user's active desktop */
     scope?: "local-computer";
+    platform?: NodeJS.Platform;
   },
 ): string | null {
   return autoVerdict(bot, tool, summary, context).approve;

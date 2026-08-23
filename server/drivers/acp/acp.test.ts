@@ -15,12 +15,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ensureDirs } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
-import { createAcpDriver, type AcpSupport } from "./core.ts";
+import { createAcpDriver, acpChildSpawnOptions, type AcpSupport } from "./core.ts";
 import { GrokAgentDriver } from "./grok.ts";
 import { GeminiAgentDriver } from "./gemini.ts";
 import { KimiAgentDriver } from "./kimi.ts";
 import { DroidAgentDriver } from "./droid.ts";
 import { CursorAgentDriver } from "./cursor.ts";
+import { HermesAgentDriver } from "./hermes.ts";
 import { removeTempDir } from "../../testing/cleanup.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
@@ -211,6 +212,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_MODEL_STICKS;
     delete process.env.FAKE_ACP_USAGE_ROOT;
     delete process.env.FAKE_ACP_IMAGE_PROMPT;
+    delete process.env.FAKE_ACP_RPC_DUMP;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -588,6 +590,65 @@ describe("ACP turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: true });
   });
 
+  it("opens a new Hermes session when session/load returns an empty miss", async () => {
+    // Hermes load_session returns None for a dead id; the SDK still answers
+    // JSON-RPC success with {}. Prompt then refuses in ~75ms with no text.
+    const dump = join(scratch, "rpc.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    await create(HermesAgentDriver);
+    const { turnId } = await instance.adapter.sendTurn({
+      threadId: "t-hermes-load-miss",
+      text: "Read the README",
+      resumeCursor: "dead-session",
+    });
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true, turnId });
+    expect(recorder.events.some((e) => e.type === "content.delta")).toBe(true);
+    expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+    const methods: string[] = JSON.parse(readFileSync(dump, "utf8"));
+    expect(methods).toContain("session/load");
+    expect(methods).toContain("session/new");
+    expect(methods.indexOf("session/new")).toBeGreaterThan(methods.indexOf("session/load"));
+  });
+
+  it("replays the thread when Hermes session/load misses", async () => {
+    await create(HermesAgentDriver, "echo-gated");
+    const { turnId } = await instance.adapter.sendTurn({
+      threadId: "t-hermes-load-miss-replay",
+      text: "open the editor",
+      resumeCursor: "dead-session",
+      transcript: [
+        { role: "user", text: "go to https://example.com" },
+        { role: "assistant", text: "I'm on https://example.com." },
+      ],
+    });
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true, turnId });
+    const echoed = recorder.events.find((e) => e.type === "item.completed" && e.itemType === "assistant_text");
+    expect(echoed?.text).toContain("go to https://example.com");
+    expect(echoed?.text).toContain("open the editor");
+    expect(echoed?.text).toContain("could not be resumed");
+  });
+
+  it("does not wrap history when session/load keeps the resume cursor", async () => {
+    await create(GrokAgentDriver, "echo-gated");
+    const { turnId } = await instance.adapter.sendTurn({
+      threadId: "t-resume-no-wrap",
+      text: "open the editor",
+      resumeCursor: "resumed-thread-1",
+      transcript: [
+        { role: "user", text: "go to https://example.com" },
+        { role: "assistant", text: "I'm on https://example.com." },
+      ],
+    });
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true, turnId });
+    const echoed = recorder.events.find((e) => e.type === "item.completed" && e.itemType === "assistant_text");
+    expect(echoed?.text).toContain("open the editor");
+    expect(echoed?.text).not.toContain("go to https://example.com");
+    expect(echoed?.text).not.toContain("could not be resumed");
+  });
+
   it("applyTurnEnv sees the picker model after resolveTurnModel", async () => {
     const dump = join(scratch, "turn-env.json");
     process.env.FAKE_ACP_DUMP = dump;
@@ -637,6 +698,13 @@ describe("ACP turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     expect(JSON.parse(readFileSync(dump, "utf8")).env.TEST_POLICY).toBe("auto");
+  });
+
+  it("detaches only the Windows Hermes spawn so Git Bash is not in libuv's job", () => {
+    const base = { cwd: "/tmp" };
+    expect(acpChildSpawnOptions({ windowsDetachedSpawn: true }, base, "win32").detached).toBe(true);
+    expect(acpChildSpawnOptions({ windowsDetachedSpawn: true }, base, "linux").detached).toBeUndefined();
+    expect(acpChildSpawnOptions({}, base, "win32").detached).toBeUndefined();
   });
 
   it("declares effort levels for Grok only", async () => {

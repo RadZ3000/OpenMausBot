@@ -24,7 +24,7 @@ const ARMS = {
   local: {
     icon: Cpu,
     title: "Run a model on this computer",
-    blurb: "Nothing leaves the machine. Needs the hardware to keep up, and a few GB to download.",
+    blurb: "Nothing leaves the machine. Installs a local model, Hermes, and a Linux computer for desktop work.",
   },
   byok: {
     icon: KeyRound,

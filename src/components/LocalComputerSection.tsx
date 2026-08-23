@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Card, CommandLine } from "./SettingsPrimitives";
 import { cn } from "@/lib/cn";
+import { localVmMustRecreate } from "../../shared/local-vm-lifecycle";
 
 type Action = "pull" | "run" | "start" | "stop" | "remove" | "recreate";
 
@@ -206,15 +207,7 @@ export function LocalComputerSection() {
   const c = status?.commands;
   const ready = status?.ready === true;
   const existing = status?.container !== "missing";
-  const needsRecreate = Boolean(
-    existing &&
-      (status?.container === "stopped" ||
-        !status?.imageMatches ||
-        !status?.managed ||
-        status?.network === "unsafe" ||
-        status?.security === "unsafe" ||
-        status?.persistence === "unsafe"),
-  );
+  const needsRecreate = Boolean(status && localVmMustRecreate(status));
   const unavailable = !loading && !status;
   const host = status?.platform === "darwin" ? "Mac" : "computer";
   const perBot = status?.mode === "per-bot";
@@ -226,8 +219,8 @@ export function LocalComputerSection() {
       <Card
         title="Local VM"
         subtitle={perBot
-          ? `Private Cua Linux desktops on this ${host}, with one container and durable workspace per bot. Distinct bots can work concurrently and idle desktops stop after 8 hours.`
-          : `A shared Cua Linux sandbox on this ${host} for bots to browse and work in — isolated, backed by one durable workspace, and automatically recycled after 8 hours without activity.`}
+          ? `Private Cua Linux desktops on this ${host}, with one container and durable workspace per bot. Distinct bots can work concurrently. Idle stop after 8 hours ends open windows but keeps each container; Start brings the desktop back.`
+          : `A shared Cua Linux desktop on this ${host}. Bots take turns on one screen; leftover apps stay until you close them or stop the VM. Cookies, files, and logins in the durable workspace are shared — not a security boundary. Idle stop after 8 hours ends those windows but keeps the container; Start brings the desktop back.`}
       >
         <div className="flex flex-wrap items-center gap-2">
           <span
@@ -275,7 +268,7 @@ export function LocalComputerSection() {
 
       <Card
         title="Isolation"
-        subtitle="Shared keeps the original single-desktop behavior. Per bot gives each bot its own container, workspace, viewer port, lease, and idle timer."
+        subtitle="Shared is one desktop for every bot (leftover apps expected while it is running). Per bot is the isolation product: each bot gets its own container, workspace, viewer port, lease, and idle timer."
       >
         <div className="flex overflow-hidden rounded-lg border border-hairline/40">
           {(["shared", "per-bot"] as const).map((mode, index) => (
@@ -348,7 +341,7 @@ export function LocalComputerSection() {
 
           <Step
             n={4}
-            title={perBot ? "Create a private desktop from each bot's Computer panel" : needsRecreate ? "Replace the older or unsafe VM" : "Create and start the Local VM"}
+            title={perBot ? "Create a private desktop from each bot's Computer panel" : needsRecreate ? "Replace the older or unsafe VM" : status?.container === "stopped" ? "Start the Local VM" : "Create and start the Local VM"}
             done={!perBot && ready}
           >
             {perBot ? (
@@ -397,8 +390,8 @@ export function LocalComputerSection() {
       <Card
         title="Safety and storage"
         subtitle={perBot
-          ? `Cua Driver operates only each VM's desktop. Every bot gets a private host folder mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; its files and browser profile survive VM replacement. Viewers bind only to loopback, and exact bot-derived targets prevent one bot from attaching to another bot's container. Each VM keeps the existing 4 GB, 2 CPU, 512-process and dropped-capability limits. VMs can still reach the internet.`
-          : `Cua Driver operates only the VM's desktop. Exactly one private host folder is mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and browser sign-ins there survive VM replacement, while everything elsewhere in the VM remains disposable. The password-protected viewer is available only on this machine. Docker and Podman runs are limited to 4 GB memory, 2 CPUs and 512 processes; all Linux capabilities are dropped except the two the desktop supervisor needs to switch to its unprivileged user. The VM can still reach the internet, and bots share it one at a time.`}
+          ? `Cua Driver operates only each VM's desktop. Every bot gets a private host folder mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and Chromium sign-ins in ${status?.workspace_guest_path ?? "/home/cua/workspace"}/.browser-profiles survive VM replacement. Viewers bind only to loopback, and exact bot-derived targets prevent one bot from attaching to another bot's container. Each VM keeps the existing 4 GB, 2 CPU, 512-process and dropped-capability limits. VMs can still reach the internet.`
+          : `Cua Driver operates only the VM's desktop. Exactly one private host folder is mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and Chromium sign-ins in ${status?.workspace_guest_path ?? "/home/cua/workspace"}/.browser-profiles survive stop, start, and VM replacement. Leftover windows are expected on this shared desktop and are not a security boundary — pick Per bot if bots must not see each other's cookies. The password-protected viewer is available only on this machine. Docker and Podman runs are limited to 4 GB memory, 2 CPUs and 512 processes; all Linux capabilities are dropped except the two the desktop supervisor needs to switch to its unprivileged user. The VM can still reach the internet, and bots share it one at a time.`}
       >
         {existing && (
           <div className="flex flex-wrap gap-2">

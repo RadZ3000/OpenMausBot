@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 
 import { augmentedPath } from "./env-path.ts";
+import { probeWindowsVirt, type WindowsVirtKind } from "./windows-virt.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,7 +51,7 @@ export function podmanCliDetail(stderr: string, stdout = ""): string {
   return lines[0] ?? "";
 }
 
-export type PodmanSkipReason = "wsl-missing" | "not-windows" | "setup-failed";
+export type PodmanSkipReason = "wsl-missing" | "virt-features" | "virt-reboot" | "virt-firmware" | "not-windows" | "setup-failed";
 
 export type PodmanSetupEvent = {
   status: string;
@@ -83,6 +84,8 @@ export interface PodmanSetupHooks {
   fetchImpl?: typeof fetch;
   run?: CommandRun;
   exists?: (path: string) => boolean;
+  /** Tests pin this so they do not spawn the CIM probe. */
+  virtKind?: WindowsVirtKind;
 }
 
 const inspectSchema = z.array(
@@ -184,6 +187,52 @@ export function wslInstallSpawn(
   };
 }
 
+function system32Exe(name: string, env: Record<string, string | undefined>): string {
+  const root = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
+  return join(root, "System32", name);
+}
+
+/** HKCU. Microsoft's WSL team: this stops the welcome GUI on first distro
+ * (github.com/microsoft/WSL/issues/13223). No admin. */
+export function wslOobeCompleteSpawn(
+  env: Record<string, string | undefined> = process.env,
+): ArgvLaunch {
+  return {
+    command: system32Exe("reg.exe", env),
+    args: [
+      "add",
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss",
+      "/v",
+      "OOBEComplete",
+      "/t",
+      "REG_DWORD",
+      "/d",
+      "1",
+      "/f",
+    ],
+  };
+}
+
+/** Best-effort: the settings app if it still stole focus. */
+export function dismissWslSettingsSpawn(
+  env: Record<string, string | undefined> = process.env,
+): ArgvLaunch {
+  return {
+    command: system32Exe("taskkill.exe", env),
+    args: ["/IM", "wslsettings.exe"],
+  };
+}
+
+async function silenceWslWelcome(env: Record<string, string | undefined>, run: CommandRun): Promise<void> {
+  const oobe = wslOobeCompleteSpawn(env);
+  await run(oobe.command, oobe.args, 8_000);
+}
+
+async function dismissWslSettingsUi(env: Record<string, string | undefined>, run: CommandRun): Promise<void> {
+  const launched = dismissWslSettingsSpawn(env);
+  await run(launched.command, launched.args, 8_000);
+}
+
 export const WSL_INSTALL_SCRIPT =
   "Start-Process -FilePath $env:SystemRoot\\System32\\wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait\n";
 
@@ -192,13 +241,40 @@ function wslExe(env: Record<string, string | undefined>): string {
   return join(root, "System32", "wsl.exe");
 }
 
+function wslText(result: CommandResult): string {
+  return `${result.stdout}\n${result.stderr}`.replace(/\0/g, "");
+}
+
+/** `--no-distribution` leaves WSL with zero distros; `wsl -l -v` then exits
+ * non-zero. That is still "WSL is on this machine". */
+export function wslOutputLooksPresent(result: CommandResult): boolean {
+  const text = wslText(result);
+  if (/no installed distributions/i.test(text)) return true;
+  if (/subsystem for linux is not installed|wsl(?:\.exe)? is not (?:recognized|installed)/i.test(text)) {
+    return false;
+  }
+  if (result.code === 0 && text.trim().length > 0) return true;
+  return false;
+}
+
+export async function wslReadiness(
+  env: Record<string, string | undefined> = process.env,
+  run: CommandRun = defaultRun,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ present: boolean; virtKind: WindowsVirtKind }> {
+  const listed = await run(wslExe(env), ["-l", "-v"], 8_000);
+  const present = wslOutputLooksPresent(listed);
+  if (!present) return { present: false, virtKind: "enable-features" };
+  const virtKind = await probeWindowsVirt({ env, run, platform });
+  return { present: true, virtKind };
+}
+
 export async function wslPresent(
   env: Record<string, string | undefined> = process.env,
   run: CommandRun = defaultRun,
 ): Promise<boolean> {
-  const result = await run(wslExe(env), ["-l", "-v"], 8_000);
-  if (result.code !== 0) return false;
-  return result.stdout.length > 0 || result.stderr.length > 0;
+  const listed = await run(wslExe(env), ["-l", "-v"], 8_000);
+  return wslOutputLooksPresent(listed);
 }
 
 function skip(status: string, reason: PodmanSkipReason): PodmanSetupEvent {
@@ -266,6 +342,24 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
     yield skip("Windows needs WSL before a Local VM can start. That step asks for administrator once.", "wsl-missing");
     return;
   }
+  const virtKind = hooks.virtKind ?? (await probeWindowsVirt({ env, run, platform }));
+  if (virtKind === "reboot-pending") {
+    yield skip("Windows needs a restart before a Local computer can start. Chat still works.", "virt-reboot");
+    return;
+  }
+  if (virtKind === "enable-features") {
+    yield skip("Windows still needs a virtualization setting turned on. Chat still works.", "virt-features");
+    return;
+  }
+  if (virtKind === "firmware-off") {
+    yield skip(
+      "This PC's firmware has virtualization off. Turn it on in BIOS, then come back. Chat still works.",
+      "virt-firmware",
+    );
+    return;
+  }
+
+  await silenceWslWelcome(env, run);
 
   if (!podmanInstalled(env, platform, exists)) {
     yield { status: "Downloading Podman…" };
@@ -340,6 +434,7 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
     yield { status: "Starting the Podman machine…" };
     const started = await podman(hooks, ["machine", "start"], 2 * 60_000);
     if (started.code !== 0) {
+      await dismissWslSettingsUi(env, run);
       yield skipFromCli("Podman machine would not start", started);
       return;
     }
@@ -351,14 +446,20 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
     return;
   }
 
+  await dismissWslSettingsUi(env, run);
   yield { status: "Podman is ready", done: true };
 }
 
 export async function* runWslInstall(hooks: PodmanSetupHooks = {}): AsyncGenerator<PodmanSetupEvent> {
   const platform = hooks.platform ?? process.platform;
   const env = hooks.env ?? process.env;
+  const run = hooks.run ?? defaultRun;
   if (platform !== "win32") {
     yield skip("WSL is a Windows step.", "not-windows");
+    return;
+  }
+  if (await wslPresent(env, run)) {
+    yield { status: "WSL is already on this machine", done: true };
     return;
   }
   yield { status: "Asking Windows to install WSL (administrator once)…" };
@@ -367,7 +468,6 @@ export async function* runWslInstall(hooks: PodmanSetupHooks = {}): AsyncGenerat
   try {
     await writeFile(scriptPath, WSL_INSTALL_SCRIPT);
     const launched = wslInstallSpawn(scriptPath, env);
-    const run = hooks.run ?? defaultRun;
     const result = await run(launched.command, launched.args, 10 * 60_000);
     if (result.code !== 0) {
       yield skip("WSL install did not finish. Chat still works without a computer.", "setup-failed");

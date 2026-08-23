@@ -10,6 +10,10 @@ import { requestNotificationPermission } from "@/lib/notify";
 import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@/lib/usage";
 import { shortPath } from "@/lib/short-path";
 import { instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
+import {
+  LOCAL_INJECT_AUTO_COMPUTER_COPY,
+  localInjectCannotAutoDriveComputer,
+} from "@/lib/computer-routing";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
@@ -321,6 +325,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const localSelectable = localComputerSelectable({ capabilities, providerSupportsLocal });
   const [localAutoWarning, setLocalAutoWarning] = useState<"auto" | "local" | null>(null);
   const localDisabledReason = localComputerDisabledReason({ capabilities, providerSupportsLocal });
+  const cannotEnableAuto = localInjectCannotAutoDriveComputer({
+    model: bot.modelSelection.model,
+    computer: bot.computer,
+    cloudBackend: bot.cloudBackend,
+    autoApprove: true,
+  });
   const patch = (
     p: Partial<
       Pick<
@@ -643,7 +653,17 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                   onClick={() => {
                     if (mode === bot.computer) return;
                     if (mode === "local" && bot.autoApprove) setLocalAutoWarning("local");
-                    else patch({ computer: mode });
+                    else if (
+                      bot.autoApprove &&
+                      localInjectCannotAutoDriveComputer({
+                        model: bot.modelSelection.model,
+                        computer: mode,
+                        cloudBackend: bot.cloudBackend,
+                        autoApprove: true,
+                      })
+                    ) {
+                      patch({ computer: mode, autoApprove: false });
+                    } else patch({ computer: mode });
                   }}
                   className={cn(
                     "flex-1 py-1.5 text-[13px] capitalize",
@@ -662,7 +682,19 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               <CloudBackendPicker
                 value={bot.cloudBackend ?? "box"}
                 vpsSupported={canUseVps}
-                onChange={(backend) => patch({ cloudBackend: backend })}
+                onChange={(backend) => {
+                  if (
+                    bot.autoApprove &&
+                    localInjectCannotAutoDriveComputer({
+                      model: bot.modelSelection.model,
+                      computer: bot.computer ?? "cloud",
+                      cloudBackend: backend,
+                      autoApprove: true,
+                    })
+                  ) {
+                    patch({ cloudBackend: backend, autoApprove: false });
+                  } else patch({ cloudBackend: backend });
+                }}
               />
             )}
           </div>
@@ -677,7 +709,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <div>
               <div className="text-[15px] font-medium text-ink">Auto mode</div>
               <div className="mt-0.5 text-[13px] text-ink-secondary">
-                {bot.computer === "local"
+                {cannotEnableAuto
+                  ? LOCAL_INJECT_AUTO_COMPUTER_COPY
+                  : bot.computer === "local"
                   ? bot.autoApprove
                     ? "Keeps going on this computer — you'll still be asked about anything destructive, and about questions it asks you."
                     : "Approve each action on this computer yourself. Turn on to let this bot keep working without stopping to ask."
@@ -690,13 +724,17 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               role="switch"
               aria-checked={Boolean(bot.autoApprove)}
               aria-label="Auto mode"
+              aria-disabled={cannotEnableAuto && !bot.autoApprove}
               onClick={() => {
-                if (!bot.autoApprove && bot.computer === "local") setLocalAutoWarning("auto");
-                else patch({ autoApprove: !bot.autoApprove });
+                if (bot.autoApprove) patch({ autoApprove: false });
+                else if (cannotEnableAuto) return;
+                else if (bot.computer === "local") setLocalAutoWarning("auto");
+                else patch({ autoApprove: true });
               }}
               className={cn(
                 "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
                 bot.autoApprove ? "bg-accent" : "bg-control",
+                cannotEnableAuto && !bot.autoApprove && "cursor-not-allowed opacity-40",
               )}
             >
               <span

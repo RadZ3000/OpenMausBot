@@ -13,7 +13,33 @@ import { AntigravityDriver } from "./antigravity.ts";
 const FAKE_ACP = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-acp-cli.ts");
 const FAKE_AGY = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-agy-cli.ts");
 import { recordEvents } from "../testing/events.ts";
-import { ensureHermesInjectProvider, resolveHermesHome, selectHermesInjectProvider } from "./acp/hermes.ts";
+import {
+  ensureHermesAcpMcpRebind,
+  ensureHermesAcpMcpWait,
+  ensureHermesBashProbeClosesStdin,
+  ensureHermesBridgeNoCall,
+  ensureHermesBridgeUnwrap,
+  ensureHermesComputerDisablesWeb,
+  ensureHermesComputerShortNames,
+  ensureHermesComputerToolsEager,
+  ensureHermesInjectProvider,
+  ensureHermesLocalCatalog,
+  applyLocalHermesAcpToolsets,
+  LOCAL_HERMES_ACP_TOOLSETS,
+  LOCAL_HERMES_ACP_TOOLSETS_ENV,
+  patchHermesAcpMcpRebindSource,
+  patchHermesAcpMcpWaitSource,
+  patchHermesBashProbeSource,
+  patchHermesBridgeNoCallSource,
+  patchHermesBridgeUnwrapSource,
+  patchHermesComputerDisablesWebSource,
+  patchHermesComputerShortNamesSource,
+  patchHermesComputerToolsEagerSource,
+  patchHermesLocalCatalogSource,
+  resolveHermesGitBashPath,
+  resolveHermesHome,
+  selectHermesInjectProvider,
+} from "./acp/hermes.ts";
 import { ensureQwenInjectModel } from "./acp/qwen.ts";
 import {
   applyClaudeInject,
@@ -21,6 +47,7 @@ import {
   codexLocalProviderArgs,
   decodeInjectId,
   encodeInjectId,
+  localInjectOmitsConnectedApps,
   contextWindowsFromPs,
   loadedIdsFromPayloads,
   LOCAL_HOSTS,
@@ -45,6 +72,12 @@ describe("inject ids", () => {
   it("rejects official cloud slugs", () => {
     expect(decodeInjectId("claude-sonnet-5")).toBeNull();
     expect(decodeInjectId("gpt-5.6-sol")).toBeNull();
+  });
+
+  it("omits connected apps for local-inject picks, not cloud slugs", () => {
+    expect(localInjectOmitsConnectedApps("ollama::ibm/granite4.1:3b")).toBe(true);
+    expect(localInjectOmitsConnectedApps("claude-sonnet-5")).toBe(false);
+    expect(localInjectOmitsConnectedApps(undefined)).toBe(false);
   });
 });
 
@@ -975,6 +1008,37 @@ describe("selectHermesInjectProvider", () => {
     expect(readFileSync(join(home, ".hermes", "config.yaml"), "utf8")).toContain("provider: ollama");
   });
 
+  it("selects inside a CRLF stock config instead of prepending a stub", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-crlf-"));
+    scratchDirs.push(home);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(
+      join(home, ".hermes", "config.yaml"),
+      "database:\r\n  journal_mode: wal\r\nmodel:\r\n  default: anthropic/claude-opus-4.6\r\n  provider: \"auto\"\r\n  base_url: https://openrouter.ai/api/v1\r\n",
+    );
+    selectHermesInjectProvider("ollama::ibm/granite4.1:3b", { HOME: home });
+    const text = readFileSync(join(home, ".hermes", "config.yaml"), "utf8");
+    expect(text.match(/^model:/gm)?.length).toBe(1);
+    expect(text).toContain("provider: ollama");
+    expect(text).not.toContain("provider: auto");
+    expect(text).not.toContain('provider: "auto"');
+  });
+
+  it("rewrites every model.provider when a stub was already prepended", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-dup-"));
+    scratchDirs.push(home);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(
+      join(home, ".hermes", "config.yaml"),
+      "model:\n  provider: ollama\n# stock\nmodel:\n  provider: \"auto\"\n",
+    );
+    selectHermesInjectProvider("ollama::ibm/granite4.1:3b", { HOME: home });
+    const text = readFileSync(join(home, ".hermes", "config.yaml"), "utf8");
+    expect(text).not.toContain("provider: auto");
+    expect(text).not.toContain('provider: "auto"');
+    expect([...text.matchAll(/provider: ollama/g)]).toHaveLength(2);
+  });
+
   it("writes into HERMES_HOME, not ~/.hermes", () => {
     const user = mkdtempSync(join(tmpdir(), "omb-hermes-user-"));
     const profile = mkdtempSync(join(tmpdir(), "omb-hermes-profile-"));
@@ -1033,6 +1097,478 @@ describe("selectHermesInjectProvider", () => {
     writeFileSync(join(home, ".hermes", "config.yaml"), original);
     expect(selectHermesInjectProvider("anthropic/claude-opus-4.6", { HOME: home })).toBe("anthropic/claude-opus-4.6");
     expect(readFileSync(join(home, ".hermes", "config.yaml"), "utf8")).toBe(original);
+  });
+});
+
+describe("resolveHermesGitBashPath", () => {
+  it("is a no-op off Windows", () => {
+    const pf = mkdtempSync(join(tmpdir(), "omb-git-posix-"));
+    scratchDirs.push(pf);
+    mkdirSync(join(pf, "Git", "bin"), { recursive: true });
+    writeFileSync(join(pf, "Git", "bin", "bash.exe"), "");
+    expect(resolveHermesGitBashPath({ ProgramFiles: pf }, "linux")).toBeUndefined();
+  });
+
+  it("prefers portable Git under HERMES_HOME over Program Files", () => {
+    const local = mkdtempSync(join(tmpdir(), "omb-git-local-"));
+    const pf = mkdtempSync(join(tmpdir(), "omb-git-pf-"));
+    scratchDirs.push(local, pf);
+    mkdirSync(join(local, "hermes", "git", "bin"), { recursive: true });
+    mkdirSync(join(pf, "Git", "bin"), { recursive: true });
+    writeFileSync(join(local, "hermes", "git", "bin", "bash.exe"), "");
+    writeFileSync(join(pf, "Git", "bin", "bash.exe"), "");
+    expect(resolveHermesGitBashPath({ LOCALAPPDATA: local, ProgramFiles: pf }, "win32")).toBe(
+      join(local, "hermes", "git", "bin", "bash.exe"),
+    );
+  });
+
+  it("skips a pinned WSL launcher and uses Git for Windows", () => {
+    const local = mkdtempSync(join(tmpdir(), "omb-git-wsl-"));
+    const pf = mkdtempSync(join(tmpdir(), "omb-git-wsl-pf-"));
+    scratchDirs.push(local, pf);
+    mkdirSync(join(local, "Windows", "System32"), { recursive: true });
+    mkdirSync(join(pf, "Git", "bin"), { recursive: true });
+    const wsl = join(local, "Windows", "System32", "bash.exe");
+    writeFileSync(wsl, "");
+    writeFileSync(join(pf, "Git", "bin", "bash.exe"), "");
+    expect(
+      resolveHermesGitBashPath(
+        { LOCALAPPDATA: local, ProgramFiles: pf, HERMES_GIT_BASH_PATH: wsl },
+        "win32",
+      ),
+    ).toBe(join(pf, "Git", "bin", "bash.exe"));
+  });
+
+  it("keeps a pinned Git-for-Windows path", () => {
+    const pf = mkdtempSync(join(tmpdir(), "omb-git-pin-"));
+    scratchDirs.push(pf);
+    mkdirSync(join(pf, "Git", "bin"), { recursive: true });
+    const pinned = join(pf, "Git", "bin", "bash.exe");
+    writeFileSync(pinned, "");
+    expect(resolveHermesGitBashPath({ HERMES_GIT_BASH_PATH: pinned, ProgramFiles: "C:\\missing" }, "win32")).toBe(
+      pinned,
+    );
+  });
+});
+
+const STOCK_BASH_STARTS = `def _bash_starts(bash: str) -> bool:
+    cached = _bash_starts_cache.get(bash)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+`;
+
+describe("patchHermesBashProbeSource", () => {
+  it("inserts stdin=DEVNULL on the 0.20.x probe and is idempotent", () => {
+    const once = patchHermesBashProbeSource(STOCK_BASH_STARTS);
+    expect(once).toContain("stdin=subprocess.DEVNULL,  # openmausbot-b24");
+    expect(patchHermesBashProbeSource(once)).toBe(once);
+  });
+
+  it("leaves source alone when the probe is missing", () => {
+    expect(patchHermesBashProbeSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesBashProbeClosesStdin", () => {
+  it("is a no-op off Windows", () => {
+    expect(ensureHermesBashProbeClosesStdin({ LOCALAPPDATA: "C:\\\\missing" }, "linux")).toBe(false);
+  });
+
+  it("patches the installed local.py once", () => {
+    const local = mkdtempSync(join(tmpdir(), "omb-hermes-localpy-"));
+    scratchDirs.push(local);
+    const dir = join(local, "hermes", "hermes-agent", "tools", "environments");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "local.py");
+    writeFileSync(path, STOCK_BASH_STARTS);
+    expect(ensureHermesBashProbeClosesStdin({ LOCALAPPDATA: local }, "win32")).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24");
+    expect(ensureHermesBashProbeClosesStdin({ LOCALAPPDATA: local }, "win32")).toBe(false);
+  });
+});
+
+const STOCK_ACP_MCP_REGISTER = `
+    async def _register_session_mcp_servers(
+        self,
+        state: SessionState,
+        mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None,
+    ) -> None:
+            enabled_toolsets = _expand_acp_enabled_toolsets(
+                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
+                mcp_server_names=[server.name for server in mcp_servers],
+            )
+            state.agent.enabled_toolsets = enabled_toolsets
+            disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
+            state.agent.tools = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+            )
+`;
+
+describe("patchHermesComputerDisablesWebSource", () => {
+  it("disables web and browser when a computer MCP server is mounted", () => {
+    const once = patchHermesComputerDisablesWebSource(STOCK_ACP_MCP_REGISTER);
+    expect(once).toContain("openmausbot-b24a");
+    expect(once).toContain('extra = ["web", "browser"]');
+    expect(once).toContain("state.agent.disabled_toolsets = disabled_toolsets");
+    expect(once.indexOf("openmausbot-b24a")).toBeLessThan(once.indexOf("state.agent.tools = get_tool_definitions"));
+    expect(patchHermesComputerDisablesWebSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_ACP_MCP_REGISTER.replaceAll("\n", "\r\n");
+    const patched = patchHermesComputerDisablesWebSource(crlf);
+    expect(patched).toContain("\r\n");
+    expect(patched).toContain("openmausbot-b24a");
+    expect(patchHermesComputerDisablesWebSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesComputerDisablesWeb", () => {
+  it("patches the installed ACP server.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-acp-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "acp_adapter");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "server.py");
+    writeFileSync(path, STOCK_ACP_MCP_REGISTER);
+    expect(ensureHermesComputerDisablesWeb({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a");
+    expect(ensureHermesComputerDisablesWeb({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+const STOCK_ACP_MCP_WAIT = [
+  "            await asyncio.to_thread(register_mcp_servers, config_map)",
+  "        except Exception:",
+  '            logger.warning(',
+  '                "Session %s: failed to register ACP MCP servers",',
+  "                state.session_id,",
+  "                exc_info=True,",
+  "            )",
+  "            return",
+  "",
+  "        try:",
+  "            from model_tools import get_tool_definitions",
+  "            from agent.memory_manager import inject_memory_provider_tools",
+  "",
+].join("\n");
+
+describe("patchHermesAcpMcpWaitSource", () => {
+  it("waits for ACP MCP servers to register tools before refreshing the snapshot", () => {
+    const once = patchHermesAcpMcpWaitSource(STOCK_ACP_MCP_WAIT);
+    expect(once).toContain("openmausbot-b24a-mcpwait");
+    expect(once).toContain("get_registered_mcp_server_names");
+    expect(once).toContain("await asyncio.sleep(0.2)");
+    expect(once.indexOf("openmausbot-b24a-mcpwait")).toBeLessThan(once.indexOf("from model_tools import get_tool_definitions"));
+    expect(patchHermesAcpMcpWaitSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_ACP_MCP_WAIT.replaceAll("\n", "\r\n");
+    const patched = patchHermesAcpMcpWaitSource(crlf);
+    expect(patched).toContain("\r\n");
+    expect(patched).toContain("openmausbot-b24a-mcpwait");
+    expect(patchHermesAcpMcpWaitSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesAcpMcpWait", () => {
+  it("patches the installed ACP server.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-mcpwait-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "acp_adapter");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "server.py");
+    writeFileSync(path, STOCK_ACP_MCP_WAIT);
+    expect(ensureHermesAcpMcpWait({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-mcpwait");
+    expect(ensureHermesAcpMcpWait({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+const STOCK_ACP_MCP_REBIND = [
+  '            current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)',
+  "            state.agent = self.session_manager._make_agent(",
+  "                session_id=session_id,",
+  "                cwd=state.cwd,",
+  "                model=resolved_model,",
+  "                requested_provider=requested_provider,",
+  "                base_url=current_base_url,",
+  "                api_mode=current_api_mode,",
+  "            )",
+  "            self.session_manager.save_session(session_id)",
+  "            logger.info(",
+  '                "Session %s: model switched to %s via provider %s",',
+  "",
+].join("\n");
+
+describe("patchHermesAcpMcpRebindSource", () => {
+  it("rebinds MCP toolsets after session/set_model rebuilds the agent", () => {
+    const once = patchHermesAcpMcpRebindSource(STOCK_ACP_MCP_REBIND);
+    expect(once).toContain("openmausbot-b24a-rebind");
+    expect(once).toContain("_omb_prev_enabled");
+    expect(once).toContain("refresh_agent_mcp_tools");
+    expect(once.indexOf("_omb_prev_enabled")).toBeLessThan(once.indexOf("state.agent = self.session_manager._make_agent"));
+    expect(patchHermesAcpMcpRebindSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_ACP_MCP_REBIND.replaceAll("\n", "\r\n");
+    const patched = patchHermesAcpMcpRebindSource(crlf);
+    expect(patched).toContain("\r\n");
+    expect(patched).toContain("openmausbot-b24a-rebind");
+    expect(patchHermesAcpMcpRebindSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesAcpMcpRebind", () => {
+  it("patches the installed ACP server.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-mcprebind-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "acp_adapter");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "server.py");
+    writeFileSync(path, STOCK_ACP_MCP_REBIND);
+    expect(ensureHermesAcpMcpRebind({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-rebind");
+    expect(ensureHermesAcpMcpRebind({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+const STOCK_BRIDGE_NO_CALL = [
+  "    result = visible + bridge",
+  "    # Tier 1 = per-tool listing for at least part of the catalog (full,",
+  '    # names, or mixed). Tier 2 = search-only discovery; the server-level',
+  "",
+].join("\n");
+
+describe("patchHermesBridgeNoCallSource", () => {
+  it("drops the tool_call bridge name when the local catalog env is set", () => {
+    const once = patchHermesBridgeNoCallSource(STOCK_BRIDGE_NO_CALL);
+    expect(once).toContain("openmausbot-b24a-nocall");
+    expect(once).toContain("OPENMAUSBOT_ACP_TOOLSETS");
+    expect(once).toContain("TOOL_CALL_NAME");
+    expect(patchHermesBridgeNoCallSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_BRIDGE_NO_CALL.replaceAll("\n", "\r\n");
+    expect(patchHermesBridgeNoCallSource(crlf)).toContain("\r\n");
+    expect(patchHermesBridgeNoCallSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesBridgeNoCall", () => {
+  it("patches the installed tool_search.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-nocall-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "tools");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "tool_search.py");
+    writeFileSync(path, STOCK_BRIDGE_NO_CALL);
+    expect(ensureHermesBridgeNoCall({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-nocall");
+    expect(ensureHermesBridgeNoCall({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+const STOCK_BRIDGE_UNWRAP = [
+  "        if function_name == _ts_mod.TOOL_CALL_NAME:",
+  "            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})",
+  "            if err or not underlying_name:",
+  "",
+].join("\n");
+
+describe("patchHermesBridgeUnwrapSource", () => {
+  it("unwraps a nameless tool_call({url}) onto vm_open", () => {
+    const once = patchHermesBridgeUnwrapSource(STOCK_BRIDGE_UNWRAP);
+    expect(once).toContain("openmausbot-b24a-unwrap");
+    expect(once).toContain('function_name=_eager');
+    expect(once).toContain("vm_open");
+    expect(once.indexOf("openmausbot-b24a-unwrap")).toBeLessThan(
+      once.indexOf("resolve_underlying_call(function_args or {})"),
+    );
+    expect(patchHermesBridgeUnwrapSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_BRIDGE_UNWRAP.replaceAll("\n", "\r\n");
+    expect(patchHermesBridgeUnwrapSource(crlf)).toContain("\r\n");
+    expect(patchHermesBridgeUnwrapSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesBridgeUnwrap", () => {
+  it("patches the installed model_tools.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-unwrap-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "model_tools.py");
+    writeFileSync(path, STOCK_BRIDGE_UNWRAP);
+    expect(ensureHermesBridgeUnwrap({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-unwrap");
+    expect(ensureHermesBridgeUnwrap({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+describe("ensureHermesComputerToolsEager", () => {
+  it("patches the installed tool_search.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-eager-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "tools");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "tool_search.py");
+    writeFileSync(path, STOCK_TOOL_SEARCH_DEFER);
+    expect(ensureHermesComputerToolsEager({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-eager");
+    expect(readFileSync(path, "utf8")).toContain('name.startswith("vm_")');
+    expect(ensureHermesComputerToolsEager({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+const STOCK_TOOL_SEARCH_DEFER = `
+def is_deferrable_tool_name(name: str) -> bool:
+    """Return True if a tool with this name is *eligible* for deferral."""
+    if name in BRIDGE_TOOL_NAMES:
+        return False
+    if name in _core_tool_names():
+        return False
+`;
+
+describe("patchHermesComputerToolsEagerSource", () => {
+  it("keeps computer tools off the tool_search deferral list", () => {
+    const once = patchHermesComputerToolsEagerSource(STOCK_TOOL_SEARCH_DEFER);
+    expect(once).toContain("openmausbot-b24a-eager");
+    expect(once).toContain('if name.startswith("mcp__computer__") or name.startswith("vm_")');
+    expect(once.indexOf("mcp__computer__")).toBeLessThan(once.indexOf("_core_tool_names"));
+    expect(patchHermesComputerToolsEagerSource(once)).toBe(once);
+  });
+
+  it("upgrades the older mcp__computer__-only eager line", () => {
+    const old =
+      STOCK_TOOL_SEARCH_DEFER.replace(
+        "    if name in BRIDGE_TOOL_NAMES:\n        return False\n",
+        '    if name in BRIDGE_TOOL_NAMES:\n        return False\n    if name.startswith("mcp__computer__"):  # openmausbot-b24a-eager\n        return False\n',
+      );
+    const upgraded = patchHermesComputerToolsEagerSource(old);
+    expect(upgraded).toContain('if name.startswith("mcp__computer__") or name.startswith("vm_")');
+    expect(upgraded).not.toContain('if name.startswith("mcp__computer__"):  # openmausbot-b24a-eager');
+    expect(patchHermesComputerToolsEagerSource(upgraded)).toBe(upgraded);
+  });
+});
+
+const STOCK_MCP_PREFIXED = [
+  "def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:",
+  '    """Build the registry/wire name for an MCP tool.',
+  "",
+  "    Produces mcp__<sanitizedServer>__<sanitizedTool>.",
+  '    """',
+  "    safe_server = sanitize_mcp_name_component(server_name)",
+  "    safe_tool = sanitize_mcp_name_component(tool_name)",
+  '    return f"{MCP_TOOL_NAME_PREFIX}{safe_server}{_MCP_NAME_DELIM}{safe_tool}"',
+  "",
+].join("\n");
+
+describe("patchHermesComputerShortNamesSource", () => {
+  it("returns vm_* computer tools without the mcp__ prefix", () => {
+    const once = patchHermesComputerShortNamesSource(STOCK_MCP_PREFIXED);
+    expect(once).toContain("openmausbot-b24a-short");
+    expect(once).toContain('if safe_server == "computer" and safe_tool.startswith("vm_")');
+    expect(once.indexOf("openmausbot-b24a-short")).toBeLessThan(once.indexOf("MCP_TOOL_NAME_PREFIX}{safe_server}"));
+    expect(patchHermesComputerShortNamesSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_MCP_PREFIXED.replaceAll("\n", "\r\n");
+    const patched = patchHermesComputerShortNamesSource(crlf);
+    expect(patched).toContain("\r\n");
+    expect(patched).toContain("openmausbot-b24a-short");
+    expect(patchHermesComputerShortNamesSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesComputerShortNames", () => {
+  it("patches the installed mcp_tool.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-short-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "tools");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "mcp_tool.py");
+    writeFileSync(path, STOCK_MCP_PREFIXED);
+    expect(ensureHermesComputerShortNames({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-short");
+    expect(ensureHermesComputerShortNames({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+const STOCK_ACP_EXPAND = [
+  "def _expand_acp_enabled_toolsets(",
+  "    toolsets: List[str] | None = None,",
+  "    mcp_server_names: List[str] | None = None,",
+  ") -> List[str]:",
+  '    """Return ACP toolsets plus explicit MCP server toolsets for this session."""',
+  "    expanded: List[str] = []",
+  '    for name in list(toolsets or ["hermes-acp"]):',
+  "        if name and name not in expanded:",
+  "            expanded.append(name)",
+  "",
+].join("\n");
+
+describe("patchHermesLocalCatalogSource", () => {
+  it("replaces the hermes-acp default when the child env names toolsets", () => {
+    const once = patchHermesLocalCatalogSource(STOCK_ACP_EXPAND);
+    expect(once).toContain("openmausbot-b24a-catalog");
+    expect(once).toContain(LOCAL_HERMES_ACP_TOOLSETS_ENV);
+    expect(once).toContain('if override and "hermes-acp" in list(toolsets or ["hermes-acp"])');
+    expect(once.indexOf("openmausbot-b24a-catalog")).toBeLessThan(once.indexOf("expanded: List[str]"));
+    expect(patchHermesLocalCatalogSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_ACP_EXPAND.replaceAll("\n", "\r\n");
+    const patched = patchHermesLocalCatalogSource(crlf);
+    expect(patched).toContain("\r\n");
+    expect(patched).toContain("openmausbot-b24a-catalog");
+    expect(patchHermesLocalCatalogSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesLocalCatalog", () => {
+  it("patches the installed session.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-catalog-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "acp_adapter");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "session.py");
+    writeFileSync(path, STOCK_ACP_EXPAND);
+    expect(ensureHermesLocalCatalog({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-catalog");
+    expect(ensureHermesLocalCatalog({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+describe("applyLocalHermesAcpToolsets", () => {
+  it("grants named toolsets only for a local-inject pick", () => {
+    const cloud = { OPENMAUSBOT_ACP_TOOLSETS: "leak" };
+    applyLocalHermesAcpToolsets(cloud, "claude-opus");
+    expect(cloud.OPENMAUSBOT_ACP_TOOLSETS).toBeUndefined();
+
+    const local = { OPENMAUSBOT_ACP_TOOLSETS: "leak" };
+    applyLocalHermesAcpToolsets(local, "ollama::ibm/granite4.1:3b");
+    expect(local.OPENMAUSBOT_ACP_TOOLSETS).toBe(LOCAL_HERMES_ACP_TOOLSETS.join(","));
   });
 });
 

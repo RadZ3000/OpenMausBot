@@ -3,11 +3,14 @@ import { Loader2 } from "lucide-react";
 
 // Path A of the first-run chooser: an open-weights model on this machine.
 //
-// Chat needs a local runtime, Granite, and Hermes. The arm fetches a pinned
-// Ollama zip and launches it (Windows). The Local VM is offered too, but
-// Continue is never gated on the VM.
+// Chat needs a local runtime, Granite, and Hermes. The arm also stands up the
+// Local computer (WSL → Podman → Cua VM) as the next step after Hermes, not as
+// a skippable footnote. Continue still works if that step fails — it is not a
+// hard gate — but the primary action until the VM is running (or skipped with
+// a reason) is to set it up.
 //
-// See docs/plans/2026-08-20-005-three-path-first-run-plan.md.
+// See docs/plans/2026-08-20-005-three-path-first-run-plan.md and
+// docs/local-model-path.md.
 
 interface LocalModelStatus {
   model: string;
@@ -18,30 +21,102 @@ interface LocalModelStatus {
   agentInstanceId: string;
   agentReady: boolean;
   wslReady: boolean;
+  virtKind?: "ready" | "enable-features" | "reboot-pending" | "firmware-off";
   vmReady: boolean;
   vmProblem: string | null;
   canInstallRuntime: boolean;
 }
 
-export type PathAPane = "runtime" | "model" | "agent" | "ready";
+export type PathAPane = "runtime" | "model" | "agent" | "vm" | "ready";
+
+export type PathAVmNext = "wsl" | "vm" | "enable-features" | "reboot" | "firmware" | "none";
 
 function agentPresent(status: { agentReady?: boolean; agentInstanceId: string }): boolean {
   return Boolean(status.agentReady || status.agentInstanceId);
 }
 
-/** Next required step. Hermes is last; if it is installed, the runtime/model
- * rows can go empty without sending the person back to the install CTAs.
- * Same idea as EngineSetup.needsCli: the binary, not a session watermark. */
+/** Next required step. After Hermes, the Local computer is still a step — not
+ * "ready". Runtime/model rows can go empty once the agent is on disk
+ * (same idea as EngineSetup.needsCli). */
 export function pathAPane(status: {
   runtimeUp: boolean;
   modelReady: boolean;
   agentInstanceId: string;
   agentReady?: boolean;
+  vmReady?: boolean;
 }): PathAPane {
-  if (agentPresent(status)) return "ready";
-  if (!status.runtimeUp) return "runtime";
-  if (!status.modelReady) return "model";
-  return "agent";
+  if (!agentPresent(status)) {
+    if (!status.runtimeUp) return "runtime";
+    if (!status.modelReady) return "model";
+    return "agent";
+  }
+  if (status.vmReady) return "ready";
+  return "vm";
+}
+
+/** What the Local computer button should do. WSL is the Windows half of that
+ * machine, not a separate product. */
+export function pathAVmNext(status: {
+  wslReady: boolean;
+  vmReady: boolean;
+  virtKind?: "ready" | "enable-features" | "reboot-pending" | "firmware-off";
+}): PathAVmNext {
+  if (status.vmReady) return "none";
+  if (status.virtKind === "reboot-pending") return "reboot";
+  if (status.virtKind === "enable-features") return "enable-features";
+  if (status.virtKind === "firmware-off") return "firmware";
+  if (!status.wslReady) return "wsl";
+  return "vm";
+}
+
+export function localComputerLabel(status: {
+  wslReady: boolean;
+  vmReady: boolean;
+  vmProblem: string | null;
+  virtKind?: "ready" | "enable-features" | "reboot-pending" | "firmware-off";
+}): string {
+  if (status.vmReady) return "Local computer";
+  if (status.virtKind === "reboot-pending") return "Local computer — restart required";
+  if (status.virtKind === "enable-features") return "Local computer — Windows setting off";
+  if (status.virtKind === "firmware-off") return "Local computer — needs firmware";
+  if (status.vmProblem) return "Local computer — not running";
+  if (!status.wslReady) return "Local computer — not set up";
+  return "Local computer — not running";
+}
+
+/** Settings leftover. Path A installs Podman itself. */
+export function pathAShownVmProblem(status: {
+  vmProblem: string | null;
+  virtKind?: "ready" | "enable-features" | "reboot-pending" | "firmware-off";
+}): string | null {
+  if (status.virtKind && status.virtKind !== "ready") return null;
+  if (!status.vmProblem) return null;
+  if (/supported container runtime first/i.test(status.vmProblem)) return null;
+  return status.vmProblem;
+}
+
+export function pathAVmLead(status: {
+  model: string;
+  runtimeUp: boolean;
+  modelReady: boolean;
+  virtKind?: "ready" | "enable-features" | "reboot-pending" | "firmware-off";
+}): string {
+  const modelOk = status.runtimeUp && status.modelReady;
+  const prefix = modelOk
+    ? `${status.model} and Hermes are ready. `
+    : "Hermes is installed. ";
+  if (status.virtKind === "reboot-pending") {
+    return `${prefix}Windows needs a restart before a Local computer can start.`;
+  }
+  if (status.virtKind === "enable-features") {
+    return `${prefix}Windows still needs a virtualization setting turned on. That asks for administrator once, then a restart.`;
+  }
+  if (status.virtKind === "firmware-off") {
+    return `${prefix}This PC's firmware has virtualization off. Turn it on in BIOS, then come back. The app cannot do that.`;
+  }
+  if (!status.runtimeUp) return "Starting Ollama…";
+  if (!status.modelReady) return `${status.model} is not loaded yet.`;
+  return `${status.model} and Hermes are ready. Next is the Local computer — a Linux desktop in the background for hands-on work. Windows may ask for administrator once.`;
 }
 
 interface NdjsonEvent {
@@ -77,7 +152,7 @@ function Checklist({ status }: { status: LocalModelStatus }) {
     { done: status.runtimeUp, label: "Ollama running" },
     { done: status.modelReady, label: `Model ${status.model}` },
     { done: agentPresent(status), label: "Hermes agent" },
-    { done: status.vmReady, label: status.vmReady ? "Local computer" : "Local computer (optional)" },
+    { done: status.vmReady, label: localComputerLabel(status) },
   ];
   return (
     <ul className="mt-4 w-full space-y-1.5 text-left text-[13px]">
@@ -125,6 +200,8 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const vmKickoff = useRef(false);
+  const wslKickoff = useRef(false);
+  const virtKickoff = useRef(false);
   const pane = status ? pathAPane(status) : null;
 
   const refresh = useCallback(async () => {
@@ -140,6 +217,14 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!status || status.runtimeUp) return;
+    const id = window.setInterval(() => {
+      void refresh();
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [status, refresh]);
 
   const installRuntime = async () => {
     setError(null);
@@ -217,10 +302,10 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     }
   }, [refresh]);
 
-  const installWsl = async () => {
+  const installWsl = useCallback(async () => {
     setError(null);
     setNotice(null);
-    setProgress({ label: "Installing WSL…", fraction: null });
+    setProgress({ label: "Preparing Windows for the Local computer…", fraction: null });
     try {
       const response = await fetch("/api/local-model/wsl", { method: "POST" });
       const last = await readNdjson(response, (event) => {
@@ -231,26 +316,91 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
         if (event.status) setProgress({ label: event.status, fraction: null });
       });
       if (last?.skip) {
-        setNotice(last.status ?? "WSL did not finish. You can still chat.");
+        setNotice(last.status ?? "The Local computer could not start. You can still chat.");
       } else {
         vmKickoff.current = false;
       }
       setProgress(null);
       await refresh();
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : "WSL did not finish. You can still chat.");
+      setNotice(cause instanceof Error ? cause.message : "The Local computer could not start. You can still chat.");
     } finally {
       setProgress(null);
     }
+  }, [refresh]);
+
+  const enableVirt = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    setProgress({ label: "Turning on Windows virtualization…", fraction: null });
+    try {
+      const response = await fetch("/api/local-model/virt", { method: "POST" });
+      const last = await readNdjson(response, (event) => {
+        if (event.skip || event.done) {
+          setProgress(null);
+          return;
+        }
+        if (event.status) setProgress({ label: event.status, fraction: null });
+      });
+      if (last?.skip) {
+        setNotice(last.status ?? "Windows could not turn on virtualization. You can still chat.");
+      }
+      setProgress(null);
+      await refresh();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "Windows could not turn on virtualization. You can still chat.");
+    } finally {
+      setProgress(null);
+    }
+  }, [refresh]);
+
+  const rebootWindows = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    setProgress({ label: "Restarting Windows…", fraction: null });
+    try {
+      const response = await fetch("/api/local-model/reboot", { method: "POST" });
+      if (!response.ok) {
+        const body: { error?: string } = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? "Windows would not start a restart.");
+      }
+    } catch (cause) {
+      setProgress(null);
+      setNotice(cause instanceof Error ? cause.message : "Windows would not start a restart.");
+    }
+  }, []);
+
+  const startLocalComputer = () => {
+    if (!status) return;
+    const next = pathAVmNext(status);
+    if (next === "firmware" || next === "none") return;
+    if (next === "enable-features") void enableVirt();
+    else if (next === "reboot") void rebootWindows();
+    else if (next === "wsl") void installWsl();
+    else void setupVm();
   };
 
   useEffect(() => {
-    if (!status?.runtimeUp || !status.modelReady || !agentPresent(status)) return;
-    if (status.vmReady || !status.wslReady || progress) return;
-    if (vmKickoff.current) return;
-    vmKickoff.current = true;
-    void setupVm();
-  }, [status, progress, setupVm]);
+    if (!status || pathAPane(status) !== "vm" || progress) return;
+    const next = pathAVmNext(status);
+    if (next === "wsl") {
+      if (wslKickoff.current) return;
+      wslKickoff.current = true;
+      void installWsl();
+      return;
+    }
+    if (next === "enable-features") {
+      if (virtKickoff.current) return;
+      virtKickoff.current = true;
+      void enableVirt();
+      return;
+    }
+    if (next === "vm") {
+      if (vmKickoff.current) return;
+      vmKickoff.current = true;
+      void setupVm();
+    }
+  }, [status, progress, installWsl, setupVm, enableVirt]);
 
   const remove = async () => {
     setRemoving(true);
@@ -411,39 +561,66 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
     );
   }
 
+  if (pane === "vm") {
+    const vmNext = pathAVmNext(status);
+    const firmwareOnly = vmNext === "firmware";
+    const vmProblem = pathAShownVmProblem(status);
+    const primary =
+      vmNext === "enable-features"
+        ? { label: "Turn on Windows virtualization", action: () => void enableVirt() }
+        : vmNext === "reboot"
+          ? { label: "Restart Windows", action: () => void rebootWindows() }
+          : vmNext === "wsl" || vmNext === "vm"
+            ? { label: "Set up the Local computer", action: startLocalComputer }
+            : null;
+    return (
+      <>
+        <Checklist status={status} />
+        <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
+          {pathAVmLead(status)}
+        </p>
+        {progress && (
+          <>
+            <ProgressBar fraction={progress.fraction} />
+            <div className="mt-2 max-h-24 overflow-y-auto text-[12.5px] text-ink-secondary">{progress.label}</div>
+          </>
+        )}
+        {!progress && primary && (
+          <button
+            type="button"
+            onClick={primary.action}
+            className="mt-5 w-full rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white"
+          >
+            {primary.label}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onReady}
+          className={
+            firmwareOnly && !progress
+              ? "mt-5 w-full rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white"
+              : "mt-3 w-full rounded-lg bg-inset py-2.5 text-[15px] font-medium text-ink"
+          }
+        >
+          Continue to chat without it
+        </button>
+        {notice && <div className="mt-2 w-full text-[12.5px] leading-snug text-ink-secondary">{notice}</div>}
+        {vmProblem && !notice && (
+          <div className="mt-2 w-full text-[12.5px] leading-snug text-ink-secondary">{vmProblem}</div>
+        )}
+        {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
+      </>
+    );
+  }
+
   return (
     <>
       <Checklist status={status} />
       <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
-        <span className="text-ink">{status.model}</span> and Hermes are ready on this machine.
-        {status.vmReady
-          ? " A Linux computer is running in the background for desktop work."
-          : " Chat works now. A Linux computer can start in the background if this machine allows it."}
+        <span className="text-ink">{status.model}</span>, Hermes, and the Local computer are ready.
+        A Linux desktop is running in the background.
       </p>
-      {progress && (
-        <>
-          <ProgressBar fraction={progress.fraction} />
-          <div className="mt-2 max-h-24 overflow-y-auto text-[12.5px] text-ink-secondary">{progress.label}</div>
-        </>
-      )}
-      {!status.wslReady && !progress && (
-        <button
-          type="button"
-          onClick={() => void installWsl()}
-          className="mt-5 w-full rounded-lg bg-inset py-2.5 text-[15px] font-medium text-ink"
-        >
-          Install WSL (asks for administrator once)
-        </button>
-      )}
-      {status.wslReady && !status.vmReady && !progress && (
-        <button
-          type="button"
-          onClick={() => void setupVm()}
-          className="mt-5 w-full rounded-lg bg-inset py-2.5 text-[15px] font-medium text-ink"
-        >
-          Set up the Local computer
-        </button>
-      )}
       <button
         type="button"
         onClick={onReady}

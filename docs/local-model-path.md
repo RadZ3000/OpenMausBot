@@ -26,7 +26,7 @@ them.
 |---|---|---|
 | 1 | An inference runtime is running | **Yes** — fetch a pinned zip and spawn it (Windows); see [plan 003](plans/2026-08-21-003-local-runtime-install-plan.md) |
 | 2 | A model is pulled into it | **Yes, entirely** — built |
-| 3 | A `custom`-access agent CLI is installed | Not yet, and this is the wall |
+| 3 | A `custom`-access agent CLI is installed | **Yes, in-app Hermes** — official installer; not yet bundled in NSIS |
 | 4 | The bot points at `host::model` | Yes, trivially |
 
 ---
@@ -80,13 +80,37 @@ will never use. Unavoidable while VRAM stays unreadable — see the GPU entry.
 **Build order:** CLI first (smallest, unblocked, retires three bugs), then
 runtime ownership, then the checklist rework in [B-11](known-bugs.md).
 As of 2026-08-21 the arm installs Hermes in-app (not bundled) and shows the
-three-row checklist plus an optional Local computer row; the CLI-bundle vs fetch question is not reopened here.
+checklist including Local computer; the CLI-bundle vs fetch question is not
+reopened here. The Local computer is a required *step* (Continue is still
+allowed if it fails). See the Local VM entry.
 
-### Local VM on this arm — **Decided**
+### Local VM on this arm — **Decided** (tightened 2026-08-22)
 
-Path A **offers computer control out of the box** (the OpenMausBot Cua Local
-VM, not Hermes' own CUA). Chat **still works** if WSL, Podman, `machine start`,
-or the image pull fails — Continue is never gated on the VM.
+Path A **stands up computer control as part of first-run**, not as a
+hands-off optional extra (the OpenMausBot Cua Local VM, not Hermes' own
+CUA). The checklist row is **Local computer**, never "(optional)". After
+Hermes, the next pane is the VM.
+
+Windows virtualization is three stops, not one skip (**Decided 2026-08-22**):
+
+1. **Windows setting off** — turn on Virtual Machine Platform and WSL
+   (one administrator prompt). Then a restart.
+2. **Restart waiting** — primary CTA is **Restart Windows**. Do not send
+   people to BIOS. Do not auto-reboot.
+3. **Firmware off** — hypervisor really absent. Copy only: turn
+   virtualization on in BIOS. The app cannot do that.
+
+Do not treat `wsl --status` "virtualization is not enabled" as firmware-off.
+Do not treat a leftover `CBS\RebootPending` key as a restart when a required
+Windows feature is still Disabled — turn that feature on first.
+
+The first WSL guest (Podman machine) must not steal focus with Microsoft's
+welcome UI. Mark `HKCU\...\Lxss\OOBEComplete` before starting the machine
+([B-28](known-bugs.md)).
+
+Chat **still works** if WSL, virt, Podman, `machine start`, or the image
+pull fails — Continue is the labelled skip, never the success path while
+a Local computer step is still doable.
 
 Windows first-run: WSL if missing (one UAC), checksum-pinned per-user Podman
 MSI, `machine init --memory 6144` (WSL cannot `machine set --memory` after
@@ -105,6 +129,25 @@ guest **started in ~10 s** on **WSL 2.7.12 / kernel 6.18**, and
 [plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md)
 and the live walk
 [plan 2026-08-21-005](plans/2026-08-21-005-path-a-live-walk.md).
+
+**NSIS first-run, 2026-08-22 — work still open.** The packaged wizard
+installs Ollama (pinned zip), Granite, and Hermes. WSL UAC ran and the
+component is on disk, but the Local computer row never advanced. Gaps:
+
+- [B-25](known-bugs.md) — `wslPresent` vs `--no-distribution` (no distros ⇒
+  exit -1 ⇒ still not `wslReady`, Podman never auto-kicks).
+- Wizard used to hide the trigger as **Install WSL** and "(optional)" —
+  copy/CTA change is in tree; packaged 0.1.27 still has the old screen.
+- [B-26](known-bugs.md) — chooser flag in `%APPDATA%\OpenMausBot` skips Path A
+  after a data-dir wipe; defer lands on clipboard EngineSetup.
+- [B-27](known-bugs.md) — no virt/VMP probe; this box cannot start WSL2 until
+  firmware/optional components are on.
+- Serial CTAs (runtime → model → Hermes → WSL) vs the one-action target above.
+- Ship the in-tree Hermes inject/session-load fixes in the next `package:win`;
+  the 2026-08-21 NSIS the walk used did not include them.
+
+Walk and ordered work:
+[`plans/2026-08-22-001-path-a-nsis-first-run.md`](plans/2026-08-22-001-path-a-nsis-first-run.md).
 
 **Sequencing caveat:** [B-15](known-bugs.md) may outrank all of it. A setup flow
 does not help a customer whose machine refuses to install the app.
@@ -222,7 +265,76 @@ so latency multiplies by step count *and* worsens as the task runs. Never route
 Auto to a local model. Computer control on this path is the Local VM sandbox,
 not the host desktop; a 3B model may drive it poorly, which is copy, not a
 reason to skip the sandbox. Expose fewer tools to one: every tool schema is
-re-sent on every step, costing both speed and accuracy.
+re-sent on every step, costing both speed and accuracy. Hermes ACP still
+offers native `web_extract` / host `browser_navigate` beside Cua; Granite
+will pick extract and the person watching the VM sees nothing. When the
+`computer` MCP server is mounted, disable Hermes `web` and `browser`
+toolsets (`ensureHermesComputerDisablesWeb`). Do not mount Composio on
+local-inject turns (`localInjectOmitsConnectedApps`): Granite spends the
+turn in `tool_search` looking for a Browser app. Keep those twelve Cua tools
+eager (`ensureHermesComputerToolsEager`): Hermes otherwise defers every
+`mcp-*` tool behind `tool_search` the moment Composio is attached, and
+Granite writes the JSON in chat instead of calling it. Do not add browse
+recipes to the system prompt — upstream's Local VM paragraph already says
+inspect the desktop before acting. The opener navigates the URL it was
+given; do not rewrite paths. `vm_open` binds the frontmost on-screen
+Chromium window (`list_windows` `z_index`) to navigate, then **looks at
+whoever is frontmost after navigate** (a leftover Beehiiv window and a new
+Example Domain window can share one pid). The tool text reports the seen
+title and must not claim the requested URL landed when that look did not
+change. Cua 0.20.0 has no active-tab field. `vm_window` with `{}` still
+fills pid from frontmost Chromium. `vm_click`
+with `{index}` fills Cua's pid/snapshot/token from that reading. Do not
+add a browse recipe that names those tools.
+Register those tools as `vm_open` / `vm_launch` (not `mcp__computer__*`) so they look
+like `extract`. For a local-inject pick, ACP's tool expander starts from
+Hermes' own `file` and `terminal` toolsets instead of the `hermes-acp`
+editor bundle (`ensureHermesLocalCatalog` / `applyTurnEnv`), so `vm_open`
+fits in 8k. Cloud Hermes is unchanged. Do not name `vm_open` or
+`mcp__computer__*` in the prompt — Granite then emits that JSON as
+assistant text. Do not grow `OLLAMA_CONTEXT_LENGTH` on a 16 GB box to
+paper over that.
+
+The click → see screen → click loop is **not inside the Grok (or Hermes)
+provider.** `drivers/grok.ts` is chat-completions with no computer tools.
+`grokAgent` is ACP and mounts whatever MCP the harness attached, same as
+Hermes. Matching Grok Bot's unsupervised hands means **grokAgent (or
+Claude / Codex) plus Local VM or Box**, not HTTP Grok. A local-inject
+model on the Local VM is the sandbox: you watch and approve each `vm_*`
+click. Auto-approve cannot turn those clicks unattended (`server/computer-routing.ts`).
+The Local VM does not keep working with the lid shut. Qwen's
+`computer_use__*` tools still name the Windows host desktop (B-19); they
+are carded, not counted as Path A computer use.
+
+Coworker-level computer use (honest observation after every act, session
+that still holds it; not a clone of Grok Bot or Cowork) is
+[`docs/plans/2026-08-22-002-computer-use-coworker-loop-plan.md`](plans/2026-08-22-002-computer-use-coworker-loop-plan.md).
+A successful `vm_open` reports the seen window, not the requested URL, when
+those disagree. The last window reading (title, excerpt, click binds) lives
+on the harness, not in the MCP child, so the next message can still click
+after Hermes ACP exits. Take-the-wheel, VM recreate, and another bot's turn
+on the shared desktop drop that look. Window titles and AX trees are
+**untrusted**; the replay stanza is fenced so a page cannot close it and
+inject instructions.
+
+**P8 (2026-08-22):** stop adding Granite-specific computer wrappers. Path A
+keeps eight `vm_*` tools. Unsupervised multi-step is Claude / Codex /
+grokAgent. See
+[`docs/plans/2026-08-22-008-computer-safety-eval-plan.md`](plans/2026-08-22-008-computer-safety-eval-plan.md).
+
+Frontier engines on the same Local VM or a VPS get a **fused screenshot**
+after mutating Cua tools (`observe-computer-mcp`, Cua names kept). Path A
+does not: Granite still gets text AX only. Live Claude-on-VM A/B is still
+unknown. See
+[`docs/plans/2026-08-22-005-computer-frontier-observe-plan.md`](plans/2026-08-22-005-computer-frontier-observe-plan.md).
+
+The shared Local VM is one desktop: leftover Chromium is expected **while
+the VM is running** (harness quit does not kill it). Cookies and files in
+`/home/cua/workspace` (Chromium under `.browser-profiles`) are shared, not a
+security boundary. Stopping the container ends GUI windows (X restarts);
+Start brings the desktop back without recreate. Per-bot mode is isolation.
+Recreate is for a drifted image or a broken safety contract. See
+[`docs/plans/2026-08-22-006-computer-durable-shared-plan.md`](plans/2026-08-22-006-computer-durable-shared-plan.md).
 
 ---
 
@@ -507,5 +619,7 @@ Alibaba's Qwen Code). **Do this before any bundling work starts**, not after.
 3. **16 GB threshold** — see above.
 4. **Delete semantics** — what happens to bots pointing at a removed model.
 5. **Which agent CLI to bundle**, once licences are checked.
-6. **Local VM on first-run** — decided 2026-08-21: Path A stands it up;
-   chat still works if it fails. See the Local VM entry above.
+6. **Local VM on first-run** — decided 2026-08-21, tightened 2026-08-22:
+   Path A auto-starts the Local computer after Hermes; chat still works if
+   it fails, as a labelled skip. See the Local VM entry. B-25 and B-27 still
+   have to be built before that offer is honest on a virgin Windows box.

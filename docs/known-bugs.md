@@ -50,10 +50,16 @@ B-01 again with more steps.
 
 ### B-11 · The arm reveals its three requirements one at a time — `fixed`
 
-`src/components/LocalModelArm.tsx` now shows a three-row checklist (Ollama,
-Granite, Hermes) from the first screen, and installs Hermes in-app instead of
-handing off to EngineSetup / Qwen Code. Ollama itself is still a browser
-download — that remaining hole is the fresh-machine runtime, not the naming.
+`src/components/LocalModelArm.tsx` now shows a checklist (Ollama, Granite,
+Hermes, Local computer) from the first screen, and installs Hermes in-app
+instead of handing off to EngineSetup / Qwen Code. Windows Ollama is the
+pinned zip (`POST /api/local-model/runtime`). The remaining hole is that
+the CTAs are still **serial** — one button at a time — not the single
+pass the standing register asked for. The Local computer is now a real
+step after Hermes (not labelled optional); WSL/Podman probes are still
+[B-25](#b-25--wslpresent-treats-a-successful---no-distribution-install-as-missing--open)
+and [B-27](#b-27--path-a-does-not-detect-missing-windows-virtualization--open). See
+[`plans/2026-08-22-001-path-a-nsis-first-run.md`](plans/2026-08-22-001-path-a-nsis-first-run.md).
 
 ### B-12 · A CLI installed while the app runs stays invisible until restart — `open`
 
@@ -139,6 +145,52 @@ same class of bug — a config format that drifted from the vendor's current
 release. `hermes`, `droid`, `kimi`, `opencode-go` and `grok` all write vendor
 config files and none has been exercised end to end recently.
 
+### B-25 · `wslPresent` treats a successful `--no-distribution` install as missing — `fixed`
+
+Path A installs WSL with `wsl --install --no-distribution` so Podman can create
+the guest later. After that, `wsl -l -v` prints "no installed distributions"
+and **exits non-zero**. The old `wslPresent()` returned true only on exit 0, so
+`GET /api/local-model` kept `wslReady: false` and **Install WSL** relaunched a
+no-op installer.
+
+**Fix (2026-08-22):** `wslOutputLooksPresent` treats that miss as WSL ready.
+`runWslInstall` no-ops when WSL is already present. Tests in
+`podman-setup.test.ts`.
+
+### B-28 · First Podman WSL guest opens the WSL welcome UI in front — `fixed`
+
+Path A 2026-08-22: Local computer finished, then Windows launched
+`wslsettings.exe` ("Welcome to Windows Subsystem for Linux") over the app.
+That is WSL's first-distro OOBE, not our window.
+
+**Fix:** before `machine init`/`start`, set HKCU `Lxss\OOBEComplete=1`
+(WSL team, [microsoft/WSL#13223](https://github.com/microsoft/WSL/issues/13223)).
+Best-effort `taskkill /IM wslsettings.exe` if it still appears. `reg.exe` /
+`taskkill.exe` argv, no shell.
+
+### B-26 · Path A chooser lives in Electron userData, not the harness data dir — `open`
+
+`firstRunStep` (`src/lib/install-path.ts`) stores `omb-install-path` in
+`localStorage`. Packaged Electron keeps that under `%APPDATA%\OpenMausBot`.
+Uninstalling the app or wiping `~/.openmausbot` does **not** clear it.
+
+A 2026-08-22 "virgin" demo still skipped the chooser and opened Atlas plus
+upstream **EngineSetup** clipboard cards (Qwen / Hermes / pi). The stored path
+made `firstRunStep` return `done`. "I'll set this up later" in the same session
+does the same by unmounting the overlay.
+
+**Fix:** forget the stored path when no local runtime/agent is actually ready,
+or key first-run on harness state rather than a sticky renderer flag. Clearing
+`%APPDATA%\OpenMausBot` is the manual reset today.
+
+### B-27 · Path A does not detect missing Windows virtualization — `fixed`
+
+`wsl --status` conflates a Windows setting, a pending restart, and firmware.
+Path A now classifies those separately (`server/windows-virt.ts`): turn the
+setting on, ask for a restart, or explain BIOS. Podman does not download
+until the kind is `ready`. A leftover `CBS\RebootPending` key after a real
+reboot does not beat a still-disabled WSL feature.
+
 ---
 
 ## Inherited — in code we ship
@@ -179,19 +231,6 @@ caller will hit it — this fork already did, and only the tests caught it.
 
 **Fix:** have `instanceConfigs()` not mutate its input, or split the live and
 persistable forms so the dangerous one cannot be saved by accident.
-
-### B-06 · "Start Local VM" is offered but always rejected — `open`
-
-`POST /api/local-computer/start` always 409s ("cannot safely resume; remove and
-recreate"). `setupCommands()` returns `start: null`. Settings still contains a
-Start button, but `needsRecreate` is true whenever `container === "stopped"`,
-so that button is unreachable; a stopped VM is sent down Delete and recreate.
-
-On 2026-08-21, `docker start` of the existing `openmausbot-computer` (layer v3,
-Exited 255 after Docker Desktop quit) came back in under a second: VNC 200,
-`cua-driver 0.20.0`, health `overall: ok`. The resume ban is a policy, not a
-fact about this image on Docker. Current code wants image layer **v4**, so a
-real app session would still recreate rather than start.
 
 ### B-07 · Chat can flash before `NoEngines` decides — `open`
 
@@ -338,6 +377,73 @@ VM / connected-apps path; the empty first-run path is (2). Hermes logs (2) in
 Path A on this box later **did** install Hermes + Granite in a throwaway
 data dir; the B-24 prompt was not sent. Walk:
 [`docs/plans/2026-08-21-005-path-a-live-walk.md`](plans/2026-08-21-005-path-a-live-walk.md).
+
+**2026-08-22 NSIS + Local computer.** Same machine, VM on. Homepage prompt:
+zero tool calls. **Probes the same afternoon:** empty MCP and computer-only
+both issued `write_file` (fake listings), then hung after `allow_once` until
+interrupt (`NoneType.startswith` on cancel). (a) is prompt-dependent; (b)
+is Hermes Git Bash `_bash_starts` deadlocking in Electron's Win32 job
+(Nous #80952; 0.20.5 lacks PR #69083). **2026-08-22 packaged confirm:**
+`detached: true` does not leave Chromium's job (hermes/python/bash all
+`IsProcessInJob=true`; probe `true`/`cat` still stuck). Closing stdin on
+that probe (`ensureHermesBashProbeClosesStdin`) made `write_file` finish
+in ~5s and update `MEMORY.md`. **(a) in tree:** local-inject models wrap
+the Local VM MCP with `compact-computer-mcp` (8 `vm_*` computer tools,
+Cua `browser_navigate` on the far side). Claude still gets Cua's full
+catalog. A live URL turn after the wrap called Hermes native `extract`
+(real page, not the VM). Hermes ACP now disables native `web`/`browser`
+toolsets when the `computer` MCP server is mounted, keeps those computer
+tools eager, and registers them as `vm_open` rather than
+`mcp__computer__browser_navigate` so they sit on the same channel as
+`extract` / `write_file`. Local-inject ACP sessions start from Hermes
+`file` + `terminal` instead of the `hermes-acp` editor bundle so those
+tools fit in 8k. A live URL turn after that still refused in prose, but
+`used` dropped from ≈13847 to ≈5018.
+
+**2026-08-22 why Granite never issued `vm_open`.** Direct Ollama calls
+with `vm_open` on the tools array succeed (`{url: https://example.com}`).
+The ACP path did not: `session/set_model` rebuilds the AIAgent after
+`session/new` and drops the MCP snapshot, so Ollama only received
+`file`+`terminal` (six tools). `ensureHermesAcpMcpRebind` puts `mcp-*`
+back after `_make_agent`. After that, Granite *did* emit a native tool
+call — at Hermes' bridge tool named `tool_call`, with
+`{url: https://example.com}` and no `name` (Composio/agents stay
+deferred, so the bridge stays in the array). Local-inject now omits
+that name (`ensureHermesBridgeNoCall`) and unwraps a leftover
+`tool_call({url})` onto `vm_open` (`ensureHermesBridgeUnwrap`). A live
+URL turn then issued `vm_open` → `vm_ready` → `vm_launch`. Cua still
+rejected `vm_open` without a session id; `vm_launch`/`xdg-open`
+reported the URL opened. **Same evening:** `compact-computer-mcp` now
+fills Cua's session/tab/target on `vm_open({url})` and intercepts
+`vm_launch` URL args the same way. Each open mints a fresh Cua public
+session; the ended `omb` label is not reusable on this transport.
+`vm_open` binds the frontmost on-screen Chromium window (`list_windows`
+`z_index`) to navigate, then looks at the frontmost Chromium **after**
+navigate (a leftover Beehiiv window and Example Domain can share one pid).
+The tool text must not claim the requested URL landed when that look did
+not change. The tree is
+compacted to named controls — a live Beehiiv look returned 541 nodes and
+the 4k cap stopped at Chromium Minimize, so Granite wrote a how-to
+instead of clicking. `vm_window` with `{}` is the same bind. `vm_click`
+`{index}` fills Cua's snapshot ids from that reading. Hermes kills the MCP
+child at settle, so those binds used to die with the process; they now live
+on the harness (`server/computer-thread-state.ts`) and `vm_click` reloads
+them on the next message. Take-the-wheel, deleting the task, recreating the
+VM, or another bot's turn on the shared desktop drops the look. Later turns
+with no tools still happen when Granite answers in prose; handing control
+back does not change that.
+Hermes `session/load` answers `{}` for the previous turn's id (each turn
+is a new `hermes acp` process); a missed load now replays the active
+branch into `session/new` instead of prompting a blank session.
+The managed image layer is **7**
+(Chromium, nested-container flags, `--grant existing-profile`). Rebuild
+the Local VM image for that layer. Notes:
+[`docs/plans/2026-08-21-004-b24-investigation.md`](plans/2026-08-21-004-b24-investigation.md).
+General computer-use loop (not more Granite recipes):
+[`docs/plans/2026-08-22-002-computer-use-coworker-loop-plan.md`](plans/2026-08-22-002-computer-use-coworker-loop-plan.md).
+**P8 (2026-08-22):** honesty + last-look are in; stop adding Granite-specific
+computer wrappers. B-24(a)/(b) is **not** a coworker-loop miss and is out of
+scope for that family.
 
 *Note for whoever picks this up:* an ACP client must answer **every**
 server-initiated request, not just `session/request_permission`. Ignoring one

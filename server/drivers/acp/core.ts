@@ -14,9 +14,11 @@
 // session/update notifications, so updates are double-gated: nothing emits
 // before the prompt is sent, and `_meta.isReplay` updates are dropped.
 import { homedir } from "node:os";
+import type { SpawnOptions } from "node:child_process";
 
 import { PROVIDER_CREDENTIAL_ENV, WORKSPACE_CREDENTIAL_ENV } from "../../config.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.ts";
+import { replayAfterFailedResume } from "../../turn-context.ts";
 
 import type {
   DriverCreateInput,
@@ -82,6 +84,12 @@ export interface AcpSupport {
   install?: EngineInstall;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
+  /** Windows only: spawn the CLI with `detached: true` so it is not assigned
+   *  to libuv's kill-on-close job. Hermes's Git Bash probe (`_bash_starts`)
+   *  deadlocks inside that job — MSYS `true`/`cat` grandchildren keep pipe
+   *  handles, `subprocess.run(timeout=15)` never returns, and `write_file`
+   *  hangs until we interrupt. Nous #80952 / B-24(b). */
+  windowsDetachedSpawn?: boolean;
   /** Provider credential variables this ACP child is allowed to inherit. */
   credentialEnv?: readonly string[];
   /** Select the model through a session config option instead of argv, for
@@ -118,6 +126,11 @@ export interface AcpSupport {
     model: string | undefined,
     env: Record<string, string | undefined>,
   ): string | undefined;
+  /** Hermes answers a missing session with JSON-RPC success and `{}`.
+   * Prompt then returns `stopReason: "refusal"` with no text — the UI
+   * looks like the turn stopped early. Return false to fall through to
+   * session/new. Agents whose successful load is an empty body omit this. */
+  sessionLoadLived?(result: unknown): boolean;
   /** Apply per-session settings between session/new (or session/load) and the
    * first session/prompt. Some CLIs ignore argv and take the model/mode over
    * the wire instead (droid), so this is the only place the pick can land; a
@@ -128,6 +141,18 @@ export interface AcpSupport {
     config: AcpConfig;
     turn: SendTurnInput;
   }): Promise<void>;
+}
+
+/** Spawn options for one ACP child. Windows Hermes leaves libuv's job. */
+export function acpChildSpawnOptions(
+  support: Pick<AcpSupport, "windowsDetachedSpawn">,
+  base: SpawnOptions,
+  platform: NodeJS.Platform = process.platform,
+): SpawnOptions {
+  if (platform === "win32" && support.windowsDetachedSpawn) {
+    return { ...base, detached: true };
+  }
+  return base;
 }
 
 const INIT_TIMEOUT = 20_000;
@@ -282,11 +307,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             : turn;
         const mcpServers = acpMcpServers(turn);
 
-        const child = spawnCli(config.cli, support.spawnArgs(config, cliTurn), {
-          cwd,
-          env,
-          stdio: ["pipe", "pipe", "pipe"],
-        });
+        const child = spawnCli(
+          config.cli,
+          support.spawnArgs(config, cliTurn),
+          acpChildSpawnOptions(support, {
+            cwd,
+            env,
+            stdio: ["pipe", "pipe", "pipe"],
+          }),
+        );
 
         const state = { settled: false, promptSent: false, text: "" };
         const asks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
@@ -554,7 +583,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   { sessionId: cursor, cwd, mcpServers },
                   LOAD_SESSION_TIMEOUT,
                 );
-                sessionId = cursor;
+                const lived = support.sessionLoadLived ? support.sessionLoadLived(sessionResult) : true;
+                if (lived) sessionId = cursor;
+                else sessionResult = null;
               } catch {
                 /* session gone, load unsupported, or too slow — start fresh */
               }
@@ -564,6 +595,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               sessionId = typeof sessionResult?.sessionId === "string" ? sessionResult.sessionId : null;
               if (!sessionId) throw new Error("session/new returned no sessionId");
             }
+            const resumed = Boolean(cursor && sessionId === cursor);
             let selectedModel: string | null = null;
             let sessionStarted = false;
             const emitSessionStarted = () => {
@@ -623,11 +655,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             }
             emitSessionStarted();
             state.promptSent = true;
+            // A resume cursor with a missed load still has turn.text as the
+            // latest message only — the harness thought the native session
+            // would carry history. Replay the active branch into this blank
+            // session instead of prompting it as if the thread were new.
+            const prior = cliTurn.transcript;
+            const promptTurn =
+              !resumed && cursor && prior && prior.length > 0
+                ? { ...cliTurn, text: replayAfterFailedResume(prior, cliTurn.text) }
+                : cliTurn;
             const text = support.buildPromptText
-              ? support.buildPromptText(turn)
-              : turn.system
-                ? `${turn.system}\n\n${turn.text}`
-                : turn.text;
+              ? support.buildPromptText(promptTurn)
+              : promptTurn.system
+                ? `${promptTurn.system}\n\n${promptTurn.text}`
+                : promptTurn.text;
             const result = await request("session/prompt", {
               sessionId,
               prompt: [{ type: "text", text }],
@@ -646,7 +687,19 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             const reason = result?.stopReason;
             if (reason === "end_turn") settle(true, null);
             else if (reason === "cancelled") settle(true, "cancelled");
-            else settle(false, reason ?? "failed");
+            else {
+              // Hermes uses this for an unknown session: no chunks, no
+              // JSON-RPC error. Without a runtime.error the chat just
+              // stops. Other ACP failures already throw into the catch.
+              if (reason === "refusal") {
+                emit({
+                  ...base(threadId, turnId),
+                  type: "runtime.error",
+                  message: "The agent refused this turn without a reply.",
+                });
+              }
+              settle(false, reason ?? "failed");
+            }
           } catch (e) {
             if (!state.settled) {
               const message = e instanceof Error ? e.message : String(e);

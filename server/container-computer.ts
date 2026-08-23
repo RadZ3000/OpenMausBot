@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import { augmentedPath } from "./env-path.ts";
 import { DATA_DIR } from "./config.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
+import { localVmCanResume } from "../shared/local-vm-lifecycle.ts";
 
 const run = promisify(execFile);
 const SCREENSHOT_STATUS_TTL_MS = 10_000;
@@ -36,7 +37,7 @@ export const BASE_IMAGE = `${BASE_IMAGE_REPOSITORY}@${BASE_IMAGE_DIGEST}`;
 // Image and container labels below remain the authoritative compatibility
 // check, not the mutable tag.
 export const IMAGE_REPOSITORY = "localhost/openmausbot/cua-local-vm";
-export const IMAGE_LAYER_VERSION = "4";
+export const IMAGE_LAYER_VERSION = "7";
 export const IMAGE_LAYER_LABEL = "com.openmausbot.image-layer";
 export const IMAGE = `${IMAGE_REPOSITORY}:driver-${CUA_DRIVER_VERSION}-v${IMAGE_LAYER_VERSION}`;
 export const CONTAINER = "openmausbot-computer";
@@ -47,6 +48,7 @@ export const WORKSPACE_LABEL = "com.openmausbot.workspace";
 export const TARGET_LABEL = "com.openmausbot.local-vm-target";
 export const VM_WORKSPACE_DIR = join(DATA_DIR, "vm-home");
 export const VM_WORKSPACE_GUEST = "/home/cua/workspace";
+export const VM_BROWSER_PROFILES_GUEST = `${VM_WORKSPACE_GUEST}/.browser-profiles`;
 export const DISPLAY = ":1";
 export const CUA_SOCKET = "/run/user/1000/openmausbot-cua.sock";
 export const CUA_EXECUTABLE = "/usr/local/libexec/openmausbot/cua-driver";
@@ -132,7 +134,7 @@ RUN printf '%s\\n' \\
       '#!/bin/sh' \\
       'set -eu' \\
       'workspace=${VM_WORKSPACE_GUEST}' \\
-      'profiles="$workspace/.browser-profiles"' \\
+      'profiles="${VM_BROWSER_PROFILES_GUEST}"' \\
       'mkdir -p "$profiles/google-chrome" "$profiles/chromium" "$HOME/.config"' \\
       'if ! chmod 0700 "$workspace" "$profiles" "$profiles/google-chrome" "$profiles/chromium" 2>/dev/null; then' \\
       '  for directory in "$workspace" "$profiles" "$profiles/google-chrome" "$profiles/chromium"; do' \\
@@ -163,9 +165,20 @@ RUN printf '%s\\n' \\
       '  if [ "$attempt" -ge 45 ]; then echo "X display :1 did not become ready within 45 seconds" >&2; exit 1; fi' \\
       '  sleep 1' \\
       'done' \\
-      'exec env CUA_DRIVER_INSTALL_CHANNEL=python_package CUA_DRIVER_RS_TELEMETRY_ENABLED=0 ${CUA_EXECUTABLE} serve --socket ${CUA_SOCKET} --permission-mode standard' \\
+      'exec env CUA_DRIVER_INSTALL_CHANNEL=python_package CUA_DRIVER_RS_TELEMETRY_ENABLED=0 ${CUA_EXECUTABLE} serve --socket ${CUA_SOCKET} --permission-mode standard --grant existing-profile' \\
       > /usr/local/bin/start-openmausbot-cua-driver.sh \\
     && chmod 0755 /usr/local/bin/start-openmausbot-cua-driver.sh
+RUN set -eux; \\
+    apt-get update -qq; \\
+    apt-get install -y -qq --no-install-recommends chromium; \\
+    rm -rf /var/lib/apt/lists/*; \\
+    printf '%s\\n' 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-gpu --force-renderer-accessibility"' > /etc/chromium.d/openmausbot-nested; \\
+    install -d -o cua -g cua -m 0755 /home/cua/.config /home/cua/.config/xfce4; \\
+    printf '%s\\n' '[Default Applications]' 'text/html=chromium.desktop' 'x-scheme-handler/http=chromium.desktop' 'x-scheme-handler/https=chromium.desktop' > /home/cua/.config/mimeapps.list; \\
+    if [ -f /home/cua/.config/xfce4/helpers.rc ]; then grep -v '^WebBrowser=' /home/cua/.config/xfce4/helpers.rc > /tmp/openmausbot-helpers.rc; fi; \\
+    printf '%s\\n' 'WebBrowser=chromium' >> /tmp/openmausbot-helpers.rc; \\
+    mv /tmp/openmausbot-helpers.rc /home/cua/.config/xfce4/helpers.rc; \\
+    chown -R cua:cua /home/cua/.config
 RUN printf '%s\\n' \\
       '' \\
       '[program:openmausbot-cua-driver]' \\
@@ -328,7 +341,7 @@ function statusProblem(status: ContainerComputerStatus): string | null {
   if (status.network === "unsafe") return "The existing Local VM exposes its viewer publicly; recreate it";
   if (status.security === "unsafe") return "The existing Local VM is missing safety limits; recreate it";
   if (status.persistence === "unsafe") return "The existing Local VM is missing its durable workspace; recreate it";
-  if (status.container === "stopped") return "This desktop image cannot safely resume; recreate the Local VM";
+  if (status.container === "stopped") return "Start the Local VM";
   if (status.desktop_error) return `The Local VM desktop failed to start: ${status.desktop_error}`;
   if (!status.desktopReady) return "The Local VM started, but Cua Driver is not ready yet";
   return null;
@@ -730,9 +743,10 @@ export interface DockerHardeningConfig {
  * BYO-VPS backend in vps-computer.ts): exact resource limits, no privilege,
  * no host namespaces or devices, no disabled security profiles. The only
  * knob the callers legitimately disagree on is the restart policy — the VPS
- * container must survive a reboot nobody is watching ("unless-stopped"),
- * while the Local VM must NOT auto-resume: its desktop leaves a stale X lock
- * on stop, so a restarted container is a broken one. */
+ * container must survive a reboot nobody is watching ("unless-stopped").
+ * The Local VM stays "no": an 8-hour idle stop must not come back by itself,
+ * and a host reboot should not surprise-start the desktop. Explicit
+ * `docker`/`podman start` of a healthy stopped container is allowed. */
 export function dockerSecurityIsHardened(
   config: DockerHardeningConfig | undefined,
   options: { restartPolicy?: "no" | "unless-stopped" } = {},
@@ -920,9 +934,18 @@ export async function containerComputerAction(
     throw Object.assign(new Error(before.problem ?? "This runtime cannot create a per-bot Local VM"), { status: 409 });
   }
   if (action === "start") {
-    throw Object.assign(new Error("This desktop image cannot safely resume; remove and recreate the Local VM"), {
-      status: 409,
-    });
+    if (before.container === "running") {
+      throw Object.assign(new Error("The Local VM is already running"), { status: 409 });
+    }
+    if (before.container === "missing") {
+      throw Object.assign(new Error(before.problem ?? "Create the Local VM first"), { status: 409 });
+    }
+    if (!localVmCanResume(before)) {
+      throw Object.assign(
+        new Error(before.problem ?? "This Local VM cannot safely resume; remove and recreate it"),
+        { status: 409 },
+      );
+    }
   }
   if (action === "stop" && before.container !== "running") {
     throw Object.assign(new Error("The Local VM is not running"), { status: 409 });
@@ -1115,7 +1138,7 @@ export function setupCommands(
       runtime === "container" && target.key !== SHARED_LOCAL_VM_TARGET.key
         ? null
         : command(containerRunArgs(runtime, "CHANGE_ME", target)),
-    start: null,
+    start: command(["start", target.containerName]),
     stop: command(["stop", target.containerName]),
     remove: command(["rm", runtime === "container" ? "--force" : "-f", target.containerName]),
     view: target.viewerPort ? `http://127.0.0.1:${target.viewerPort}/vnc.html` : "",

@@ -14,6 +14,7 @@ import {
   IMAGE_LAYER_VERSION,
   MANAGED_LABEL,
   TARGET_LABEL,
+  VM_BROWSER_PROFILES_GUEST,
   VM_WORKSPACE_DIR,
   VM_WORKSPACE_GUEST,
   WORKSPACE_LABEL,
@@ -560,6 +561,21 @@ describe("containerComputerStatus", () => {
     expect(status.image).toBe(false);
     expect(status.problem).toContain("Prepare the Cua desktop image");
   });
+
+  it("asks to start a healthy stopped desktop instead of calling it unsafe to resume", async () => {
+    const fake = runner({
+      "/usr/bin/which docker": "docker\n",
+      "/usr/bin/which podman": new Error("missing"),
+      "docker info --format {{.ServerVersion}}": "29\n",
+      [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`docker inspect ${CONTAINER}`]: readyInspect({ State: { Running: false } }),
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux");
+    expect(status.container).toBe("stopped");
+    expect(status.imageMatches).toBe(true);
+    expect(status.problem).toBe("Start the Local VM");
+  });
 });
 
 describe("Cua integration", () => {
@@ -589,13 +605,20 @@ describe("Cua integration", () => {
     expect(dockerfile).toContain("sha256sum -c -");
     expect(dockerfile).toContain(`install -D -m 0755 "$driver_bin" ${CUA_EXECUTABLE}`);
     expect(dockerfile).toContain(`cua-driver ${CUA_DRIVER_VERSION}`);
-    expect(dockerfile).toContain(`serve --socket ${CUA_SOCKET} --permission-mode standard`);
+    expect(dockerfile).toContain(`serve --socket ${CUA_SOCKET} --permission-mode standard --grant existing-profile`);
     expect(dockerfile).toContain("CUA_DRIVER_RS_TELEMETRY_ENABLED=0");
     expect(dockerfile).toContain("prepare-openmausbot-workspace.sh");
     expect(dockerfile).toContain('if ! chmod 0700 "$workspace"');
     expect(dockerfile).toContain('test -r "$directory" && test -w "$directory" && test -x "$directory"');
     expect(dockerfile).toContain("migrate_profile google-chrome");
+    expect(dockerfile).toContain(VM_BROWSER_PROFILES_GUEST);
     expect(dockerfile).toContain("migrate_profile chromium");
+    expect(dockerfile).toContain("apt-get install -y -qq --no-install-recommends chromium");
+    expect(dockerfile).not.toContain("chromium-browser");
+    expect(dockerfile).toContain("/etc/chromium.d/openmausbot-nested");
+    expect(dockerfile).toContain('export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-gpu --force-renderer-accessibility"');
+    expect(dockerfile).not.toContain("$$CHROMIUM_FLAGS");
+    expect(dockerfile).toContain("x-scheme-handler/https=chromium.desktop");
     expect(dockerfile).toContain("SingletonLock");
     expect(dockerfile).toContain(`${IMAGE_LAYER_LABEL}="${IMAGE_LAYER_VERSION}"`);
     expect(dockerfile).toContain("did not become ready within 45 seconds");
@@ -663,16 +686,62 @@ describe("containerComputerAction", () => {
     expect(fake.calls.some((call) => call.startsWith("docker run "))).toBe(false);
   });
 
-  it("never starts a stopped desktop because its stale X lock makes resume unsafe", async () => {
+  it("starts a healthy stopped desktop instead of forcing recreate", async () => {
+    let running = false;
+    const calls: string[] = [];
+    const run: CommandRunner = async (command, args) => {
+      const key = [command, ...args].join(" ");
+      calls.push(key);
+      if (key === "/usr/bin/which docker") return { stdout: "docker\n" };
+      if (key === "/usr/bin/which podman") throw new Error("missing");
+      if (key === "docker info --format {{.ServerVersion}}") return { stdout: "29\n" };
+      if (key === `docker image inspect ${IMAGE}`) return { stdout: preparedImageInspect() };
+      if (key === `docker start ${CONTAINER}`) {
+        running = true;
+        return { stdout: "" };
+      }
+      if (key === `docker inspect ${CONTAINER}`) {
+        return { stdout: readyInspect({ State: { Running: running } }) };
+      }
+      if (key === versionProbe) return { stdout: `cua-driver ${CUA_DRIVER_VERSION}\n` };
+      if (key === statusProbe) return { stdout: "running\n" };
+      if (key === healthProbe) {
+        return { stdout: JSON.stringify({ schema_version: "1", overall: "ok", checks: [] }) };
+      }
+      if (key === readinessProbe) return { stdout: "{}\n" };
+      if (key === readinessRead) return { stdout: validPng.toString("base64") };
+      throw new Error(`unexpected command: ${key}`);
+    };
+
+    const after = await containerComputerAction("start", run, "linux");
+    expect(calls).toContain(`docker start ${CONTAINER}`);
+    expect(after.container).toBe("running");
+    expect(after.ready).toBe(true);
+  });
+
+  it("still refuses start when the stopped desktop is on a drifted image", async () => {
     const fake = runner({
       "/usr/bin/which docker": "docker\n",
       "/usr/bin/which podman": new Error("missing"),
       "docker info --format {{.ServerVersion}}": "29\n",
       [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
-      [`docker inspect ${CONTAINER}`]: readyInspect({ State: { Running: false } }),
+      [`docker inspect ${CONTAINER}`]: readyInspect({
+        State: { Running: false },
+        Config: {
+          Image: IMAGE,
+          Labels: {
+            [MANAGED_LABEL]: "1",
+            [DRIVER_LABEL]: CUA_DRIVER_VERSION,
+            [BASE_IMAGE_LABEL]: BASE_IMAGE_DIGEST,
+            [IMAGE_LAYER_LABEL]: "4",
+            [WORKSPACE_LABEL]: "1",
+          },
+          Env: ["VNC_PW=secret123"],
+        },
+      }),
     });
 
-    await expect(containerComputerAction("start", fake.run, "linux")).rejects.toThrow("cannot safely resume");
+    await expect(containerComputerAction("start", fake.run, "linux")).rejects.toThrow("recreate");
     expect(fake.calls).not.toContain(`docker start ${CONTAINER}`);
   });
 });
@@ -719,8 +788,8 @@ describe("setupCommands", () => {
     expect(command).toContain("VNC_PW=CHANGE_ME");
   });
 
-  it("does not suggest docker start for an image that must be recreated", () => {
-    expect(setupCommands("docker", "linux").start).toBeNull();
+  it("publishes docker start so a stopped healthy VM can resume", () => {
+    expect(setupCommands("docker", "linux").start).toBe(`docker start ${CONTAINER}`);
   });
 
   it("limits resources and retains only the sandbox supervisor's identity-switch caps", () => {

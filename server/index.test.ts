@@ -1022,6 +1022,24 @@ describe("harness HTTP API", () => {
     await api("DELETE", `/api/bots/${bot.id}`);
   });
 
+  it("refuses Auto-approve for a local-inject model on the Local VM", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const inject = {
+      instanceId: bot.modelSelection.instanceId,
+      model: "ollama::ibm/granite4.1:3b",
+    };
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: inject, computer: "vm" })).status).toBe(
+      200,
+    );
+    const blocked = await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true });
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.error).toMatch(/local model on the Local VM/i);
+    const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot.id);
+    expect(after.autoApprove).not.toBe(true);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
   it("offers an idempotent stop boundary for active local turns", async () => {
     const unsupported = await api("POST", "/api/local-computer/interrupt");
     expect(unsupported).toEqual({

@@ -80,6 +80,12 @@ export function decodeInjectId(id: string | null | undefined): { host: string; m
   return { host, model };
 }
 
+/** Granite-class local picks spend the turn in Composio `tool_search` looking
+ * for a "Browser" app. Connected apps stay on cloud engines. */
+export function localInjectOmitsConnectedApps(model: string | null | undefined): boolean {
+  return decodeInjectId(model) !== null;
+}
+
 export function localHost(id: string): LocalHost | undefined {
   return HOST_BY_ID.get(id);
 }

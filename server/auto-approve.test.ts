@@ -130,6 +130,32 @@ describe("autoDecision", () => {
       }),
     ).toBeNull();
   });
+
+  it("never auto-approves Path A vm_* even in Auto mode", () => {
+    expect(autoDecision({ autoApprove: true }, "vm_open", "Open https://example.com")).toBeNull();
+    expect(autoDecision({ autoApprove: true, alwaysAllow: ["vm_click"] }, "vm_click", "Click 1")).toBeNull();
+  });
+
+  it("still auto-approves Box/host click names that are not vm_*", () => {
+    expect(
+      autoDecision({ autoApprove: true }, "mcp__computer__click", "Click the Submit button", {
+        scope: "local-computer",
+      }),
+    ).toBe("auto-approved mcp__computer__click");
+  });
+
+  it("cards Qwen host-desktop builtins on Windows even in Auto mode", () => {
+    expect(
+      autoDecision({ autoApprove: true }, "computer_use__click", "click at 840, 220", {
+        platform: "win32",
+      }),
+    ).toBeNull();
+    expect(
+      autoDecision({ autoApprove: true }, "computer_use__click", "click at 840, 220", {
+        platform: "darwin",
+      }),
+    ).toBe("auto-approved computer_use__click");
+  });
 });
 
 describe("unattended turns", () => {

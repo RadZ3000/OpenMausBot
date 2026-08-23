@@ -153,8 +153,9 @@ laptop. `docker stop` then exited 0.
 So on Docker, **resume after a host daemon restart worked**. That contradicts
 the API's blanket `POST /start` → 409 ("cannot safely resume; remove and
 recreate"). Settings already folds a stopped container into **needsRecreate**,
-so the "Start Local VM" button is unreachable; [B-06](../known-bugs.md) is
-now "dead button + policy that this host did not need."
+so the "Start Local VM" button is unreachable. **Fixed 2026-08-22:** healthy
+layer-7 VMs start; idle stops instead of deleting. See
+[`2026-08-22-006-computer-durable-shared-plan.md`](2026-08-22-006-computer-durable-shared-plan.md).
 
 ### Podman 6.0.2 — installed on this box, 2026-08-21
 

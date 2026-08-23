@@ -37,6 +37,8 @@ import {
   perBotLocalVmTarget,
   SHARED_LOCAL_VM_TARGET,
   setupCommands,
+  VM_BROWSER_PROFILES_GUEST,
+  VM_WORKSPACE_GUEST,
   type LocalVmTarget,
   type Runtime,
 } from "./container-computer.ts";
@@ -60,10 +62,25 @@ import { apiKeyConfigured, withApiKeyEngine } from "./byok.ts";
 import { deleteModel, hasModel, pullModel, RECOMMENDED_MODEL, runtimeUp } from "./local-model.ts";
 import { APPROX_MODEL_BYTES, hasRoomOnDisk, modelForTier, readMachine, tierFor } from "./machine.ts";
 import { hermesInstalled, runHermesInstall } from "./hermes-install.ts";
-import { runPodmanSetup, runWslInstall, wslPresent } from "./podman-setup.ts";
+import { runPodmanSetup, runWslInstall, wslReadiness } from "./podman-setup.ts";
+import { requestWindowsReboot, runWindowsVirtEnable } from "./windows-virt.ts";
 import { ensureOwnedOllama, runOllamaSetup, stopOwnedOllama } from "./ollama-setup.ts";
 import { DEFAULT_CONTEXT_TOKENS, TIGHT_CONTEXT_TOKENS } from "./local-runtime.ts";
-import { probeLocalInjects } from "./drivers/local-inject.ts";
+import { wrapComputerMcpForLocalModel } from "./compact-computer-tools.ts";
+import { wrapComputerMcpForFrontier } from "./observe-computer.ts";
+import {
+  ComputerThreadLooks,
+  computerLookBridgeEnv,
+  computerLookFromWrite,
+  computerLookVmKey,
+  computerLookWriteSchema,
+  formatComputerObservation,
+} from "./computer-thread-state.ts";
+import { decodeInjectId, localInjectOmitsConnectedApps, probeLocalInjects } from "./drivers/local-inject.ts";
+import {
+  LOCAL_INJECT_AUTO_COMPUTER_ERROR,
+  localInjectCannotAutoDriveComputer,
+} from "./computer-routing.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
@@ -89,7 +106,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
-import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
+import { buildTurnContext, engineIsFresh, withComputerObservation } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
   ensureWorkspace,
@@ -120,6 +137,25 @@ import { shouldMountLocalComputer } from "./local-routing.ts";
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
+
+let ownedOllamaBoot: Promise<boolean> | null = null;
+
+/** One in-flight start so first-run GET does not race the listen() spawn. */
+function bootOwnedOllama(): Promise<boolean> {
+  if (!ownedOllamaBoot) {
+    ownedOllamaBoot = (async () => {
+      const machine = await readMachine(DATA_DIR);
+      const tokens = tierFor(machine) === "tight" ? TIGHT_CONTEXT_TOKENS : DEFAULT_CONTEXT_TOKENS;
+      return ensureOwnedOllama({ dataDir: DATA_DIR, contextTokens: tokens });
+    })().catch((cause) => {
+      ownedOllamaBoot = null;
+      console.error("owned Ollama did not start:", cause instanceof Error ? cause.message : cause);
+      return false;
+    });
+  }
+  return ownedOllamaBoot;
+}
+
 const MIME: Record<string, string> = {
   ".html": "text/html",
   ".js": "text/javascript",
@@ -240,6 +276,9 @@ function connectedAppsIntegration(botId: string, threadId: string) {
 const computerControl = new ComputerControl((botId, snapshot) => {
   broadcast({ kind: "computer-control", botId, held: snapshot.held, helpReason: snapshot.helpReason });
 });
+
+/** Last window look for Path A / compact-computer-mcp. Survives Hermes ACP dying. */
+const computerLooks = new ComputerThreadLooks();
 
 /** The loopback endpoint a bot's computer proxy polls before acting. */
 function controlIntegration(botId: string) {
@@ -735,11 +774,10 @@ function localVmIdleFor(target: LocalVmTarget): LocalVmIdleTimer {
       localVmLifecycleBusy.add(target.key);
       try {
         const status = await containerComputerStatus(undefined, undefined, target);
-        // The desktop leaves a stale X lock after stop, so idle cleanup
-        // removes only the disposable container. Its target-specific durable
-        // workspace and the shared prepared image remain.
+        // Stop keeps the container and durable workspace. GUI windows end
+        // with X; recreate is only for a drifted image or broken contract.
         if (status.container === "running") {
-          await containerComputerAction("remove", undefined, undefined, target);
+          await containerComputerAction("stop", undefined, undefined, target);
         }
       } finally {
         localVmLifecycleBusy.delete(target.key);
@@ -1467,7 +1505,12 @@ async function startTurn(
       // them — a key in the config says the connections exist, not that
       // this engine can reach them — and only to a bot the user has not
       // switched off: the key is workspace-wide, the grant is per bot.
-      if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
+      if (
+        bot.composio !== false &&
+        composio.configured(cfg) &&
+        instance.adapter.capabilities.composioMcp === true &&
+        !localInjectOmitsConnectedApps(model)
+      ) {
         const connection = await connectedAppsIntegration(bot.id, threadId);
         if (connection) integrations.composio = connection;
       }
@@ -1533,6 +1576,7 @@ async function startTurn(
         if (!localVmLeaseFor(localVmTarget).claim(threadId, bot.id, localVmOwnerBusy)) {
           throw new Error("this Local VM is already being used by another turn — wait for that turn to finish");
         }
+        computerLooks.claimDesktop(localVmTarget.key, threadId);
         localVmThreadTargets.set(threadId, localVmTarget);
         localVmActiveThreads.set(localVmTarget.key, threadId);
         localVmIdleFor(localVmTarget).touch();
@@ -1580,6 +1624,7 @@ async function startTurn(
               env: { ...vpsMcp.env, OMB_CONTROL_URL: vpsControl.url, OMB_CONTROL_TOKEN: vpsControl.token },
             };
             computerKind = "vps";
+            computerLooks.claimDesktop(computerLookVmKey("vps", bot.id), threadId);
             previewCapture = () => vps.vpsComputerScreenshot(targetCfg, bot.id);
           } else {
             activeVpsThreads.delete(bot.id);
@@ -1650,6 +1695,39 @@ async function startTurn(
           computerKind = "local";
         }
       }
+      // A 3B local model cannot hold Cua's ~60-tool catalog in 8k (B-24(a)).
+      // Wrap only local-inject picks; Claude keeps the full driver list.
+      if (integrations.localComputer && decodeInjectId(model)) {
+        const wrapped = wrapComputerMcpForLocalModel(integrations.localComputer);
+        const lookVmKey =
+          computerKind === "vm"
+            ? computerLookVmKey("vm", localVmTargetForBot(bot.id).key)
+            : computerKind === "vps"
+              ? computerLookVmKey("vps", bot.id)
+              : "";
+        integrations.localComputer =
+          lookVmKey && wrapped.args[0] === SPAWNED_PROXIES.compactComputerMcp
+            ? {
+                ...wrapped,
+                env: {
+                  ...wrapped.env,
+                  ...computerLookBridgeEnv({
+                    url: `http://127.0.0.1:${PORT}/api/internal/computer-look?threadId=${encodeURIComponent(threadId)}`,
+                    token: COMMS_TOKEN,
+                    botId: bot.id,
+                    vmKey: lookVmKey,
+                  }),
+                },
+              }
+            : wrapped;
+      } else if (
+        integrations.localComputer &&
+        (computerKind === "vm" || computerKind === "vps")
+      ) {
+        // Frontier engines keep Cua names. Fuse a screenshot after mutating
+        // calls so the same result is an observation (Path A stays text-only).
+        integrations.localComputer = wrapComputerMcpForFrontier(integrations.localComputer);
+      }
       // peer-agent comms: give a user-initiated turn the list_bots/ask_bot
       // tools. A comms-invoked turn (depth ≥ cap) gets none — hard recursion
       // stop, so the user's tokens can't be burned by a bot-to-bot loop.
@@ -1684,7 +1762,7 @@ async function startTurn(
       watchdog.watch(threadId, bot.id);
       await instance.adapter.sendTurn({
         threadId,
-        text: turnText,
+        text: withComputerObservation(turnText, formatComputerObservation(computerLooks.get(threadId))),
         model,
         effort,
         // a rewound thread never resumes the abandoned branch's session
@@ -1696,8 +1774,8 @@ async function startTurn(
           persona +
           (computerKind === "vm"
             ? localVmMode(cfg) === "per-bot"
-              ? " You have your own isolated Cua sandbox: a Linux desktop in a container reserved for this bot. Only /home/cua/workspace is durable; save downloads, repositories, working files, and browser profiles there because everything else inside the VM is disposable. No other host folder is mounted. Use the computer tools for desktop, accessibility, window, and shell work. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and work carefully."
-              : " You have a shared, isolated Cua sandbox: a Linux desktop in a container on this machine. Only /home/cua/workspace is durable; save downloads, repositories, working files, and browser profiles there because everything else inside the VM is disposable. No other host folder is mounted. Use the computer tools for desktop, accessibility, window, and shell work. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and work carefully."
+              ? ` You have your own isolated Cua sandbox: a Linux desktop in a container reserved for this bot. Only ${VM_WORKSPACE_GUEST} is durable (Chromium sign-ins live in ${VM_BROWSER_PROFILES_GUEST}); everything else inside the VM is disposable. No other host folder is mounted. Use the computer tools for desktop, accessibility, window, and shell work. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and work carefully.`
+              : ` You have a shared Cua Linux desktop on this machine. Leftover apps and Chromium windows from other bots stay until someone closes them or this Local VM is stopped — windows are not a security boundary. Stopping the VM ends those windows; cookies, files, and logins in ${VM_WORKSPACE_GUEST} survive Start. Chromium sign-ins live in ${VM_BROWSER_PROFILES_GUEST}. Everything else inside the VM is disposable. No other host folder is mounted. Use the computer tools for desktop, accessibility, window, and shell work. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and work carefully.`
             : computerKind === "box" && instance.driverKind !== "boxAgent"
             ? " You have your own cloud computer. In Chrome, prefer browser_snapshot with browser_click/browser_fill for semantic, trusted actions; use screenshot/click/type_text for visual or non-browser UI, open_url for navigation, and computer_exec for Linux tasks. Every action already returns the resulting screen, so don't follow it with screenshot; batch predictable pixel actions with computer_batch."
             : computerKind === "vps"
@@ -1921,7 +1999,12 @@ async function runGroupMemberTurn(
     integrations.phone = phoneIntegration();
   }
   try {
-    if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
+    if (
+      bot.composio !== false &&
+      composio.configured(cfg) &&
+      instance.adapter.capabilities.composioMcp === true &&
+      !localInjectOmitsConnectedApps(bot.modelSelection.model)
+    ) {
       const connection = await connectedAppsIntegration(bot.id, group.threadId);
       if (connection) integrations.composio = connection;
     }
@@ -2683,6 +2766,26 @@ const server = createServer(async (req, res) => {
           const body = await readBody(req);
           const snapshot = computerControl.expireHelp(botId, body.requestId);
           return json(res, 200, { held: snapshot.held, helpOpen: snapshot.helpReason !== null });
+        }
+        return json(res, 405, { error: "method not allowed" });
+      }
+      if (path === "/api/internal/computer-look") {
+        const threadId = url.searchParams.get("threadId") ?? "";
+        if (!threadId) return json(res, 400, { error: "threadId required" });
+        if (method === "GET") {
+          const look = computerLooks.get(threadId);
+          if (!look) return json(res, 404, { error: "no look" });
+          return json(res, 200, look);
+        }
+        if (method === "PUT") {
+          const parsed = computerLookWriteSchema.safeParse(await readBody(req));
+          if (!parsed.success) return json(res, 400, { error: "invalid look" });
+          computerLooks.put(computerLookFromWrite(threadId, parsed.data, Date.now()));
+          return json(res, 200, { ok: true });
+        }
+        if (method === "DELETE") {
+          computerLooks.wipeThread(threadId);
+          return json(res, 200, { ok: true });
         }
         return json(res, 405, { error: "method not allowed" });
       }
@@ -3547,6 +3650,24 @@ const server = createServer(async (req, res) => {
           error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)",
         });
       }
+      const wantsModel =
+        body.modelSelection &&
+        typeof body.modelSelection === "object" &&
+        typeof body.modelSelection.model === "string"
+          ? body.modelSelection.model
+          : (existingBot?.modelSelection.model ?? "");
+      const wantsCloudBackend =
+        body.cloudBackend !== undefined ? String(body.cloudBackend) : (existingBot?.cloudBackend ?? "box");
+      if (
+        localInjectCannotAutoDriveComputer({
+          model: wantsModel,
+          computer: typeof wantsComputer === "string" ? wantsComputer : undefined,
+          cloudBackend: wantsCloudBackend,
+          autoApprove: wantsAuto === true,
+        })
+      ) {
+        return json(res, 400, { error: LOCAL_INJECT_AUTO_COMPUTER_ERROR });
+      }
       if (body.approvePeerComms !== undefined) {
         if (typeof body.approvePeerComms !== "boolean") {
           return json(res, 400, { error: "approvePeerComms must be true or false" });
@@ -3624,6 +3745,7 @@ const server = createServer(async (req, res) => {
       cancelPeerApprovalsFor(bot.id);
       discardDelegations(commsBus, bot.threadId);
       computerControl.forget(bot.id);
+      computerLooks.wipeBot(bot.id);
       const target = perBotLocalVmTarget(bot.id);
       localVmIdles.get(target.key)?.cancel();
       localVmIdles.delete(target.key);
@@ -3883,6 +4005,7 @@ const server = createServer(async (req, res) => {
       }
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 400, { error: "a bot keeps at least one task" });
+      computerLooks.wipeThread(m[2]);
       const fresh = botWithThread(updated);
       broadcast({ kind: "bot", bot: fresh });
       return json(res, 200, { bot: fresh });
@@ -3919,6 +4042,7 @@ const server = createServer(async (req, res) => {
         const status = await containerComputerAction(action, undefined, undefined, SHARED_LOCAL_VM_TARGET);
         if (action === "run" || action === "start") localVmIdleFor(SHARED_LOCAL_VM_TARGET).touch();
         if (action === "stop" || action === "remove") localVmIdleFor(SHARED_LOCAL_VM_TARGET).cancel();
+        if (action === "remove" || action === "run") computerLooks.wipeVm(SHARED_LOCAL_VM_TARGET.key);
         return json(res, 200, {
           ...status,
           commands: setupCommands(status.runtime, process.platform, SHARED_LOCAL_VM_TARGET),
@@ -3944,14 +4068,14 @@ const server = createServer(async (req, res) => {
       if (!bot) return json(res, 404, { error: "no such bot" });
       return json(res, 200, await localVmPayload(localVmTargetForBot(bot.id)));
     }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/(run|stop|remove)$/);
+    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/(run|start|stop|remove)$/);
     if (m && method === "POST") {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      const action = z.enum(["run", "stop", "remove"]).parse(m[2]);
+      const action = z.enum(["run", "start", "stop", "remove"]).parse(m[2]);
       const target = localVmTargetForBot(bot.id);
       if (target.key === SHARED_LOCAL_VM_TARGET.key) {
         return json(res, 409, { error: "Shared mode manages this desktop in App Settings → Local VM" });
@@ -3982,8 +4106,9 @@ const server = createServer(async (req, res) => {
           }
         }
         const status = await containerComputerAction(action, undefined, undefined, target);
-        if (action === "run") localVmIdleFor(target).touch();
+        if (action === "run" || action === "start") localVmIdleFor(target).touch();
         if (action === "stop" || action === "remove") localVmIdleFor(target).cancel();
+        if (action === "remove" || action === "run") computerLooks.wipeVm(target.key);
         return json(res, 200, {
           ...status,
           commands: setupCommands(status.runtime, process.platform, target),
@@ -4149,16 +4274,19 @@ const server = createServer(async (req, res) => {
 
     // ── the open-weights path (first run, path A) ──
     // What still stands between this machine and a local bot: a runtime, the
-    // model, a custom-access agent CLI, and (optional) a Local VM. The VM
-    // never gates chat — wslReady/vmReady are so the arm can offer it.
+    // model, a custom-access agent CLI, and a Local VM. The VM is on the
+    // first-run path; Continue still works if it fails.
     if (method === "GET" && path === "/api/local-model") {
-      const [machine, up, injected, described, vm, wslReady] = await Promise.all([
+      await bootOwnedOllama();
+      const [machine, up, injected, described, vm, wsl] = await Promise.all([
         readMachine(DATA_DIR),
         runtimeUp(),
         probeLocalInjects(),
         registry.describe(),
         containerComputerStatus(undefined, undefined, SHARED_LOCAL_VM_TARGET).catch(() => null),
-        process.platform === "win32" ? wslPresent() : Promise.resolve(true),
+        process.platform === "win32"
+          ? wslReadiness()
+          : Promise.resolve({ present: true, virtKind: "ready" as const }),
       ]);
       // sized to the hardware before the offer is made: the failure that cannot
       // be recovered from is someone waiting out a multi-gigabyte download to
@@ -4174,7 +4302,8 @@ const server = createServer(async (req, res) => {
         modelReady: hasModel(injected.map((row) => row.id), model),
         agentInstanceId: hermes?.instanceId ?? "",
         agentReady: Boolean(hermes) || hermesInstalled(),
-        wslReady,
+        wslReady: wsl.present,
+        virtKind: wsl.virtKind,
         vmReady: vm?.ready === true || vm?.container === "running",
         vmProblem: vm?.problem ?? null,
         canInstallRuntime: process.platform === "win32",
@@ -4259,6 +4388,26 @@ const server = createServer(async (req, res) => {
       }
       res.end();
       return;
+    }
+
+    if (method === "POST" && path === "/api/local-model/virt") {
+      res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      try {
+        for await (const event of runWindowsVirtEnable()) {
+          res.write(`${JSON.stringify(event)}\n`);
+        }
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : "Windows virtualization could not be turned on";
+        res.write(`${JSON.stringify({ status: message, skip: true, reason: "setup-failed", done: true })}\n`);
+      }
+      res.end();
+      return;
+    }
+
+    if (method === "POST" && path === "/api/local-model/reboot") {
+      const result = await requestWindowsReboot();
+      if (!result.restarting) return json(res, 500, { error: result.error ?? "Windows would not start a restart." });
+      return json(res, 200, { restarting: true });
     }
 
     if (method === "POST" && path === "/api/local-model/vm") {
@@ -4607,8 +4756,14 @@ const server = createServer(async (req, res) => {
         }
         const body = await readBody(req);
         const action = String(body.action ?? "");
-        if (action === "take") return json(res, 200, computerControl.take(bot.id));
-        if (action === "release") return json(res, 200, computerControl.release(bot.id));
+        if (action === "take") {
+          computerLooks.wipeBot(bot.id);
+          return json(res, 200, computerControl.take(bot.id));
+        }
+        if (action === "release") {
+          computerLooks.wipeBot(bot.id);
+          return json(res, 200, computerControl.release(bot.id));
+        }
         if (action === "dismiss-help") return json(res, 200, computerControl.dismissHelp(bot.id));
         return json(res, 400, { error: "action must be take, release, or dismiss-help" });
       }
@@ -4639,6 +4794,7 @@ const server = createServer(async (req, res) => {
         }
         if (m[2] === "screenshot") return json(res, 200, await vps.vpsComputerScreenshot(cfg, botId));
         const action = m[2] === "provision" ? "provision" : m[2] === "remove" ? "remove" : "stop";
+        if (action === "remove" || action === "provision") computerLooks.wipeVm(computerLookVmKey("vps", botId));
         return json(res, 200, await vps.vpsComputerAction(action, cfg, botId));
       }
       if (m[2] === "remove") {
@@ -4691,13 +4847,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
-  void (async () => {
-    const machine = await readMachine(DATA_DIR);
-    const tokens = tierFor(machine) === "tight" ? TIGHT_CONTEXT_TOKENS : DEFAULT_CONTEXT_TOKENS;
-    await ensureOwnedOllama({ dataDir: DATA_DIR, contextTokens: tokens });
-  })().catch((cause) => {
-    console.error("owned Ollama did not start:", cause instanceof Error ? cause.message : cause);
-  });
+  void bootOwnedOllama();
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

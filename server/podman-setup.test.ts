@@ -14,7 +14,10 @@ import {
   PODMAN_MSI_SHA256,
   PODMAN_MSI_URL,
   runPodmanSetup,
+  runWslInstall,
+  dismissWslSettingsSpawn,
   wslInstallSpawn,
+  wslOobeCompleteSpawn,
   wslPresent,
   type CommandResult,
 } from "./podman-setup.ts";
@@ -85,6 +88,61 @@ describe("wslInstallSpawn", () => {
   });
 });
 
+describe("WSL welcome UI", () => {
+  it("marks OOBE complete through reg.exe argv, not a shell", () => {
+    const launched = wslOobeCompleteSpawn({ SystemRoot: "C:\\Windows" });
+    expect(launched.command.replaceAll("/", "\\")).toBe("C:\\Windows\\System32\\reg.exe");
+    expect(launched.args).toEqual([
+      "add",
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss",
+      "/v",
+      "OOBEComplete",
+      "/t",
+      "REG_DWORD",
+      "/d",
+      "1",
+      "/f",
+    ]);
+  });
+
+  it("closes wslsettings.exe through taskkill argv", () => {
+    const launched = dismissWslSettingsSpawn({ SystemRoot: "C:\\Windows" });
+    expect(launched.command.replaceAll("/", "\\")).toBe("C:\\Windows\\System32\\taskkill.exe");
+    expect(launched.args).toEqual(["/IM", "wslsettings.exe"]);
+  });
+
+  it("sets OOBEComplete before starting a Podman machine", async () => {
+    const local = scratchDir();
+    const bin = join(local, "Programs", "Podman");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "podman.exe"), "");
+    const seen: string[] = [];
+    for await (const _event of runPodmanSetup({
+      platform: "win32",
+      virtKind: "ready",
+      env: { LOCALAPPDATA: local, SystemRoot: "C:\\Windows" },
+      run: async (_command, args) => {
+        seen.push(args.join(" "));
+        if (args[0] === "add") return ok();
+        if (args[0] === "/IM") return ok();
+        if (args[0] === "-l") return ok("docker-desktop");
+        if (args.includes("inspect")) {
+          return ok(JSON.stringify([{ State: "running", Resources: { Memory: PODMAN_MACHINE_MEMORY_MIB } }]));
+        }
+        if (args[0] === "info") return ok("{}");
+        return { code: 1, stdout: "", stderr: args.join(" ") };
+      },
+    })) {
+      /* drain */
+    }
+    const oobeAt = seen.findIndex((row) => row.includes("OOBEComplete"));
+    const inspectAt = seen.findIndex((row) => row.includes("machine inspect"));
+    expect(oobeAt).toBeGreaterThanOrEqual(0);
+    expect(inspectAt).toBeGreaterThan(oobeAt);
+    expect(seen.some((row) => row.includes("wslsettings.exe"))).toBe(true);
+  });
+});
+
 describe("podmanInstalled", () => {
   it("finds the per-user MSI location", () => {
     const local = scratchDir();
@@ -113,6 +171,7 @@ describe("runPodmanSetup", () => {
     const events = [];
     for await (const event of runPodmanSetup({
       platform: "win32",
+      virtKind: "ready",
       env: { LOCALAPPDATA: scratchDir(), SystemRoot: "C:\\Windows" },
       run: async () => ({ code: 1, stdout: "", stderr: "WSL is not installed" }),
     })) {
@@ -130,6 +189,7 @@ describe("runPodmanSetup", () => {
     const events = [];
     for await (const event of runPodmanSetup({
       platform: "win32",
+      virtKind: "ready",
       env: { LOCALAPPDATA: local, SystemRoot: "C:\\Windows" },
       fetchImpl: fakeFetch(async () => {
         fetched += 1;
@@ -170,6 +230,7 @@ describe("runPodmanSetup", () => {
     const events = [];
     for await (const event of runPodmanSetup({
       platform: "win32",
+      virtKind: "ready",
       env: { LOCALAPPDATA: local, SystemRoot: "C:\\Windows" },
       run: async (_command, args) => {
         seen.push(args.join(" "));
@@ -204,6 +265,7 @@ describe("runPodmanSetup", () => {
     const events = [];
     for await (const event of runPodmanSetup({
       platform: "win32",
+      virtKind: "ready",
       env: { LOCALAPPDATA: local, SystemRoot: "C:\\Windows" },
       run: async (_command, args) => {
         seen.push(args.join(" "));
@@ -234,6 +296,7 @@ describe("runPodmanSetup", () => {
     const events = [];
     for await (const event of runPodmanSetup({
       platform: "win32",
+      virtKind: "ready",
       env: { LOCALAPPDATA: local, SystemRoot: "C:\\Windows" },
       run: async (_command, args) => {
         if (args[0] === "-l") return ok("docker-desktop");
@@ -265,6 +328,7 @@ describe("runPodmanSetup", () => {
     const events = [];
     for await (const event of runPodmanSetup({
       platform: "win32",
+      virtKind: "ready",
       env: { LOCALAPPDATA: scratchDir(), SystemRoot: "C:\\Windows" },
       exists: () => false,
       fetchImpl: fakeFetch(async () => new Response("not-an-msi")),
@@ -286,5 +350,82 @@ describe("runPodmanSetup", () => {
 describe("wslPresent", () => {
   it("is true when wsl -l -v exits 0", async () => {
     expect(await wslPresent({ SystemRoot: "C:\\Windows" }, async () => ok("docker-desktop"))).toBe(true);
+  });
+
+  it("is true when WSL is installed with no distributions", async () => {
+    const listed = {
+      code: -1,
+      stdout: "",
+      stderr:
+        "Windows Subsystem for Linux has no installed distributions.\nYou can resolve this by installing a distribution with the instructions below:\n",
+    };
+    expect(await wslPresent({ SystemRoot: "C:\\Windows" }, async () => listed)).toBe(true);
+  });
+
+  it("is false when WSL itself is not installed", async () => {
+    expect(
+      await wslPresent({ SystemRoot: "C:\\Windows" }, async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "The Windows Subsystem for Linux is not installed.",
+      })),
+    ).toBe(false);
+  });
+});
+
+describe("runWslInstall", () => {
+  it("does not relaunch the installer when WSL is already present", async () => {
+    const seen: string[] = [];
+    const events = [];
+    for await (const event of runWslInstall({
+      platform: "win32",
+      env: { SystemRoot: "C:\\Windows" },
+      run: async (command, args) => {
+        seen.push(`${command} ${args.join(" ")}`);
+        if (args[0] === "-l") {
+          return {
+            code: -1,
+            stdout: "",
+            stderr: "Windows Subsystem for Linux has no installed distributions.\n",
+          };
+        }
+        return { code: 1, stdout: "", stderr: "should not launch installer" };
+      },
+    })) {
+      events.push(event);
+    }
+    expect(seen.some((row) => row.includes("powershell"))).toBe(false);
+    expect(events.at(-1)).toEqual({ status: "WSL is already on this machine", done: true });
+  });
+});
+
+describe("wsl virt probe", () => {
+  it("skips Podman when a Windows restart is pending, without downloading", async () => {
+    let fetched = 0;
+    const events = [];
+    for await (const event of runPodmanSetup({
+      platform: "win32",
+      virtKind: "reboot-pending",
+      env: { LOCALAPPDATA: scratchDir(), SystemRoot: "C:\\Windows" },
+      fetchImpl: fakeFetch(async () => {
+        fetched += 1;
+        return new Response("no");
+      }),
+      run: async (_command, args) => {
+        if (args[0] === "-l") {
+          return {
+            code: -1,
+            stdout: "",
+            stderr: "Windows Subsystem for Linux has no installed distributions.\n",
+          };
+        }
+        return { code: 1, stdout: "", stderr: args.join(" ") };
+      },
+    })) {
+      events.push(event);
+    }
+    expect(fetched).toBe(0);
+    expect(events.at(-1)).toMatchObject({ skip: true, reason: "virt-reboot", done: true });
+    expect(events.at(-1)?.status).toMatch(/restart/i);
   });
 });
