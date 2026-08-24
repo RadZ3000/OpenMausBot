@@ -4602,8 +4602,7 @@ const server = createServer(async (req, res) => {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
-      // the tier picks the model, so a tight machine never downloads the large
-      // one just because the client asked
+      // unsupported still 400s; tight and comfortable pull the same tag
       const tier = tierFor(await readMachine(DATA_DIR));
       const wanted = modelForTier(tier);
       if (!wanted) return json(res, 400, { error: "this machine does not have the memory to run a local model" });

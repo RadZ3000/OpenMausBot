@@ -23,10 +23,13 @@ the 2026-08-23 archive) are ours. Other files in this folder are upstream’s.
 | [2026-08-23-003](2026-08-23-003-open-computer-use-brain.md) | research; not shipped | Best open CUA weights if compute is free |
 | [2026-08-23-004](2026-08-23-004-evocua-path-a-goal.md) | conclusion + cheap tests | Path A goal = EvoCUA; eyes, memory, talk/files |
 | [2026-08-23-005](2026-08-23-005-hermes-images.md) | research; keep Hermes | How Hermes can see. Implementation is [007](2026-08-23-007-hermes-eyes-plan.md); this file is the Granite + aux VL fallback |
-| [2026-08-23-006](2026-08-23-006-qwen3vl-replace-granite-plan.md) | teed instruct; first-run still Granite | Hermes stays; 8k Thinking truncates; candidate `qwen3-vl:4b-instruct`; eyes in [007](2026-08-23-007-hermes-eyes-plan.md) |
+| [2026-08-23-006](2026-08-23-006-qwen3vl-replace-granite-plan.md) | teed 4B; first-run is [005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | Hermes stays; 8k Hermes Thinking truncates; CPU skip-Hermes tools at 8k/32k; 4B Instruct tee; eyes in [007](2026-08-23-007-hermes-eyes-plan.md) |
 | [2026-08-23-007](2026-08-23-007-hermes-eyes-plan.md) | in tree; paste ACP; VM shot = Pipe B caption | Paste = ACP image blocks; Hermes `_multimodal` patch exists but 8k overflows a JPEG+tools turn; compact wrap captions via skip-Hermes `/v1`. |
 | [2026-08-24-001](2026-08-24-001-acp-session-keepalive.md) | in tree; unit + protocol tee | ACP child stays across turns (P6). Idle 15m, cap 3, bot+thread key. Instruct native log: one `initialize`, two `session/prompt`. |
 | [2026-08-24-002](2026-08-24-002-local-vm-chromium-status.md) | in tree; unit + typecheck | Chromium stderr ≠ desktop failed to start. Pid cap 2048 on new VMs. |
+| [2026-08-24-003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md) | **tombstone** — superseded by [005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | Instruct 4B @ 8k. Do not implement. |
+| [2026-08-24-004](2026-08-24-004-qwen3vl-vs-qwen-cua.md) | evaluated; Qwen-CUA not first-run | Qwen3-VL vs Qwen-CUA vs Qwen3.8-27B. First-run weight is [005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md), not CUA. |
+| [2026-08-24-005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | in tree; Admin CPU gold **fail** (20 min stall, no `tool_call`) | Path A first-run + new-bot default → `qwen3-vl:8b` Thinking @ 32k. Hermes / VM / eight `vm_*` stay. |
 
 Image-gen / lightbox plans (2026-08-20-001, 002): shipped then partly
 superseded at merge by upstream’s attachments. Do not rebuild them.

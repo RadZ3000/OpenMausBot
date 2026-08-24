@@ -25,9 +25,9 @@ const GB = 1024 * 1024 * 1024;
 
 /** What the local path can honestly promise on this machine. */
 export type MachineTier =
-  /** Enough room for the full-size model. */
+  /** Enough RAM that 8B + 32k + the Local VM is a reasonable offer. */
   | "comfortable"
-  /** It will run, and it will be slow. Offer the small model and say so. */
+  /** It will run, and it will be slow. Same weight as comfortable. */
   | "tight"
   /** Do not offer the local path at all. */
   | "unsupported";
@@ -38,15 +38,15 @@ export interface MachineSpec {
   freeDiskBytes: number | null;
 }
 
-// 8 GB is where a 4B model plus Windows plus an Electron app stops fitting at
-// all. Below the comfortable floor the small tier fits and the full one thrashes.
+// 8 GB is where 8B + Windows + this app stops fitting at all. Below the
+// comfortable floor the same weight still runs, slowly, and we say so.
 //
-// The comfortable floor is 15 rather than 16 on purpose: an OS reserves some of
-// what is installed, so a nominal 16 GB machine reports about 15.7. Testing
-// against 16 put every 16 GB laptop — an extremely common machine — in the tight
-// tier and quietly moved the comfortable tier's real start to 32 GB.
+// Comfortable is 24 GB installed: 8B weights (~6.1 GB) + 32k KV + Local VM
+// (~6 GB) + Windows do not fit a 16 GB machine with headroom. Granite 8B on
+// a 15.7 GB / 6 GB VRAM box left 0.6 GB RAM free with the VM up. A nominal
+// 16 GB machine reports about 15.7 and is therefore tight on purpose.
 const TIGHT_FLOOR_BYTES = 8 * GB;
-const COMFORTABLE_FLOOR_BYTES = 15 * GB;
+const COMFORTABLE_FLOOR_BYTES = 24 * GB;
 
 export function tierFor(spec: MachineSpec): MachineTier {
   if (spec.totalMemoryBytes < TIGHT_FLOOR_BYTES) return "unsupported";
@@ -56,21 +56,17 @@ export function tierFor(spec: MachineSpec): MachineTier {
 
 /** The model to offer, or null when none should be. Ollama tags.
  *
- * Both are Apache-2.0, which is the gate that comes before benchmarks: weights
- * are not npm packages, so `pnpm check:licenses` will never see them.
- * Candidate (not first-run): `qwen3-vl:4b-instruct` is also Apache-2.0 (~3.3 GB). */
+ * Apache-2.0, which is the gate that comes before benchmarks: weights are not
+ * npm packages, so `pnpm check:licenses` will never see them. Same Thinking 8B
+ * on both runnable tiers — tight is slower, not a smaller download. */
 export function modelForTier(tier: MachineTier): string | null {
   if (tier === "unsupported") return null;
-  // Same Apache-2.0 3B weight on both runnable tiers. The 8B class does not
-  // fit a 16 GB laptop once the OS, this app, and a 32k KV cache sit on top;
-  // Qwen 3 1.7B would fit the tight tier but is not the agent we ship.
-  return "ibm/granite4.1:3b";
+  return "qwen3-vl:8b";
 }
 
 /** A conservative stand-in for the download, used for the disk check before a
- * tier is settled. The tight tier's model is smaller, so sizing both against the
- * larger one errs toward telling someone the truth early. */
-export const APPROX_MODEL_BYTES = 2.5 * GB;
+ * tier is settled. Both runnable tiers pull this weight. */
+export const APPROX_MODEL_BYTES = 6.1 * GB;
 
 /** Bytes the download needs, with headroom for the runtime and the unpack.
  *

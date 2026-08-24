@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react";
 
 // Path A of the first-run chooser: an open-weights model on this machine.
 //
-// Chat needs a local runtime, Granite, and Hermes. The arm also stands up the
+// Chat needs a local runtime, Qwen3-VL Thinking 8B, and Hermes. The arm also stands up the
 // Local computer (WSL → Podman → Cua VM) as the next step after Hermes, not as
 // a skippable footnote. Continue still works if that step fails — it is not a
 // hard gate — but the primary action until the VM is running (or skipped with
@@ -501,7 +501,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
       <>
         <Checklist status={status} />
         <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
-          Downloads <span className="text-ink">{status.model}</span> &mdash; about 2.5 GB, and it
+          Downloads <span className="text-ink">{status.model}</span> &mdash; about 6.1 GB, and it
           runs entirely on this machine. Nothing you type will leave it.
         </p>
         {progress ? (
@@ -525,7 +525,7 @@ export function LocalModelArm({ onReady }: { onReady: () => void }) {
         {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
         <p className="mt-4 text-center text-[12px] leading-snug text-ink-secondary">
           {status.tier === "tight"
-            ? "This computer can run a model, but only a small one, and answers will take minutes rather than seconds. "
+            ? "This computer can run a model, but answers will take minutes rather than seconds. "
             : "A model this size is noticeably weaker at long multi-step tool work than a hosted one. "}
           You can switch a bot to another model at any time.
         </p>

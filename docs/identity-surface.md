@@ -189,7 +189,7 @@ environment, so these travel in the `package.json` staged inside the asar:
 ```sh
 electron-builder --win \
   -c.extraMetadata.distribution.defaultEngine=hermesAgent \
-  -c.extraMetadata.distribution.defaultModel=ollama::ibm/granite4.1:3b
+  -c.extraMetadata.distribution.defaultModel=ollama::qwen3-vl:8b
 ```
 
 or as a block in a per-customer config file that extends `electron-builder.yml`:
@@ -198,7 +198,7 @@ or as a block in a per-customer config file that extends `electron-builder.yml`:
 extraMetadata:
   distribution:
     defaultEngine: hermesAgent
-    defaultModel: "ollama::ibm/granite4.1:3b"
+    defaultModel: "ollama::qwen3-vl:8b"
 ```
 
 `electron/distribution.mjs` reads that back and forwards it to the server as

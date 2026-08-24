@@ -12,9 +12,9 @@ describe("distributionEnv", () => {
   });
 
   it("carries a baked preference through to the server", () => {
-    expect(distributionEnv({ defaultEngine: "hermesAgent", defaultModel: "ollama::ibm/granite4.1:3b" }, {})).toEqual({
+    expect(distributionEnv({ defaultEngine: "hermesAgent", defaultModel: "ollama::qwen3-vl:8b" }, {})).toEqual({
       OMB_DEFAULT_ENGINE: "hermesAgent",
-      OMB_DEFAULT_MODEL: "ollama::ibm/granite4.1:3b",
+      OMB_DEFAULT_MODEL: "ollama::qwen3-vl:8b",
     });
   });
 
@@ -25,8 +25,8 @@ describe("distributionEnv", () => {
 
   it("carries an engine without a model, and a model without an engine", () => {
     expect(distributionEnv({ defaultEngine: "hermesAgent" }, {})).toEqual({ OMB_DEFAULT_ENGINE: "hermesAgent" });
-    expect(distributionEnv({}, { OMB_DEFAULT_MODEL: "ollama::ibm/granite4.1:3b" })).toEqual({
-      OMB_DEFAULT_MODEL: "ollama::ibm/granite4.1:3b",
+    expect(distributionEnv({}, { OMB_DEFAULT_MODEL: "ollama::qwen3-vl:8b" })).toEqual({
+      OMB_DEFAULT_MODEL: "ollama::qwen3-vl:8b",
     });
   });
 

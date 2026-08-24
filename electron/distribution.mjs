@@ -19,7 +19,7 @@
 //   extraMetadata:
 //     distribution:
 //       defaultEngine: hermesAgent
-//       defaultModel: "ollama::ibm/granite4.1:3b"
+//       defaultModel: "ollama::qwen3-vl:8b"
 //
 // The real environment still wins, matching how the server treats its own
 // config: a baked default is a default, and one has to remain overridable to

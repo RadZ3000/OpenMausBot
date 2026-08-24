@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { startingModel } from "./distribution.ts";
+import { PREFERRED_MODEL, startingModel } from "./distribution.ts";
 import type { ModelCatalog } from "./contracts.ts";
+import { RECOMMENDED_MODEL } from "./local-model.ts";
 
 const catalog = (defaultId: string, ...ids: string[]): ModelCatalog => ({
   default: defaultId,
@@ -32,5 +33,16 @@ describe("startingModel", () => {
 
   it("returns an empty model when the engine has no default either", () => {
     expect(startingModel({ default: "", options: [] }, "opus")).toBe("");
+  });
+
+  it("prefers first-run Thinking 8B when Hermes lists it", () => {
+    const wanted = `ollama::${RECOMMENDED_MODEL}`;
+    expect(PREFERRED_MODEL).toBe(wanted);
+    const local = catalog("ollama::llama3.2:3b", "ollama::llama3.2:3b", wanted);
+    expect(startingModel(local)).toBe(wanted);
+  });
+
+  it("falls back to the engine default when Thinking 8B is not in the catalog yet", () => {
+    expect(startingModel(catalog("sonnet", "sonnet", "opus"))).toBe("sonnet");
   });
 });

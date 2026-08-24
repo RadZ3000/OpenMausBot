@@ -20,7 +20,7 @@ publish:
 extraMetadata:
   distribution:
     defaultEngine: hermesAgent
-    defaultModel: "ollama::ibm/granite4.1:3b"
+    defaultModel: "ollama::qwen3-vl:8b"
 
 directories:
   buildResources: build

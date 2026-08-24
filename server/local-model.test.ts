@@ -97,18 +97,21 @@ describe("pullFraction", () => {
 
 describe("hasModel", () => {
   it("finds the model under whichever Ollama host id survived dedup", () => {
-    expect(hasModel(["ollama::ibm/granite4.1:3b"])).toBe(true);
-    expect(hasModel(["local_ollama::ibm/granite4.1:3b"])).toBe(true);
+    expect(hasModel(["ollama::qwen3-vl:8b"])).toBe(true);
+    expect(hasModel(["local_ollama::qwen3-vl:8b"])).toBe(true);
   });
 
   it("is false when only other models are pulled", () => {
     expect(hasModel(["ollama::llama3.2:latest", "lmstudio::phi-4"])).toBe(false);
+    expect(hasModel(["ollama::ibm/granite4.1:3b"])).toBe(false);
+    expect(hasModel(["ollama::qwen3-vl:4b"])).toBe(false);
+    expect(hasModel(["ollama::qwen3-vl:4b-instruct"])).toBe(false);
   });
 
-  // ":4b" and ":4b-instruct" are different downloads; a suffix match must not
+  // ":8b" and ":8b-instruct" are different downloads; a suffix match must not
   // treat one as the other.
   it("does not match a longer tag that merely starts the same", () => {
-    expect(hasModel(["ollama::ibm/granite4.1:3b-instruct"])).toBe(false);
+    expect(hasModel(["ollama::qwen3-vl:8b-instruct"])).toBe(false);
   });
 });
 

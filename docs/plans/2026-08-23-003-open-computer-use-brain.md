@@ -14,7 +14,7 @@ Path A still cannot feed screenshots through Hermes (`MEDIA:path`).
 | | |
 |---|---|
 | Why | Best **downloadable** open computer-use model found today. OSWorld **56.7%** (50 steps), #1 open on their Jan 2026 table. Beats OpenCUA-72B (45%) and the **closed** UI-TARS-2 (53.1% on that table). |
-| Shape | Qwen3-VL-32B-Thinking finetune. Screenshot in, multi-turn desktop out. They claim general ability is not gutted. Closer to “Granite job + TARS job” than UI-TARS-2B. |
+| Shape | Qwen3-VL-32B-Thinking **finetune**. Screenshot in, multi-turn desktop out. README says the method does not degrade general performance; **the shipped 32B/8B cards do drop** on MMMU and friends vs that Thinking base (Table 2 in their paper — see below). |
 | License | Project README: **Apache 2.0**. Confirm the HF card/`LICENSE` file before bundling. |
 | Serve | Their docs: **vLLM** OpenAI-compatible (`vllm serve`, TP=2). Not an Ollama Path A drop-in. |
 | Actions | One fake tool named `computer_use` (click/type/scroll/wait). Their eval
@@ -26,6 +26,36 @@ Sources: [HF model card](https://huggingface.co/meituan/EvoCUA-32B-20260105),
 
 **Step-down if 32B is too large later:** `meituan/EvoCUA-8B-20260105` — OSWorld
 **46.1%**, still above OpenCUA-72B and far above UI-TARS-1.5-7B (**27.5%**).
+
+## Better computer use, not a free upgrade
+
+Yes: EvoCUA-32B **is** Qwen3-VL-32B-Thinking after CUA post-training.
+OSWorld **41.0% → 56.7%** (their table; 100 vs 50 steps). EvoCUA-8B vs
+Qwen3-VL-8B-Thinking: **30.6% → 46.1%**. That is the job we wanted.
+
+No: it is **not** “the same language/tools, plus clicks.” Their own
+Table 2 ([paper](https://arxiv.org/abs/2601.15876) §6.2.2):
+
+| | Qwen3-VL-32B-Thinking | EvoCUA-32B |
+|---|---|---|
+| MMMU | 78.10* | **68.11** |
+| MMMU-Pro | 68.10* | **59.16** |
+| MathVista | 85.90* | **80.40** |
+| MMStar | 79.40* | **73.20** |
+| ScreenSpot-Pro | 57.10* | **49.76** |
+| OCRBench | 85.5* | 85.35 |
+| ScreenSpot-v2 / OSWorld-G | 91.11 / 64.00* | 90.40 / 63.86 |
+
+EvoCUA-8B vs Qwen3-VL-8B-Thinking: MMMU **74.10* → 62.11**. They say
+the general mix was **non-thinking** data on a Thinking backbone, so
+answers got shorter (2,514 vs 3,620 tokens) and style shifted. README
+“without degrading general performance” matches the **OpenCUA-72B**
+backbone experiment, not the Qwen3-VL-Thinking weights we would take.
+
+Hermes `file` / `terminal` / OpenAI `tools`: **not in that table.**
+Native loop is one XML `computer_use`. Extra MCP tools **hurt**
+EvoCUA-32B on ToolCUA (below). Path A talk+files is still hole 3 in
+[004](2026-08-23-004-evocua-path-a-goal.md).
 
 ## Do not pick as “the best open brain”
 

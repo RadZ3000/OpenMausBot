@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-24 (`c7e19b6` on origin; packaged overlay is this machine only).
+Last updated: 2026-08-24 (Path A first-run **in code** is Thinking **8B @ 32k**. Admin CPU Hermes gold **fail** (20 min stall). Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Local VM without a Cua image Retry-cards every turn. 003 is a tombstone.)
 
 ## Start here
 
@@ -23,22 +23,23 @@ cold-start were deleted as duplicates of this file; git still has them.
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` |
-| HEAD | `c7e19b6` — ACP keep-alive, Chromium VM status, Hermes ACP image paste / VM caption. On `origin`. |
+| HEAD | this commit — Path A first-run is Thinking 8B @ 32k. Parent `a897f57` recorded keep-alive and Chromium VM status on `origin`. |
 | Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
 | Merge base | `0cedd9e` — merged upstream (skill recorder, section chiefs, MiniMax, timeline, room setup, driver retry) |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. This branch is pushed. |
 | `origin/main` | `d037f40` — this branch is **not** merged to our `main` |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Fetched `upstream/main` 2026-08-24. Gap is ~23 commits through 0.1.32 (OpenCode
-provider discovery, Composio null accounts, skill-recorder gate, settings
-search, quiz-dismiss). **No** `server/cua-desktop-status.ts` there, and no
-`container-computer.ts` / `ComputerPanel.tsx` commits in the gap. Catching up
-is a **separate** merge job. Do not mix it with computer-use work. Their ACP
-core still kills the child on settle — we did not take a keep-alive from them.
+Fetched `upstream/main` 2026-08-24 again. Tip is `1602f97` (`feat(pi): image
+attachments and reasoning-effort levels`, #438). Gap is **54** commits we lack
+and **37** they lack. After 0.1.32 they added pi images/reasoning, find-in-chat,
+in-app attachment preview, section-scoped shared context, live team map, in-chat
+credential cards, window-state/unread badges, gated SKILL.md import, idle-mascot
+CPU cut, composer file attach. **No** `server/cua-desktop-status.ts` there.
+Catching up is a **separate** merge job; Path A is on this branch as a
+recoverable base. Their ACP core still kills the child on settle.
 
-Working tree was clean after `c7e19b6`. First-run constants still Granite.
-Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
+005 constants are in this commit. Hermes ACP gold on this box **failed** (stall cancel, not truncation). Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
 [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md)
 (not built).
@@ -59,18 +60,19 @@ We do not win by cloning upstream’s breadth.
 
 | Goal | Meaning | Not |
 |---|---|---|
-| **Path A** | Local Granite `ibm/granite4.1:3b` via Ollama → Hermes ACP → Local VM (WSL → Podman → Cua XFCE). No API key. Eight `vm_*` tools. Last-look **text**. **Candidate** (teed, not first-run): `qwen3-vl:4b-instruct` through the same Hermes inject. Do not ship unsuffixed `qwen3-vl:4b` (Thinking) at 8k. | Hosted Hermes (paid remote model, same VM). Flipping `RECOMMENDED_MODEL` without a ship ask. |
+| **Path A** | Local `qwen3-vl:8b` (Thinking, 32k) via Ollama → Hermes ACP → Local VM (WSL → Podman → Cua XFCE). No API key. Eight `vm_*` tools. Last-look **text**. 16 GB is **tight**; comfortable starts at **24 GB**. Do not ship 4B Thinking at 8k. | Hosted Hermes (paid remote model, same VM). Flipping `RECOMMENDED_MODEL` off 8B except by a new plan. |
 | **Computer** | Honest sandbox on the Local VM. Coworker *loop* (observe → act → remember). Granite can open and read. Same-turn recover-and-click on a Chromium error page **did not land** on 3B or 8B. ACP child now stays across turns (idle 15m, cap 3). | Unsupervised Cowork on 3B/8B/4B. Driving the user’s Windows desktop. JPEG to Granite. |
 | **Fork** | Additive files. Defaults never point at upstream feeds or keys. | Editing upstream-owned files when a new file will do. Publishing with the `windows-release` skill. |
 
 Coworker-level unsupervised hands on that VM: **Claude, Codex, or grokAgent**.
-A 3B with 8k and no vision will not run Cowork. An 8B on this 16 GB box
-also failed the gold-turn bar and left 0.6 GB RAM free — not a 16 GB default.
-Keep-alive does **not** make Instruct 4B a coworker.
+A 3B with 8k and no vision will not run Cowork. Granite 8B on this 16 GB box
+failed the gold-turn bar and left 0.6 GB RAM free. 005 still ships Qwen3-VL
+Thinking 8B @ 32k: 16 GB is **tight**, comfortable starts at **24 GB**.
+Keep-alive does **not** make that a coworker.
 
 ## In the tree (do not redo)
 
-Path A first-run: pinned Ollama zip, Granite pull, in-app Hermes, Local VM
+Path A first-run **in code**: pinned Ollama zip, `qwen3-vl:8b` Thinking pull (~6.1 GB), in-app Hermes, Local VM
 (WSL/Podman/Cua). Checklist is serial CTAs, not one pass
 ([B-11](known-bugs.md) leftover). Chooser can stick in Electron userData
 ([B-26](known-bugs.md)).
@@ -128,7 +130,11 @@ Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
 - `IMAGE_LAYER_VERSION` `"7"` in `server/container-computer.ts`
 - Settings stay opt-in analytics. Upstream default-on PostHog **loses** that merge.
 
-`RECOMMENDED_MODEL` / `modelForTier` stay `ibm/granite4.1:3b`.
+`RECOMMENDED_MODEL` / `modelForTier` are `qwen3-vl:8b`. Context 32768 on both tiers. Comfortable floor 24 GB. `NEW_SESSION_TIMEOUT` 120s.
+
+Hermes ACP 8B@32k gold on this Admin box (no NVIDIA, Vulkan off, CPU, Local VM down): **fail**. Thread `7105ac50-…`. Digest `901cae732162`. `llama-server -c 32768`, `size_vram` 0. `session/new` ~6s. Combined file+echo+open prompt, `computer: off`. After ~20.7 min with no ACP chunks, default `TURN_STALL_MS` (20 min) sent `session/cancel`. **No** `tool_call`, **not** truncated, no `0xc0000409`. Same shape as 4B@16k Admin cancel in 006. Does **not** prove thoughts filled 32k.
+
+**UI on this box after the flip (Vite :5199, unpackaged harness):** new bots still prefer **Claude** when that CLI is available (`PREFERRED_ENGINE` default `claudeAgent`; packaged bake is Hermes). A bot left on **Local VM** Retry-cards even “hello” (`Prepare the Cua desktop image…`) — **Runs on → Off** to talk. Hermes ACP “hello”/“hey” on CPU at 32k sits at **0 tok** for minutes (8B or 4B); the picker can flash **Hermes not installed** while `GET /api/instances` waits on a busy Ollama. Do not treat that flash as a missing CLI.
 
 ## Two ceilings (do not confuse)
 
@@ -155,16 +161,18 @@ serial CTAs left.
 
 Ordered. Granite bake-off is done; Qwen3-VL **Instruct** tools tee is done;
 Hermes eyes (paste ACP + VM caption) is in tree; ACP keep-alive is in tree
-(unit + Instruct protocol tee); Thinking truncates at 8k; do not hunt more `vm_*`.
+(unit + Instruct protocol tee); Hermes Thinking truncates at 8k on the
+NVIDIA tee; Admin no-NVIDIA crash was Vulkan; CPU skip-Hermes Thinking
+tools at 8k and 32k; do not hunt more `vm_*`.
 
-1. **Ship Path A weight** → only if you ask. Flip `RECOMMENDED_MODEL` /
-   `modelForTier` / `APPROX_MODEL_BYTES` (~3.3 GB) / electron-builder
-   `defaultModel` to **`qwen3-vl:4b-instruct`**, not the Thinking tag.
-   Checklist in
+1. **Path A gold failed on this CPU box** — 20 min silence watchdog, not a 32k-full thoughts miss. NVIDIA 8B@32k still unmeasured. Unpackaged new-bot default is still Claude (not a 005 bug). Spec:
+   [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md).
+   4B tee remains
    [`plans/2026-08-23-006-qwen3vl-replace-granite-plan.md`](plans/2026-08-23-006-qwen3vl-replace-granite-plan.md).
-2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run.
+   **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
+2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Catch upstream** → `upstream-merges` skill, separate job. Fetched 2026-08-24; ~23 commits through 0.1.32. No classifier to take.
+4. **Catch upstream** → `upstream-merges` skill, separate job. Tip `1602f97`; **54** commits behind, **37** ahead. Path A is committed. No classifier to take.
 5. **Publish this branch** → point our `main` at it; user must ask.
 6. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
 
@@ -175,7 +183,7 @@ Hermes eyes (paste ACP + VM caption) is in tree; ACP keep-alive is in tree
 - Redefine Path A as hosted Hermes.
 - Drive the host Windows desktop from Path A.
 - Send JPEGs to Granite (`IMAGE_LAYER_VERSION` stays `"7"` for that).
-- Change `RECOMMENDED_MODEL` / `modelForTier` without a winning tee **and** a ship ask.
+- Change `RECOMMENDED_MODEL` / `modelForTier` off `qwen3-vl:8b` except by a new plan (rollback is in 005).
 - Wrap Path A in `observe-computer-mcp` (~60 Cua tools).
 - Touch `server/computer-proxy.ts` to “port Box to the VM”.
 - Hand-edit `dist-server/`.
@@ -197,9 +205,12 @@ Hermes eyes (paste ACP + VM caption) is in tree; ACP keep-alive is in tree
 | [`plans/2026-08-23-003-open-computer-use-brain.md`](plans/2026-08-23-003-open-computer-use-brain.md) | EvoCUA pick; tool-calling research. |
 | [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md) | Goal = EvoCUA local stack; research holes. |
 | [`plans/2026-08-23-005-hermes-images.md`](plans/2026-08-23-005-hermes-images.md) | Keep Hermes; pictures. Qwen3-VL 4B may retire Granite+aux. |
-| [`plans/2026-08-23-006-qwen3vl-replace-granite-plan.md`](plans/2026-08-23-006-qwen3vl-replace-granite-plan.md) | Hermes stays; Instruct tee; Thinking truncates at 8k; first-run still Granite. |
+| [`plans/2026-08-23-006-qwen3vl-replace-granite-plan.md`](plans/2026-08-23-006-qwen3vl-replace-granite-plan.md) | Hermes stays; 4B Instruct tee; Hermes Thinking truncates at 8k; Vulkan crash isolated on Admin; CPU skip-Hermes tools at 8k/32k. |
 | [`plans/2026-08-24-001-acp-session-keepalive.md`](plans/2026-08-24-001-acp-session-keepalive.md) | ACP child stays across turns. |
 | [`plans/2026-08-24-002-local-vm-chromium-status.md`](plans/2026-08-24-002-local-vm-chromium-status.md) | Chromium stderr ≠ desktop failed to start. Pid cap 2048. |
+| [`plans/2026-08-24-003-path-a-qwen3vl-first-run-plan.md`](plans/2026-08-24-003-path-a-qwen3vl-first-run-plan.md) | **Tombstone.** Instruct 4B @ 8k. Do not implement. |
+| [`plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md`](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md) | Qwen-CUA is not first-run. 4B Instruct pick overridden by 005. |
+| [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | In tree; Admin CPU gold **fail** (20 min stall, no `tool_call`). |
 | [`server/cua-desktop-status.ts`](../server/cua-desktop-status.ts) | Classifier used by Local VM and VPS. |
 | `.claude/skills/<folder>/SKILL.md` | Folders = table in `AGENTS.md`. |
 

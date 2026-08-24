@@ -184,7 +184,7 @@ export function acpChildSpawnOptions(
 
 const INIT_TIMEOUT = 20_000;
 const SESSION_CONFIG_TIMEOUT = 20_000; // configureSession's per-request default
-const NEW_SESSION_TIMEOUT = 30_000;
+const NEW_SESSION_TIMEOUT = 120_000; // 8B + 32k first load; Hermes waits up to 30s for ACP MCP inside session/new
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
 
 function decodeAcpConfig(defaultCli: string) {

@@ -10,12 +10,15 @@
 // an engine that is not installed still loses to one that is, and a model the
 // chosen engine does not offer is ignored. A typo therefore costs nothing.
 import type { ModelCatalog } from "./contracts.ts";
+import { RECOMMENDED_MODEL } from "./local-model.ts";
 
 /** driverKind a new bot prefers, e.g. "hermesAgent". */
 export const PREFERRED_ENGINE = process.env.OMB_DEFAULT_ENGINE?.trim() || "claudeAgent";
 
-/** Model id a new bot prefers, e.g. "ollama::qwen3:4b". Empty means no preference. */
-export const PREFERRED_MODEL = process.env.OMB_DEFAULT_MODEL?.trim() || "";
+/** Model id a new bot prefers. Unpackaged `pnpm dev:server` falls back to
+ * first-run Thinking 8B so a new bot picks it once Hermes lists it. A missing
+ * catalog id is still ignored — see startingModel. */
+export const PREFERRED_MODEL = process.env.OMB_DEFAULT_MODEL?.trim() || `ollama::${RECOMMENDED_MODEL}`;
 
 /** The model a new bot starts on for a given engine.
  *

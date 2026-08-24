@@ -19,14 +19,11 @@
 // See docs/plans/2026-08-20-005-three-path-first-run-plan.md.
 import { z } from "zod";
 
-/** Apache-2.0 Granite 4.1 3B — the local weight that issued correct tool
- * calls on this path. Qwen 3 is still a legal weight; it is no longer the
- * one we download, because the Qwen *agent* cannot complete a local turn.
- * Candidate (not first-run): `qwen3-vl:4b-instruct` is also Apache-2.0
- * (~3.3 GB). Unsuffixed `qwen3-vl:4b` is Thinking and fills 8k. See
- * docs/plans/2026-08-23-006-qwen3vl-replace-granite-plan.md. Do not flip this
- * constant without a ship ask. */
-export const RECOMMENDED_MODEL = "ibm/granite4.1:3b";
+/** Apache-2.0 Qwen3-VL Thinking 8B — Path A first-run (Ollama `qwen3-vl:8b`,
+ * digest prefix `901cae732162`, ~6.1 GB Q4_K_M, 32k). Instruct 8B
+ * (`qwen3-vl:8b-instruct`, `0533d74300e4`), 4B, and Granite are not
+ * first-run. See docs/plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md. */
+export const RECOMMENDED_MODEL = "qwen3-vl:8b";
 
 /** The `/v1` base in LOCAL_HOSTS is the OpenAI-compatible surface; pull lives on
  * Ollama's native API at the origin. */

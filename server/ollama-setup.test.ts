@@ -117,6 +117,7 @@ describe("runOllamaSetup", () => {
     for await (const event of runOllamaSetup({
       dataDir: data,
       platform: "win32",
+      env: { SystemRoot: "C:\\Windows" },
       origin: "http://runtime.test",
       fetchImpl: fakeFetch(async () => {
         tags += 1;
@@ -138,7 +139,42 @@ describe("runOllamaSetup", () => {
     expect(seen!.env.OLLAMA_MODELS).toBe(join(data, "local-models"));
     expect(seen!.env.OLLAMA_MAX_LOADED_MODELS).toBe("1");
     expect(seen!.env.OLLAMA_KEEP_ALIVE).toBe("60s");
+    expect(seen!.env.OLLAMA_CONTEXT_LENGTH).toBe("32768");
+    expect(seen!.env.OLLAMA_VULKAN).toBe("0");
+    expect(seen!.env.GGML_VK_VISIBLE_DEVICES).toBe("-1");
     expect(events.at(-1)).toEqual({ status: "Ollama is running", done: true });
+  });
+
+  it("leaves Vulkan enabled on Windows when nvcuda.dll is present", async () => {
+    const data = scratchDir();
+    mkdirSync(join(data, "local-runtime"), { recursive: true });
+    writeFileSync(join(data, "local-runtime", "ollama.exe"), "");
+    let seen: NodeJS.ProcessEnv | null = null;
+    let tags = 0;
+    const events = [];
+    for await (const event of runOllamaSetup({
+      dataDir: data,
+      platform: "win32",
+      env: { SystemRoot: "C:\\Windows" },
+      origin: "http://runtime.test",
+      fetchImpl: fakeFetch(async () => {
+        tags += 1;
+        if (tags === 1) return new Response("down", { status: 503 });
+        return new Response("{}", { status: 200 });
+      }),
+      exists: (path) => path.endsWith("ollama.exe") || path.endsWith("nvcuda.dll"),
+      spawnServe: (_command, _args, env) => {
+        seen = env;
+        return idleChild();
+      },
+      pause: async () => {},
+    })) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toEqual({ status: "Ollama is running", done: true });
+    expect(seen).not.toBeNull();
+    expect(seen!.OLLAMA_VULKAN).toBeUndefined();
+    expect(seen!.GGML_VK_VISIBLE_DEVICES).toBeUndefined();
   });
 
   it("pins the published zip checksum", () => {

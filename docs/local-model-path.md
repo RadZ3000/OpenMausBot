@@ -125,8 +125,12 @@ removed and re-inited. Never Docker Desktop. Call those routes from
 A 3B model may drive the desktop poorly — that is copy, not a reason to skip
 the sandbox. **16 GB + Granite + Local VM was measured 2026-08-23** on this
 15.7 GB / RTX 2060 6 GB box: 3B + VM runs; `ibm/granite4.1:8b` at 8k
-loads but leaves **0.6 GB RAM and ~400 MiB VRAM** free. Do not ship 8B as
-a 16 GB first-run default. **`qwen3-vl:4b` at 8k + VM (2026-08-23):**
+loads but leaves **0.6 GB RAM and ~400 MiB VRAM** free. That measurement
+is why 005 puts a **16 GB** machine in **tight** (comfortable floor
+**24 GB**), not why we keep Granite. **First-run** is Qwen3-VL
+Thinking 8B @ 32k
+([005](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md)).
+**`qwen3-vl:4b` at 8k + VM (2026-08-23):**
 model ~3.57 GB in VRAM; GPU 5554 / 6144 MiB used (402 MiB free); system
 RAM **2.09 GB** free of 15.72. Tighter VRAM than hoped; more RAM headroom
 than Granite 8B. Turn finished. Do not treat 6 GB VRAM as comfortable.
@@ -265,13 +269,39 @@ available to us: the requests are made by the agent CLI, not by us.
 ### The download is ~3.9 GB and cannot be eliminated — **Decided**
 
 Weights are resident or the model does not run; there is no partial or streamed
-inference. First-run is still Granite 3B (~2.5 GB). The Path A **candidate**
-`qwen3-vl:4b-instruct` is ~3.3 GB Q4_K_M (distinct from Thinking
-`qwen3-vl:4b`). Do not pull official 8B (~6.1 GB) as first-run. Do not ship
-Thinking at 8k. The levers, in order of value, are listed
-in plan 005 — reuse a runtime already present (100%, already works, just not
+inference. First-run is `qwen3-vl:8b` Thinking (~6.1 GB Q4_K_M) at 32k
+([005](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md)).
+Granite 3B (~2.5 GB) and `qwen3-vl:4b-instruct` (~3.3 GB) are leftover
+tags, not `modelReady`. Do not treat leftover Instruct 4B/8B as
+`modelReady`. The levers, in order of value, are listed
+in [plan 2026-08-20-005](plans/2026-08-20-005-three-path-first-run-plan.md) — reuse a runtime already present (100%, already works, just not
 surfaced), a network host (100%, parked), match the runtime variant to
 detected hardware, and a smaller model tier.
+
+### Unpackaged `pnpm dev` still prefers Claude — **Decided** (observed 2026-08-24)
+
+`PREFERRED_ENGINE` defaults to `claudeAgent`. The packaged bake is
+`hermesAgent` + `ollama::qwen3-vl:8b`. A Vite new bot on a machine that
+already has Claude CLI lands on Claude (`Not logged in · Please run
+/login`), not 8B. Pick `qwen3-vl:8b (Ollama)` in the model menu. Do not
+flip the unpackaged default without a plan — that would surprise every
+dev who uses Claude.
+
+### Local VM selected without a Cua image fails the turn before the model — **Decided**
+
+`computer: "vm"` tries to start the sandbox on **every** message. Missing
+image → Retry card `Prepare the Cua desktop image with Driver 0.20.0`.
+**Runs on → Off** to chat. “This computer” stays grey on local-inject.
+
+### Hermes ACP on CPU vs the 20 min stall — **Decided** (measured 2026-08-24)
+
+Admin, no NVIDIA, Vulkan off, 32k: Hermes ACP 8B gold **cancelled** at
+default `TURN_STALL_MS` (20 min) with no ACP chunks — not truncated,
+not `0xc0000409`. UI “hello”/“hey” on 8B **or** 4B Thinking sits at
+**0 tok** for minutes (Hermes tool catalog + CPU prefill). Opening the
+picker while Ollama is busy can flash **Hermes not installed** until
+`GET /api/instances` returns. Skip-Hermes 4B tools at 8k/32k still
+stand. GPU is the speed fix; a longer stall is only a model verdict.
 
 ### Slowness compounds in a way a chatbot's does not — **Decided**
 
@@ -307,8 +337,10 @@ Hermes' own `file` and `terminal` toolsets instead of the `hermes-acp`
 editor bundle (`ensureHermesLocalCatalog` / `applyTurnEnv`), so `vm_open`
 fits in 8k. Cloud Hermes is unchanged. Do not name `vm_open` or
 `mcp__computer__*` in the prompt — Granite then emits that JSON as
-assistant text. Do not grow `OLLAMA_CONTEXT_LENGTH` on a 16 GB box to
-paper over that.
+assistant text. Growing `OLLAMA_CONTEXT_LENGTH` on a 16 GB box still
+costs KV RAM (Granite 8B leftover was 0.6 GB). **005 still sets 32k on
+both tiers** and labels 16 GB **tight**. Do not grow past 32k to paper
+over a fat Hermes catalog.
 
 The click → see screen → click loop is **not inside the Grok (or Hermes)
 provider.** `drivers/grok.ts` is chat-completions with no computer tools.
@@ -355,11 +387,35 @@ tee, same Local VM, same eight tools, 8k):
   **`qwen3-vl:4b-instruct`** teed through Hermes: chat, `write_file` /
   `read` / `terminal` / `vm_open` fired. Workspace file contains `8241`.
   Ollama tools+PNG **200** on Thinking. JPEG fuse still **off**. Not a
-  gold-turn click winner. First-run stays Granite until a ship ask.
+  gold-turn click winner. First-run **in code** is Thinking 8B @ 32k (005).
+  2026-08-24 Admin (no NVIDIA): default Ollama **Vulkan** path crashed
+  `llama-server` (`0xc0000409`) at 8k and 32k. Vulkan off → CPU:
+  skip-Hermes Thinking **tools at 8k and 32k** (compact catalog). Hermes
+  ACP 8k truncation remains the NVIDIA tee. 005 **does** bump default
+  context to 32k for Thinking 8B. Admin 2026-08-24 Hermes ACP **8B @ 32k**
+  (Vulkan off, CPU, VM down): `session/new` ok, then **20 min stall
+  watchdog** cancelled the prompt (`TURN_STALL_MS`). No ACP `tool_call`,
+  not truncated, no `0xc0000409`. Same cancel shape as 4B @ 16k on this
+  box. Not a 32k-full thoughts miss.
   [`plans/2026-08-23-006-qwen3vl-replace-granite-plan.md`](plans/2026-08-23-006-qwen3vl-replace-granite-plan.md).
 
+**Qwen-CUA is not a Path A substitute — Decided (evaluated 2026-08-24).**
+[Qwen-CUA](https://arxiv.org/abs/2608.02352) is a **397B-A17B** (Max
+**>1T**) screenshot→keyboard/mouse policy. The GitHub release is
+report + Playwright demo; **weights are not in the repo.** 86.2
+OSWorld-Verified is a GPU-box specialist score, not a 16 GB Ollama
+pull. **Path A first-run** is `qwen3-vl:8b` Thinking @ 32k
+through Hermes ([005](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md)).
+GPU-box computer-use pick remains EvoCUA until a downloadable CUA checkpoint
+exists. There is **no 8B Qwen-CUA**; Qwen-CUA is a 397B-class policy, not
+`qwen3-vl:8b`. The downloadable small CUA-on-Qwen3-VL is EvoCUA-8B
+(GPU box, not first-run). **Qwen3.8** (Aug 2026, [blog](https://qwen.ai/blog?id=qwen3.8))
+is a **new family**, not Qwen3-VL: open VL is **`qwen3.8:27b` (~18 GB)**,
+no 4B SKU, thinking on by default. Not Path A. Write-up:
+[`plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md`](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md).
+
 Neither Granite arm met the pass bar (error-page click **and** example.com).
-First-run stays `ibm/granite4.1:3b`. Path A stays “open and read.”
+First-run **in code** is `qwen3-vl:8b`. Path A stays “open and read.”
 Details: [`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md).
 
 Frontier engines on the same Local VM or a VPS get a **fused screenshot**
@@ -373,8 +429,9 @@ captions via skip-Hermes `/v1` instead. Hermes 0.20.5 MCP `MEDIA:<path>`
 is patched to `_multimodal` if a JPEG ever fits. Paste uses ACP image
 blocks. Do **not** make `qwen2.5vl` the chat model: Ollama reports that
 tag as vision **without** tools. **Qwen3-VL 4B Instruct** is tools
-**and** vision on Ollama. Path A candidate through Hermes; first-run
-still Granite. Details:
+**and** vision on Ollama (teed). **First-run** is Thinking 8B
+@ 32k ([005](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md));
+keep Pipe B captions until an 8B+32k JPEG+tools tee. Details:
 [plan 007](plans/2026-08-23-007-hermes-eyes-plan.md). Do not
 start a first-party Ollama driver unless asked; Path A is Hermes.
 See

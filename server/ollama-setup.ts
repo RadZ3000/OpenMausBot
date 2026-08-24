@@ -15,7 +15,13 @@ import { createWriteStream, existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { MODELS_DIRNAME, runtimeEnv, DEFAULT_CONTEXT_TOKENS, type RuntimePolicy } from "./local-runtime.ts";
+import {
+  MODELS_DIRNAME,
+  runtimeEnv,
+  DEFAULT_CONTEXT_TOKENS,
+  shouldDisableOllamaVulkan,
+  type RuntimePolicy,
+} from "./local-runtime.ts";
 import { OLLAMA_ORIGIN, runtimeUp } from "./local-model.ts";
 import { killCliTree } from "./procs.ts";
 
@@ -201,10 +207,16 @@ async function waitUntilUp(hooks: OllamaSetupHooks): Promise<boolean> {
 async function spawnServe(hooks: OllamaSetupHooks): Promise<void> {
   const platform = hooks.platform ?? process.platform;
   const env = hooks.env ?? process.env;
+  const exists = hooks.exists ?? existsSync;
   const command = ollamaExe(hooks.dataDir, platform);
   const policy: RuntimePolicy = {
     modelsDir: modelsDir(hooks.dataDir),
     contextTokens: hooks.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
+    disableVulkan: shouldDisableOllamaVulkan({
+      platform,
+      systemRoot: env.SystemRoot || env.SYSTEMROOT || "C:\\Windows",
+      exists,
+    }),
   };
   const childEnv = spawnEnvFrom(env, policy);
   await mkdir(policy.modelsDir, { recursive: true });

@@ -16,7 +16,9 @@
 // made by the agent CLI (hermes, qwen), not by us — so the server environment is
 // the only lever we actually hold.
 //
-// See docs/plans/2026-08-20-005-three-path-first-run-plan.md.
+// See docs/plans/2026-08-20-005-three-path-first-run-plan.md and
+// docs/plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md.
+import { join } from "node:path";
 
 /** Where the models live. Ollama defaults to the user's home directory; putting
  * them under our data directory is what lets uninstalling the app reclaim the
@@ -29,15 +31,19 @@ export interface RuntimePolicy {
   /** Context window. Bigger costs KV cache on every resident model, and agent
    * transcripts grow, so this is a real memory lever rather than a nicety. */
   contextTokens: number;
+  /** Windows without NVIDIA: Ollama's Vulkan path crashed llama-server
+   * (`0xc0000409`). Omit on NVIDIA so CUDA stays the default. */
+  disableVulkan?: boolean;
 }
 
 /** Environment for `ollama serve`.
  *
  * Returned as plain strings because that is what a spawn takes, and kept as one
  * function so there is a single place to read what this app does to a runtime it
- * starts. */
+ * starts. Vulkan keys are omitted unless asked — setting VULKAN=1 would force
+ * Vulkan over CUDA on an NVIDIA box. */
 export function runtimeEnv(policy: RuntimePolicy) {
-  return {
+  const env = {
     OLLAMA_MODELS: policy.modelsDir,
     // default is 3 — three resident models on a laptop is the single worst
     // default here
@@ -52,10 +58,26 @@ export function runtimeEnv(policy: RuntimePolicy) {
     // transcript
     OLLAMA_KV_CACHE_TYPE: "q8_0",
     OLLAMA_FLASH_ATTENTION: "1",
-  } satisfies Record<string, string>;
+  };
+  if (!policy.disableVulkan) return env;
+  return {
+    ...env,
+    OLLAMA_VULKAN: "0",
+    GGML_VK_VISIBLE_DEVICES: "-1",
+  };
 }
 
-/** Long enough for a real agent turn with tool results, short enough that the
- * cache does not dominate memory on a small machine. */
-export const DEFAULT_CONTEXT_TOKENS = 8192;
-export const TIGHT_CONTEXT_TOKENS = 4096;
+/** Windows without `nvcuda.dll` must not use Ollama Vulkan. POSIX keeps the
+ * current default. `exists` is injected so tests never touch the real DLL. */
+export function shouldDisableOllamaVulkan(opts: {
+  platform: NodeJS.Platform;
+  systemRoot: string;
+  exists: (path: string) => boolean;
+}): boolean {
+  if (opts.platform !== "win32") return false;
+  return !opts.exists(join(opts.systemRoot, "System32", "nvcuda.dll"));
+}
+
+/** Path A first-run is Thinking 8B at 32k on both RAM tiers. */
+export const DEFAULT_CONTEXT_TOKENS = 32768;
+export const TIGHT_CONTEXT_TOKENS = 32768;
