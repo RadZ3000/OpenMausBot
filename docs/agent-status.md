@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-24 (Path A first-run **in code** is Thinking **8B @ 32k**. Admin CPU Hermes gold **fail** (20 min stall). Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Local VM without a Cua image Retry-cards every turn. 003 is a tombstone.)
+Last updated: 2026-08-24 (merged `upstream/main` through `1602f97` / 0.1.32+. Path A first-run is Thinking **8B @ 32k**. Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
@@ -23,23 +23,16 @@ cold-start were deleted as duplicates of this file; git still has them.
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` |
-| HEAD | this commit — Path A first-run is Thinking 8B @ 32k. Parent `a897f57` recorded keep-alive and Chromium VM status on `origin`. |
+| HEAD | merge `490e6b8` of `upstream/main`; this commit fixes duplicate room POST. Path A 8B@32k is `033f1ab`. |
 | Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
-| Merge base | `0cedd9e` — merged upstream (skill recorder, section chiefs, MiniMax, timeline, room setup, driver retry) |
-| `origin` | `RadZ3000/OpenMausBot` — **only push target**. This branch is pushed. |
+| Merge base | this merge — 0.1.32, pi hands/images, find-in-chat, credential cards, skill import, live team map, window-state/unread |
+| `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `origin/main` | `d037f40` — this branch is **not** merged to our `main` |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Fetched `upstream/main` 2026-08-24 again. Tip is `1602f97` (`feat(pi): image
-attachments and reasoning-effort levels`, #438). Gap is **54** commits we lack
-and **37** they lack. After 0.1.32 they added pi images/reasoning, find-in-chat,
-in-app attachment preview, section-scoped shared context, live team map, in-chat
-credential cards, window-state/unread badges, gated SKILL.md import, idle-mascot
-CPU cut, composer file attach. **No** `server/cua-desktop-status.ts` there.
-Catching up is a **separate** merge job; Path A is on this branch as a
-recoverable base. Their ACP core still kills the child on settle.
+Caught up to `upstream/main` `1602f97` on 2026-08-24. We kept consent-gated analytics (not their default-on settings row), compact `vm_*` wrap, ACP keep-alive, Chromium VM status, and Path A 8B@32k. Joined `imageGenApiKey` onto their `request_credential` allowlist. Their ACP core still `stop()`s on settle; ours still parks the child via `server/acp-session.ts`.
 
-005 constants are in this commit. Hermes ACP gold on this box **failed** (stall cancel, not truncation). Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
+Hermes ACP gold on this box **failed** (stall cancel, not truncation). Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
 [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md)
 (not built).
@@ -172,7 +165,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Catch upstream** → `upstream-merges` skill, separate job. Tip `1602f97`; **54** commits behind, **37** ahead. Path A is committed. No classifier to take.
+4. **Catch upstream** — done through `1602f97` (`490e6b8`). Next catch-up is a new fetch, not this gap.
 5. **Publish this branch** → point our `main` at it; user must ask.
 6. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
 

@@ -3967,11 +3967,9 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such room" });
       if (!text) return json(res, 400, { error: "text required" });
       const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such group" });
+      if (!group) return json(res, 404, { error: "no such room" });
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
       startGroupTurn(group.id, text, replyTo);
       return json(res, 202, { ok: true });
