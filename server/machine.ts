@@ -57,7 +57,8 @@ export function tierFor(spec: MachineSpec): MachineTier {
 /** The model to offer, or null when none should be. Ollama tags.
  *
  * Both are Apache-2.0, which is the gate that comes before benchmarks: weights
- * are not npm packages, so `pnpm check:licenses` will never see them. */
+ * are not npm packages, so `pnpm check:licenses` will never see them.
+ * Candidate (not first-run): `qwen3-vl:4b-instruct` is also Apache-2.0 (~3.3 GB). */
 export function modelForTier(tier: MachineTier): string | null {
   if (tier === "unsupported") return null;
   // Same Apache-2.0 3B weight on both runnable tiers. The 8B class does not

@@ -1,5 +1,8 @@
 # Known bugs
 
+Current git / goals / stop-lines: [`agent-status.md`](agent-status.md). This
+file is the defect list, not the snapshot.
+
 Defects found and not yet fixed, kept in one place so a sweep has somewhere to
 start. **A list to work from, not a tracker** — when one is fixed, delete the
 entry and let the commit be the record.

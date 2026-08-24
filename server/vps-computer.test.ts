@@ -60,6 +60,8 @@ function fixture({
   screenshotValid = true,
   screenshotCaptureFails = false,
   desktopProbeFails = false,
+  getDesktopStateFails = false,
+  driverErrorLog = "X display :1 did not become ready within 45 seconds\n",
   securityOpt = [],
   memory = 4 * 1024 * 1024 * 1024,
   restartPolicyName = "unless-stopped",
@@ -86,6 +88,8 @@ function fixture({
   screenshotValid?: boolean;
   screenshotCaptureFails?: boolean;
   desktopProbeFails?: boolean;
+  getDesktopStateFails?: boolean;
+  driverErrorLog?: string;
   securityOpt?: string[];
   memory?: number;
   restartPolicyName?: string;
@@ -179,7 +183,7 @@ function fixture({
       if (screenshotCaptureFails && args.includes("--screenshot-out-file")) throw new Error("capture failed");
       if (args.includes("base64")) return { stdout: screenshotValid ? screenshot.toString("base64") : "not-an-image", stderr: "" };
       if (args.includes("tail")) {
-        return { stdout: "X display :1 did not become ready within 45 seconds\n", stderr: "" };
+        return { stdout: driverErrorLog, stderr: "" };
       }
       if (args.at(-1) === "--version") {
         if (desktopProbeFails) throw new Error("driver unavailable");
@@ -189,7 +193,10 @@ function fixture({
       if (args.includes("health_report")) {
         return { stdout: JSON.stringify({ schema_version: "1", overall: "ok", checks: [] }), stderr: "" };
       }
-      if (args.includes("get_desktop_state")) return { stdout: "{}\n", stderr: "" };
+      if (args.includes("get_desktop_state")) {
+        if (getDesktopStateFails) throw new Error("get_desktop_state failed");
+        return { stdout: "{}\n", stderr: "" };
+      }
       return { stdout: "{}\n", stderr: "" };
     }
     if (command === "pull") return { stdout: "pulled\n", stderr: "" };
@@ -529,6 +536,19 @@ describe("VPS computer", () => {
     expect(status.desktop_error).toContain("did not become ready");
     expect(status.problem).toContain("desktop failed to start");
     expect(fake.calls.some(({ args }) => args[2] === "exec" && args.includes("tail"))).toBe(true);
+  });
+
+  it("does not call a live VPS desktop a boot failure when Chromium dumps GLib assertions", async () => {
+    const fake = fixture({
+      getDesktopStateFails: true,
+      driverErrorLog:
+        "[510:510:0824/134804.482916:ERROR:content/browser/browser_main_loop.cc:277] GLib-GObject: g_value_type_compatible: assertion 'src_type' failed\n",
+    });
+    const status = await vpsComputerStatus(CONFIG, BOT_ID, fake.runner);
+    expect(status.desktopReady).toBe(true);
+    expect(status.ready).toBe(true);
+    expect(status.problem).toBeNull();
+    expect(status.desktop_warning).toContain("page may crash");
   });
 
   it("waits for readiness with a cheap driver probe and backoff, not full re-inspections", async () => {

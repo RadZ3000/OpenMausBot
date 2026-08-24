@@ -157,6 +157,35 @@ Once decisions 3 and 4 land, in this order:
 Then `pnpm check:distribution --release` goes green, and it going green is the
 definition of done for this phase.
 
+## Recorded 2026-08-24 — the public-release solution (not built yet)
+
+A packaged Electron on this tree showed **OpenMausBot 0.1.32 is available /
+Download**. That toast is the auto-updater hitting upstream's GitHub releases
+feed (`milind-soni/openmausbot-releases` in `electron-builder.yml` `publish:`).
+This tree was 0.1.29; 0.1.32 is **their** latest. Download installs their
+product. The banner only appears when `app.isPackaged`. Until Phase B lands,
+a packaged build of this fork must not go to customers, and **Download must
+not be clicked**.
+
+When we do ship, the production path is:
+
+1. A **public GitHub releases repo we own** (no token on customer machines —
+   the same reason upstream split theirs).
+2. `electron-builder.yml` `publish:` and the generated `app-update.yml` point
+   at **that** repo, never `milind-soni/openmausbot-releases`.
+3. A version line that does not collide with their 0.1.x numbers (decision 5
+   in **The five decisions** is still open).
+4. Windows Authenticode. Smart App Control has no "Run anyway"; unsigned is
+   not a customer build. Details in [B-15](../known-bugs.md).
+5. Our Composio Worker (`OMB_COMPOSIO_BROKER_URL`), Team Library ours or off,
+   docs links ours.
+6. Gate: `pnpm check:distribution --release` empty of upstream URLs. That
+   command going green **is** Phase B done.
+
+Do not retarget `publish:` until the five decisions in this plan are actually
+made (`appId` especially). This section is the engineering target, not those
+product choices.
+
 ## Phase C — the runbook
 
 Only after Phase B, because a runbook written against undecided values is

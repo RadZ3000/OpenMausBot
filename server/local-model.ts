@@ -21,7 +21,11 @@ import { z } from "zod";
 
 /** Apache-2.0 Granite 4.1 3B — the local weight that issued correct tool
  * calls on this path. Qwen 3 is still a legal weight; it is no longer the
- * one we download, because the Qwen *agent* cannot complete a local turn. */
+ * one we download, because the Qwen *agent* cannot complete a local turn.
+ * Candidate (not first-run): `qwen3-vl:4b-instruct` is also Apache-2.0
+ * (~3.3 GB). Unsuffixed `qwen3-vl:4b` is Thinking and fills 8k. See
+ * docs/plans/2026-08-23-006-qwen3vl-replace-granite-plan.md. Do not flip this
+ * constant without a ship ask. */
 export const RECOMMENDED_MODEL = "ibm/granite4.1:3b";
 
 /** The `/v1` base in LOCAL_HOSTS is the OpenAI-compatible surface; pull lives on

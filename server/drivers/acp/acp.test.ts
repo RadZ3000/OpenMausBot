@@ -13,8 +13,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ensureDirs } from "../../config.ts";
+import { saveImage } from "../../attachments.ts";
 import type { ProviderInstance } from "../../contracts.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
+import { ACP_SESSION_IDLE_MS, acpFingerprintFromTurn, createManualAcpSessionClock } from "../../acp-session.ts";
 import { createAcpDriver, acpChildSpawnOptions, skipSubscriptionAuthForLocalInject, type AcpSupport } from "./core.ts";
 import { GrokAgentDriver } from "./grok.ts";
 import { GeminiAgentDriver } from "./gemini.ts";
@@ -317,6 +319,47 @@ describe("ACP turns (fake CLI)", () => {
     expect(seen.env.CURSOR_AUTH_TOKEN).toBeUndefined();
     expect(seen.env.BOX_TOKEN).toBeUndefined();
     expect(seen.env.OMB_TTS_KEY).toBeUndefined();
+  });
+
+  it("keeps attached-image tags as text when the agent did not advertise images", async () => {
+    await create();
+    const dump = join(scratch, "prompt-text.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const saved = saveImage(Buffer.from("png-bytes"), "image/png");
+    const text = `look\n\n<attached-image path="${saved.path}" />`;
+    await instance.adapter.sendTurn({ threadId: "t-image-off", text });
+    await recorder.until((e) => e.type === "turn.completed");
+    const prompt = JSON.parse(readFileSync(dump, "utf8")).prompt as Array<{ type: string; text?: string }>;
+    expect(prompt).toHaveLength(1);
+    expect(prompt[0]?.type).toBe("text");
+    expect(prompt[0]?.text).toContain("<attached-image");
+    expect(prompt[0]?.text).toContain(saved.path);
+  });
+
+  it("sends ACP image blocks when initialize advertised promptCapabilities.image", async () => {
+    process.env.FAKE_ACP_IMAGE_PROMPT = "1";
+    await create();
+    const dump = join(scratch, "prompt-image.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const saved = saveImage(png, "image/png");
+    await instance.adapter.sendTurn({
+      threadId: "t-image-on",
+      text: `what is this?\n\n<attached-image path="${saved.path}" />`,
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+    const prompt = JSON.parse(readFileSync(dump, "utf8")).prompt as Array<{
+      type: string;
+      text?: string;
+      mimeType?: string;
+      data?: string;
+    }>;
+    expect(prompt[0]).toEqual({ type: "text", text: "what is this?" });
+    expect(prompt[1]).toEqual({ type: "image", mimeType: "image/png", data: png.toString("base64") });
+    expect(prompt[0]?.text).not.toContain(saved.path);
   });
 
   // ACP session/new accepts stdio MCP entries, so connected apps use the
@@ -813,6 +856,166 @@ describe("ACP turns (fake CLI)", () => {
     expect(argv[modelFlag + 1]).toBe("grok-4.5");
     expect(argv.indexOf("--reasoning-effort")).toBeGreaterThan(agent);
     expect(argv.indexOf("--permission-mode")).toBeLessThan(agent);
+  });
+
+  it("reuses one child for two prompts on the same sessionKey", async () => {
+    const dump = join(scratch, "rpc-reuse.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    await create(GrokAgentDriver, "echo-gated");
+    const sessionKey = "bot-ember:t-reuse";
+    const first = await instance.adapter.sendTurn({
+      threadId: "t-reuse",
+      sessionKey,
+      text: "open the site",
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    expect(instance.adapter.hasSession("t-reuse")).toBe(false);
+    const fp = acpFingerprintFromTurn({ threadId: "t-reuse", text: "open the site", sessionKey });
+    expect(instance.adapter.hasIdleSession?.(sessionKey, fp)).toBe(true);
+
+    const second = await instance.adapter.sendTurn({
+      threadId: "t-reuse",
+      sessionKey,
+      text: "click publish",
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    const methods: string[] = JSON.parse(readFileSync(dump, "utf8"));
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+    expect(methods.filter((m) => m === "session/new")).toHaveLength(1);
+    expect(methods.filter((m) => m === "session/load")).toHaveLength(0);
+    expect(methods.filter((m) => m === "session/prompt")).toHaveLength(2);
+    const echoed = recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text");
+    expect(echoed.at(-1)?.text).toContain("click publish");
+    expect(echoed.at(-1)?.text).not.toContain("could not be resumed");
+  });
+
+  it("keeps two children when a room thread has two sessionKeys", async () => {
+    await create();
+    const fp = acpFingerprintFromTurn({ threadId: "room", text: "hi" });
+    const a = await instance.adapter.sendTurn({
+      threadId: "room",
+      sessionKey: "botA:room",
+      text: "hi",
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === a.turnId);
+    const b = await instance.adapter.sendTurn({
+      threadId: "room",
+      sessionKey: "botB:room",
+      text: "hi",
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === b.turnId);
+    expect(instance.adapter.hasIdleSession?.("botA:room", fp)).toBe(true);
+    expect(instance.adapter.hasIdleSession?.("botB:room", fp)).toBe(true);
+  });
+
+  it("spawns again after rewind drops the idle child", async () => {
+    const dump = join(scratch, "rpc-rewind.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    await create();
+    const sessionKey = "bot:t-rewind";
+    const first = await instance.adapter.sendTurn({ threadId: "t-rewind", sessionKey, text: "one" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    instance.adapter.dropIdleSession?.(sessionKey);
+    const fp = acpFingerprintFromTurn({ threadId: "t-rewind", text: "one", sessionKey });
+    expect(instance.adapter.hasIdleSession?.(sessionKey, fp)).toBe(false);
+    const second = await instance.adapter.sendTurn({ threadId: "t-rewind", sessionKey, text: "two" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    const methods: string[] = JSON.parse(readFileSync(dump, "utf8"));
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+    expect(methods.filter((m) => m === "session/prompt")).toHaveLength(1);
+  });
+
+  it("spawns again after a failed turn", async () => {
+    const dump = join(scratch, "rpc-fail.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    await create(GrokAgentDriver, "fail-after-text");
+    const sessionKey = "bot:t-fail-keep";
+    const first = await instance.adapter.sendTurn({ threadId: "t-fail-keep", sessionKey, text: "one" });
+    const done = await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    expect(done).toMatchObject({ ok: false });
+    delete process.env.FAKE_ACP_MODE;
+    const second = await instance.adapter.sendTurn({ threadId: "t-fail-keep", sessionKey, text: "two" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    const methods: string[] = JSON.parse(readFileSync(dump, "utf8"));
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+    expect(methods.filter((m) => m === "session/prompt")).toHaveLength(1);
+  });
+
+  it("evicts the oldest idle child when a fourth session starts", async () => {
+    await create();
+    const fp = acpFingerprintFromTurn({ threadId: "t1", text: "hi" });
+    for (const n of [1, 2, 3] as const) {
+      const started = await instance.adapter.sendTurn({
+        threadId: `t${n}`,
+        sessionKey: `k${n}`,
+        text: "hi",
+      });
+      await recorder.until((e) => e.type === "turn.completed" && e.turnId === started.turnId);
+    }
+    expect(instance.adapter.hasIdleSession?.("k1", fp)).toBe(true);
+    const fourth = await instance.adapter.sendTurn({ threadId: "t4", sessionKey: "k4", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === fourth.turnId);
+    expect(instance.adapter.hasIdleSession?.("k1", fp)).toBe(false);
+    expect(instance.adapter.hasIdleSession?.("k2", fp)).toBe(true);
+    expect(instance.adapter.hasIdleSession?.("k3", fp)).toBe(true);
+    expect(instance.adapter.hasIdleSession?.("k4", fp)).toBe(true);
+  });
+
+  it("kills an idle child when the injected clock passes 15 minutes", async () => {
+    const clock = createManualAcpSessionClock();
+    const IdleDriver = createAcpDriver(
+      { ...SELECT_MODEL_SUPPORT, selectModel: undefined },
+      { clock, idleMs: ACP_SESSION_IDLE_MS },
+    );
+    const dump = join(scratch, "rpc-idle.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    await create(IdleDriver);
+    const sessionKey = "bot:t-idle";
+    const first = await instance.adapter.sendTurn({ threadId: "t-idle", sessionKey, text: "one" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    const fp = acpFingerprintFromTurn({ threadId: "t-idle", text: "one", sessionKey });
+    expect(instance.adapter.hasIdleSession?.(sessionKey, fp)).toBe(true);
+    clock.advance(ACP_SESSION_IDLE_MS);
+    expect(instance.adapter.hasIdleSession?.(sessionKey, fp)).toBe(false);
+    const second = await instance.adapter.sendTurn({ threadId: "t-idle", sessionKey, text: "two" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    const methods: string[] = JSON.parse(readFileSync(dump, "utf8"));
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+    expect(methods.filter((m) => m === "session/prompt")).toHaveLength(1);
+  });
+
+  it("spawns again when the MCP fingerprint misses", async () => {
+    const dump = join(scratch, "rpc-fp-miss.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    await create();
+    const sessionKey = "bot:t-fp";
+    const first = await instance.adapter.sendTurn({
+      threadId: "t-fp",
+      sessionKey,
+      text: "one",
+      integrations: {
+        localComputer: { command: "cua", args: ["mcp"], env: {}, platform: "linux" },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    const second = await instance.adapter.sendTurn({ threadId: "t-fp", sessionKey, text: "two" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    const methods: string[] = JSON.parse(readFileSync(dump, "utf8"));
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+    expect(methods.filter((m) => m === "session/prompt")).toHaveLength(1);
+  });
+
+  it("keys on threadId when sessionKey is omitted", async () => {
+    const dump = join(scratch, "rpc-thread-key.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    await create();
+    const first = await instance.adapter.sendTurn({ threadId: "t-thread-key", text: "one" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    const second = await instance.adapter.sendTurn({ threadId: "t-thread-key", text: "two" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    const methods: string[] = JSON.parse(readFileSync(dump, "utf8"));
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+    expect(methods.filter((m) => m === "session/prompt")).toHaveLength(2);
   });
 });
 

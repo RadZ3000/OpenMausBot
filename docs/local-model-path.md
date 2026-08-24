@@ -1,5 +1,8 @@
 # The local-model path: a standing register
 
+Current git / goals / stop-lines: [`agent-status.md`](agent-status.md). This
+file is the tensions register, not the snapshot.
+
 Everything known to bite the open-weights first-run path, with the position we
 have taken on each. **This file exists so the same surprise is not discovered
 three times.** Plan
@@ -120,7 +123,16 @@ removed and re-inited. Never Docker Desktop. Call those routes from
 `LocalModelArm.tsx` (ours); do not fork upstream Settings cards.
 
 A 3B model may drive the desktop poorly — that is copy, not a reason to skip
-the sandbox. 16 GB + Granite + VM is still unmeasured. Docker Desktop
+the sandbox. **16 GB + Granite + Local VM was measured 2026-08-23** on this
+15.7 GB / RTX 2060 6 GB box: 3B + VM runs; `ibm/granite4.1:8b` at 8k
+loads but leaves **0.6 GB RAM and ~400 MiB VRAM** free. Do not ship 8B as
+a 16 GB first-run default. **`qwen3-vl:4b` at 8k + VM (2026-08-23):**
+model ~3.57 GB in VRAM; GPU 5554 / 6144 MiB used (402 MiB free); system
+RAM **2.09 GB** free of 15.72. Tighter VRAM than hoped; more RAM headroom
+than Granite 8B. Turn finished. Do not treat 6 GB VRAM as comfortable.
+This tee used the **owned** zip (`local-runtime\ollama.exe` on
+`127.0.0.1:11434`), not a user tray daemon — memory policy applied.
+Docker Desktop
 coexistence is a support trap, not the customer path. On this mixed-dev box
 `machine start` failed under **WSL 2.2.4 / kernel 5.15** because Podman's
 nested systemd died (quitting Docker did not fix it). The same stock 6 GiB
@@ -253,10 +265,13 @@ available to us: the requests are made by the agent CLI, not by us.
 ### The download is ~3.9 GB and cannot be eliminated — **Decided**
 
 Weights are resident or the model does not run; there is no partial or streamed
-inference. The levers, in order of value, are listed in plan 005 — reuse a
-runtime already present (100%, already works, just not surfaced), a network host
-(100%, parked), match the runtime variant to detected hardware, and a smaller
-model tier.
+inference. First-run is still Granite 3B (~2.5 GB). The Path A **candidate**
+`qwen3-vl:4b-instruct` is ~3.3 GB Q4_K_M (distinct from Thinking
+`qwen3-vl:4b`). Do not pull official 8B (~6.1 GB) as first-run. Do not ship
+Thinking at 8k. The levers, in order of value, are listed
+in plan 005 — reuse a runtime already present (100%, already works, just not
+surfaced), a network host (100%, parked), match the runtime variant to
+detected hardware, and a smaller model tier.
 
 ### Slowness compounds in a way a chatbot's does not — **Decided**
 
@@ -322,11 +337,50 @@ keeps eight `vm_*` tools. Unsupervised multi-step is Claude / Codex /
 grokAgent. See
 [`docs/plans/2026-08-22-008-computer-safety-eval-plan.md`](plans/2026-08-22-008-computer-safety-eval-plan.md).
 
+**Same-turn recover-and-click is a model-class miss, not a missing `vm_*`
+name — Decided (measured 2026-08-23).** After `vm_open` reports a
+Chromium error / leftover chrome, Granite 3B writes MFA/login prose
+instead of clicking a numbered control. Gold turns on this box (native
+tee, same Local VM, same eight tools, 8k):
+
+- **3B** — example.com: same-turn `vm_click` `[81] Learn more` (pass).
+  Beehiiv/404 look: `vm_click` `[55] Work` plus login prose (fail).
+- **8B** — example.com: same-turn `vm_click` `{index:1}` which is not a
+  look index (fail). Beehiiv: open failed `ERR_HTTP_RESPONSE_CODE_FAILURE`,
+  then Hermes `search: browser`, honest stop, no MFA essay (not a
+  recover-and-click).
+- **VL (`qwen2.5vl`)** — plumbing dead (Hermes `MEDIA:<path>`); not first-run.
+- **Qwen3-VL 4B** — 2026-08-23. Unsuffixed `qwen3-vl:4b` (Thinking) **fills
+  8k** (`truncated = 1`) and emits no ACP tools on the combined prompt.
+  **`qwen3-vl:4b-instruct`** teed through Hermes: chat, `write_file` /
+  `read` / `terminal` / `vm_open` fired. Workspace file contains `8241`.
+  Ollama tools+PNG **200** on Thinking. JPEG fuse still **off**. Not a
+  gold-turn click winner. First-run stays Granite until a ship ask.
+  [`plans/2026-08-23-006-qwen3vl-replace-granite-plan.md`](plans/2026-08-23-006-qwen3vl-replace-granite-plan.md).
+
+Neither Granite arm met the pass bar (error-page click **and** example.com).
+First-run stays `ibm/granite4.1:3b`. Path A stays “open and read.”
+Details: [`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md).
+
 Frontier engines on the same Local VM or a VPS get a **fused screenshot**
 after mutating Cua tools (`observe-computer-mcp`, Cua names kept). Path A
-does not: Granite still gets text AX only. Live Claude-on-VM A/B is still
-unknown. See
-[`docs/plans/2026-08-22-005-computer-frontier-observe-plan.md`](plans/2026-08-22-005-computer-frontier-observe-plan.md).
+does not send JPEGs to Granite: text AX only. An env flag
+(`OMB_COMPACT_OBSERVE_IMAGE=1` in `server/compact-computer-observe.ts`) can
+capture after mutating `vm_*` for **VL tags** (`qwen3-vl`, qwen2.5vl,
+granite-vision, llava). **Off** for Granite 3B/8B. Instruct on 8k cannot
+hold a JPEG on the Hermes tool role (Ollama **8500 > 8192**); the wrap
+captions via skip-Hermes `/v1` instead. Hermes 0.20.5 MCP `MEDIA:<path>`
+is patched to `_multimodal` if a JPEG ever fits. Paste uses ACP image
+blocks. Do **not** make `qwen2.5vl` the chat model: Ollama reports that
+tag as vision **without** tools. **Qwen3-VL 4B Instruct** is tools
+**and** vision on Ollama. Path A candidate through Hermes; first-run
+still Granite. Details:
+[plan 007](plans/2026-08-23-007-hermes-eyes-plan.md). Do not
+start a first-party Ollama driver unless asked; Path A is Hermes.
+See
+[`docs/plans/2026-08-22-005-computer-frontier-observe-plan.md`](plans/2026-08-22-005-computer-frontier-observe-plan.md)
+and the bake-off
+[`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md).
 
 The shared Local VM is one desktop: leftover Chromium is expected **while
 the VM is running** (harness quit does not kill it). Cookies and files in
@@ -605,6 +659,18 @@ Alibaba's Qwen Code). **Do this before any bundling work starts**, not after.
 
 ---
 
+## Traps (keep here, not in a handoff)
+
+Folded out of the deleted 2026-08-21 morning handoff so they are not rediscovered:
+
+- **PATH is frozen for a running Windows process.** A CLI installed while the app is up is invisible until a full restart, tray included ([B-12](known-bugs.md)).
+- **An ACP client must answer every server-initiated request**, not only `session/request_permission`. Ignoring one blocks the agent forever ([B-24](known-bugs.md)).
+- **PowerShell will corrupt files.** `>` is UTF-16; `Set-Content -Encoding utf8` adds a BOM Qwen Code rejects; `WriteAllLines` re-encodes and mangles non-ASCII. Edit third-party config through Node.
+- **Do not pipe a long-running command through `Select-Object -Last n`.** It buffers until exit.
+- **Ollama's worker is `llama-server`, not `ollama`.** A process filter on `*ollama*` reports idle while the machine is busy.
+
+---
+
 ## Open questions
 
 1. **Can the `claude` CLI drive a local model?** `applyClaudeInject`
@@ -623,3 +689,6 @@ Alibaba's Qwen Code). **Do this before any bundling work starts**, not after.
    Path A auto-starts the Local computer after Hermes; chat still works if
    it fails, as a labelled skip. See the Local VM entry. B-25 and B-27 still
    have to be built before that offer is honest on a virgin Windows box.
+7. **A first-party local driver** (our tool loop against Ollama, no Hermes/Qwen
+   CLI) was noted as viable in the 2026-08-21 session. Not sized. Do not start
+   it unless the user asks; Path A is Hermes.

@@ -17,6 +17,7 @@ import {
   compactToolsListLine,
   wrapComputerMcpForLocalModel,
 } from "./compact-computer-tools.ts";
+import { compactObserveImageForModel } from "./compact-computer-observe.ts";
 import {
   cuaClickFromIndex,
   lookFromWindowState,
@@ -217,6 +218,11 @@ describe("coworker loop family", () => {
     );
     expect(listed).toContain('"name":"vm_open"');
     expect(listed).not.toContain("image/jpeg");
+    expect(compactObserveImageForModel("ollama::ibm/granite4.1:3b")).toBe(false);
+    expect(compactObserveImageForModel("ollama::ibm/granite4.1:8b")).toBe(false);
+    expect(compactObserveImageForModel("ollama::qwen3-vl:4b")).toBe(true);
+    expect(compactObserveImageForModel("ollama::qwen3-vl:4b-instruct")).toBe(true);
+    expect(compactObserveImageForModel("ollama::qwen2.5vl:7b")).toBe(true);
     const mapped = z
       .object({ params: z.object({ name: z.string() }) })
       .safeParse(

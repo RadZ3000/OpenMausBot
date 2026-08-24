@@ -32,6 +32,7 @@ interface Status {
   desktopReady: boolean;
   ready: boolean;
   problem: string | null;
+  desktop_warning: string | null;
   image_ref: string;
   base_image_ref: string;
   driver_version: string;
@@ -264,6 +265,11 @@ export function LocalComputerSection() {
           )}
         </div>
         {error && <div className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
+        {status?.desktop_warning && (
+          <div className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
+            {status.desktop_warning}
+          </div>
+        )}
       </Card>
 
       <Card
@@ -390,8 +396,8 @@ export function LocalComputerSection() {
       <Card
         title="Safety and storage"
         subtitle={perBot
-          ? `Cua Driver operates only each VM's desktop. Every bot gets a private host folder mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and Chromium sign-ins in ${status?.workspace_guest_path ?? "/home/cua/workspace"}/.browser-profiles survive VM replacement. Viewers bind only to loopback, and exact bot-derived targets prevent one bot from attaching to another bot's container. Each VM keeps the existing 4 GB, 2 CPU, 512-process and dropped-capability limits. VMs can still reach the internet.`
-          : `Cua Driver operates only the VM's desktop. Exactly one private host folder is mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and Chromium sign-ins in ${status?.workspace_guest_path ?? "/home/cua/workspace"}/.browser-profiles survive stop, start, and VM replacement. Leftover windows are expected on this shared desktop and are not a security boundary — pick Per bot if bots must not see each other's cookies. The password-protected viewer is available only on this machine. Docker and Podman runs are limited to 4 GB memory, 2 CPUs and 512 processes; all Linux capabilities are dropped except the two the desktop supervisor needs to switch to its unprivileged user. The VM can still reach the internet, and bots share it one at a time.`}
+          ? `Cua Driver operates only each VM's desktop. Every bot gets a private host folder mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and Chromium sign-ins in ${status?.workspace_guest_path ?? "/home/cua/workspace"}/.browser-profiles survive VM replacement. Viewers bind only to loopback, and exact bot-derived targets prevent one bot from attaching to another bot's container. Each VM keeps the existing 4 GB, 2 CPU, 2048-process and dropped-capability limits. VMs can still reach the internet.`
+          : `Cua Driver operates only the VM's desktop. Exactly one private host folder is mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and Chromium sign-ins in ${status?.workspace_guest_path ?? "/home/cua/workspace"}/.browser-profiles survive stop, start, and VM replacement. Leftover windows are expected on this shared desktop and are not a security boundary — pick Per bot if bots must not see each other's cookies. The password-protected viewer is available only on this machine. Docker and Podman runs are limited to 4 GB memory, 2 CPUs and 2048 processes; all Linux capabilities are dropped except the two the desktop supervisor needs to switch to its unprivileged user. The VM can still reach the internet, and bots share it one at a time.`}
       >
         {existing && (
           <div className="flex flex-wrap gap-2">

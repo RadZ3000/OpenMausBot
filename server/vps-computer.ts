@@ -9,6 +9,7 @@ import {
   CUA_DRIVER_VERSION,
   CUA_SOCKET,
   IMAGE as CUA_IMAGE,
+  PIDS_LIMIT,
   cuaExecArgs,
   dockerSecurityIsHardened,
   imageLabelsMatch,
@@ -23,6 +24,7 @@ import {
   MANAGED_LABEL,
 } from "./container-computer.ts";
 import { isValidSshAlias, vpsSshAlias, type AppConfig } from "./config.ts";
+import { resolveCuaDesktopStatus } from "./cua-desktop-status.ts";
 import { augmentedPath } from "./env-path.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 
@@ -38,7 +40,6 @@ const COMMAND_TIMEOUT_KILL_GRACE_MS = 5_000;
 const CONTAINER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/;
 const CONTAINER_ID = /^[a-f0-9]{12,64}$/i;
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/i;
-const PIDS_LIMIT = 512;
 const SCREENSHOT_PATH = "/tmp/openmausbot-vps-preview.png";
 const lifecycleLocks = new Map<string, Promise<void>>();
 // A held lock means a lifecycle mutation (worst case: a 10-minute image
@@ -76,6 +77,7 @@ export interface VpsComputerStatus {
   security: "hardened" | "unsafe" | "unknown";
   desktopReady: boolean;
   desktop_error: string | null;
+  desktop_warning: string | null;
   ready: boolean;
   problem: string | null;
   image_ref: string;
@@ -210,6 +212,7 @@ function emptyStatus(botId: string, alias: string | null): VpsComputerStatus {
     security: "unknown",
     desktopReady: false,
     desktop_error: null,
+    desktop_warning: null,
     ready: false,
     problem: alias ? "Docker over SSH is not reachable" : "Configure a VPS SSH alias in App Settings → Connections",
     image_ref: VPS_IMAGE,
@@ -371,10 +374,15 @@ async function computeVpsComputerStatus(
       status.mounts === "none" &&
       status.security === "hardened";
     if (canProbe && containerRef) {
+      let driverReached = false;
+      let healthOk = false;
+      let screenshotOk = false;
+      let probeError: string | null = null;
       try {
         const version = await run(cuaExecArgs(["--version"], { container: containerRef }));
         if (version.stdout.trim() !== `cua-driver ${CUA_DRIVER_VERSION}`) throw new Error("unexpected Cua Driver version");
         await run(cuaExecArgs(["status", "--socket", CUA_SOCKET], { container: containerRef }));
+        driverReached = true;
         const health = await run(
           cuaExecArgs(["call", "health_report", "{}", "--socket", CUA_SOCKET], { container: containerRef }),
           15_000,
@@ -391,6 +399,7 @@ async function computeVpsComputerStatus(
         ) {
           throw new Error(`Cua health report is ${report.overall ?? "invalid"}`);
         }
+        healthOk = true;
         // The desktop must ANSWER, not render: get_desktop_state succeeding
         // is the readiness proof. The Local VM also pulls a pixel-validated
         // readiness screenshot because a local exec is free; over SSH that is
@@ -400,24 +409,32 @@ async function computeVpsComputerStatus(
           cuaExecArgs(["call", "get_desktop_state", "{}", "--socket", CUA_SOCKET], { container: containerRef }),
           20_000,
         );
-        status.desktopReady = true;
+        screenshotOk = true;
       } catch (error) {
-        status.desktopReady = false;
-        status.desktop_error = error instanceof Error ? error.message.slice(0, 320) : null;
-        // Mirror the Local VM's probe: when the desktop fails, the
-        // supervisor's error log says WHY — a bounded tail turns an endless
-        // "not ready yet" into something the user can act on.
+        probeError = error instanceof Error ? error.message : String(error);
+      }
+      let errorLog = "";
+      if (!screenshotOk) {
         try {
-          const errorLog = await run(
+          const tailed = await run(
             ["exec", containerRef, "tail", "-n", "4", "/var/log/supervisor/cua-driver.error.log"],
             10_000,
           );
-          status.desktop_error =
-            errorLog.stdout.replace(/\s+/g, " ").trim().slice(0, 320) || status.desktop_error;
+          errorLog = tailed.stdout;
         } catch {
           // The log may not exist during the first seconds of container boot.
         }
       }
+      const resolved = resolveCuaDesktopStatus({
+        driverReached,
+        healthOk,
+        screenshotOk,
+        probeError,
+        errorLog,
+      });
+      status.desktopReady = resolved.desktopReady;
+      status.desktop_error = resolved.desktop_error;
+      status.desktop_warning = resolved.desktop_warning;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

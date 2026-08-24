@@ -115,6 +115,8 @@ export type CuaCallArgs = {
   tab_id?: string;
   capture_mode?: string;
   include_screenshot?: boolean;
+  /** Cua 0.20.0 writes the PNG here; `include_screenshot` is not a field. */
+  screenshot_out_file?: string;
   element_index?: number;
   element_token?: string;
   snapshot_id?: string;

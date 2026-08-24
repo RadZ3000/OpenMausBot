@@ -21,6 +21,7 @@ import {
   ensureHermesBridgeUnwrap,
   ensureHermesComputerDisablesWeb,
   ensureHermesComputerShortNames,
+  ensureHermesMcpImageEnvelope,
   ensureHermesComputerToolsEager,
   ensureHermesInjectProvider,
   ensureHermesLocalCatalog,
@@ -34,6 +35,7 @@ import {
   patchHermesBridgeUnwrapSource,
   patchHermesComputerDisablesWebSource,
   patchHermesComputerShortNamesSource,
+  patchHermesMcpImageEnvelopeSource,
   patchHermesComputerToolsEagerSource,
   patchHermesLocalCatalogSource,
   resolveHermesGitBashPath,
@@ -997,6 +999,26 @@ describe("selectHermesInjectProvider", () => {
     expect(text).not.toContain("provider: auto");
     expect(text).toContain("default: anthropic/claude-opus-4.6");
     expect(text).toContain("https://openrouter.ai/api/v1");
+    expect(text).toContain("supports_vision: false");
+    expect(text).not.toContain("supports_vision: true");
+  });
+
+  it("sets supports_vision for VL inject and clears it on Granite", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-vision-"));
+    scratchDirs.push(home);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(join(home, ".hermes", "config.yaml"), "model:\n  default: anthropic/claude-opus-4.6\n  provider: auto\n");
+    selectHermesInjectProvider("ollama::qwen3-vl:4b-instruct", { HOME: home });
+    const vl = readFileSync(join(home, ".hermes", "config.yaml"), "utf8");
+    expect(vl).toContain("provider: ollama");
+    expect(vl).toContain("supports_vision: true");
+    expect(vl).toContain("default: anthropic/claude-opus-4.6");
+    expect(vl).not.toContain("supports_vision: false");
+    selectHermesInjectProvider("ollama::ibm/granite4.1:3b", { HOME: home });
+    const granite = readFileSync(join(home, ".hermes", "config.yaml"), "utf8");
+    expect(granite).toContain("supports_vision: false");
+    expect(granite).not.toContain("supports_vision: true");
+    expect(granite).toContain("default: anthropic/claude-opus-4.6");
   });
 
   it("replaces a quoted auto value the installer writes", () => {
@@ -1511,6 +1533,66 @@ describe("ensureHermesComputerShortNames", () => {
     expect(ensureHermesComputerShortNames({ HERMES_HOME: home })).toBe(true);
     expect(readFileSync(path, "utf8")).toContain("openmausbot-b24a-short");
     expect(ensureHermesComputerShortNames({ HERMES_HOME: home })).toBe(false);
+  });
+});
+
+// Copied from Hermes 0.20.5 tools/mcp_tool.py _make_tool_handler (~5870–5961).
+const STOCK_MCP_IMAGE_LOOP = [
+  "            parts: List[str] = []",
+  "            for block in (result.content or []):",
+  '                if hasattr(block, "text") and block.text:',
+  "                    parts.append(strip_unicode_tags(block.text))",
+  "                    continue",
+  "                image_tag = _cache_mcp_image_block(block)",
+  "                if image_tag:",
+  "                    parts.append(image_tag)",
+  "                    continue",
+  "                audio_tag = _cache_mcp_audio_block(block)",
+  "                if audio_tag:",
+  "                    parts.append(audio_tag)",
+  "                    continue",
+  "                resource_text = _render_mcp_resource_block(block, server_name)",
+  "                if resource_text:",
+  "                    parts.append(resource_text)",
+  "                    continue",
+  "            text_result = \"\\n\".join(parts) if parts else \"\"",
+  "            text_result = _truncate_mcp_text_result(text_result)",
+  '            return json.dumps({"result": text_result}, ensure_ascii=False)',
+  "",
+].join("\n");
+
+describe("patchHermesMcpImageEnvelopeSource", () => {
+  it("returns a _multimodal envelope instead of MEDIA:path in the JSON string", () => {
+    const once = patchHermesMcpImageEnvelopeSource(STOCK_MCP_IMAGE_LOOP);
+    expect(once).toContain("openmausbot-eyes-mcp");
+    expect(once).toContain('"_multimodal": True');
+    expect(once).toContain("_omb_image_urls.append");
+    expect(once).not.toContain(
+      "                image_tag = _cache_mcp_image_block(block)\n                if image_tag:\n                    parts.append(image_tag)\n                    continue",
+    );
+    expect(patchHermesMcpImageEnvelopeSource(once)).toBe(once);
+  });
+
+  it("patches CRLF source and leaves unrelated files alone", () => {
+    const crlf = STOCK_MCP_IMAGE_LOOP.replaceAll("\n", "\r\n");
+    const patched = patchHermesMcpImageEnvelopeSource(crlf);
+    expect(patched).toContain("\r\n");
+    expect(patched).toContain("openmausbot-eyes-mcp");
+    expect(patchHermesMcpImageEnvelopeSource("def other():\n    pass\n")).toBe("def other():\n    pass\n");
+  });
+});
+
+describe("ensureHermesMcpImageEnvelope", () => {
+  it("patches mcp_tool.py once", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-hermes-eyes-"));
+    scratchDirs.push(home);
+    const dir = join(home, "hermes-agent", "tools");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "mcp_tool.py");
+    writeFileSync(path, STOCK_MCP_IMAGE_LOOP);
+    expect(ensureHermesMcpImageEnvelope({ HERMES_HOME: home })).toBe(true);
+    expect(readFileSync(path, "utf8")).toContain("openmausbot-eyes-mcp");
+    expect(ensureHermesMcpImageEnvelope({ HERMES_HOME: home })).toBe(false);
   });
 });
 

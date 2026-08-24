@@ -389,6 +389,7 @@ describe("containerComputerStatus", () => {
       { SecurityOpt: ["seccomp=unconfined"] },
       { DeviceRequests: [{ Driver: "nvidia" }] },
       { RestartPolicy: { Name: "always", MaximumRetryCount: 0 } },
+      { PidsLimit: 0 },
     ]) {
       const fake = runner({
         "/usr/bin/which docker": "docker\n",
@@ -460,6 +461,7 @@ describe("containerComputerStatus", () => {
       persistence: "durable",
       desktopReady: true,
       desktop_error: null,
+      desktop_warning: null,
       ready: true,
       problem: null,
       driver_version: "0.20.0",
@@ -485,6 +487,82 @@ describe("containerComputerStatus", () => {
     expect(status.desktopReady).toBe(false);
     expect(status.desktop_error).toContain("did not become ready");
     expect(status.problem).toContain("desktop failed to start");
+  });
+
+  it("does not call a live desktop a boot failure when Chromium dumps GLib assertions", async () => {
+    const errorProbe =
+      `docker exec ${CONTAINER} tail -n 4 /var/log/supervisor/cua-driver.error.log`;
+    const glib =
+      "[510:510:0824/134804.482916:ERROR:content/browser/browser_main_loop.cc:277] GLib-GObject: g_value_type_compatible: assertion 'src_type' failed\n";
+    const fake = runner({
+      "/usr/bin/which docker": "docker\n",
+      "/usr/bin/which podman": new Error("missing"),
+      "docker info --format {{.ServerVersion}}": "29\n",
+      [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`docker inspect ${CONTAINER}`]: readyInspect(),
+      [versionProbe]: `cua-driver ${CUA_DRIVER_VERSION}\n`,
+      [statusProbe]: "running\n",
+      [healthProbe]: JSON.stringify({ schema_version: "1", overall: "ok", checks: [] }),
+      [readinessProbe]: new Error("get_desktop_state failed"),
+      [errorProbe]: glib,
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux");
+
+    expect(status.desktopReady).toBe(true);
+    expect(status.ready).toBe(true);
+    expect(status.problem).toBeNull();
+    expect(status.desktop_error).toBeNull();
+    expect(status.desktop_warning).toContain("page may crash");
+    expect(status.desktop_warning).not.toMatch(/g_value_type_compatible/);
+  });
+
+  it("does not paste pthread EAGAIN over a healthy driver as a boot failure", async () => {
+    const errorProbe =
+      `docker exec ${CONTAINER} tail -n 4 /var/log/supervisor/cua-driver.error.log`;
+    const fake = runner({
+      "/usr/bin/which docker": "docker\n",
+      "/usr/bin/which podman": new Error("missing"),
+      "docker info --format {{.ServerVersion}}": "29\n",
+      [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`docker inspect ${CONTAINER}`]: readyInspect(),
+      [versionProbe]: `cua-driver ${CUA_DRIVER_VERSION}\n`,
+      [statusProbe]: "running\n",
+      [healthProbe]: JSON.stringify({ schema_version: "1", overall: "ok", checks: [] }),
+      [readinessProbe]: new Error("Resource temporarily unavailable"),
+      [errorProbe]:
+        "ERROR:base/threading/platform_thread_posix.cc: pthread_create: Resource temporarily unavailable (11)\n",
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux");
+
+    expect(status.ready).toBe(true);
+    expect(status.problem).toBeNull();
+    expect(status.desktop_warning).toContain("process cap");
+  });
+
+  it("keeps a health-report failure even when the error log is Chromium noise", async () => {
+    const errorProbe = `docker exec ${CONTAINER} tail -n 4 /var/log/supervisor/cua-driver.error.log`;
+    const fake = runner({
+      "/usr/bin/which docker": "docker\n",
+      "/usr/bin/which podman": new Error("missing"),
+      "docker info --format {{.ServerVersion}}": "29\n",
+      [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`docker inspect ${CONTAINER}`]: readyInspect(),
+      [versionProbe]: `cua-driver ${CUA_DRIVER_VERSION}\n`,
+      [statusProbe]: "running\n",
+      [healthProbe]: JSON.stringify({ schema_version: "1", overall: "failed", checks: [] }),
+      [errorProbe]:
+        "[510:510:0824/134804.482916:ERROR:content/browser/browser_main_loop.cc:277] GLib-GObject: g_value_type_compatible: assertion 'src_type' failed\n",
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux");
+
+    expect(status.desktopReady).toBe(false);
+    expect(status.desktop_error).toContain("health report is failed");
+    expect(status.problem).toContain("desktop failed to start");
+    expect(status.problem).not.toMatch(/g_value_type_compatible/);
+    expect(fake.calls).not.toContain(readinessProbe);
   });
 
   it("does not report ready when the driver's health contract fails", async () => {
@@ -795,7 +873,7 @@ describe("setupCommands", () => {
   it("limits resources and retains only the sandbox supervisor's identity-switch caps", () => {
     const command = setupCommands("docker", "linux").run!;
     expect(command).toContain("--memory 4g --memory-swap 4g");
-    expect(command).toContain("--cpus 2 --pids-limit 512");
+    expect(command).toContain("--cpus 2 --pids-limit 2048");
     expect(command).toContain("--ipc private --cgroupns private");
     expect(command).toContain("--cap-drop ALL --cap-add SETUID --cap-add SETGID");
     expect(command).toContain(`--label ${MANAGED_LABEL}=1`);

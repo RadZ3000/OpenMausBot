@@ -75,6 +75,7 @@ interface LocalVmStatus {
   desktopReady: boolean;
   ready: boolean;
   problem: string | null;
+  desktop_warning: string | null;
   viewer_url: string;
 }
 
@@ -227,6 +228,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           if (viewerUrl.startsWith("http")) setVmViewerUrl(viewerUrl);
           if (status.ready) {
             vmReadinessAttempts.current = 0;
+            setError(status.desktop_warning ?? null);
             setPhase("vm");
           } else if (
             status.container === "running" &&
@@ -595,6 +597,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       const status: LocalVmStatus = await api(path, { method: "POST", body: "{}" });
       setVmStatus(status);
       setPhase(status.ready ? "vm" : "checking");
+      setError(status.ready ? (status.desktop_warning ?? null) : null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setPhase("vm-unavailable");
@@ -631,6 +634,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         });
         setVmStatus(status);
         setPhase(status.ready ? "vm" : "checking");
+        setError(status.ready ? (status.desktop_warning ?? null) : null);
       } else {
         setVmStatus((current) => current ? { ...current, container: "missing", ready: false } : current);
         setPhase("vm-unavailable");
@@ -819,7 +823,14 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         </div>
 
         {error && (
-          <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
+          <div
+            className={cn(
+              "mt-2 rounded-lg border px-3 py-2 text-[12px]",
+              phase === "vm" && vmStatus?.desktop_warning
+                ? "border-warning/30 bg-warning/10 text-warning"
+                : "border-danger/30 bg-danger/10 text-danger",
+            )}
+          >
             {error}
           </div>
         )}

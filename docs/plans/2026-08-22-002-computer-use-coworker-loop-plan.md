@@ -1,5 +1,9 @@
 # Computer use at coworker level
 
+Standing snapshot (what to do *now*): [`../agent-status.md`](../agent-status.md).
+P8 stop-line is binding:
+[`2026-08-22-008-computer-safety-eval-plan.md`](2026-08-22-008-computer-safety-eval-plan.md).
+
 Status: **in progress.** P1 (honest open), P3 (last-look), P4 (frontier
 fused observe), and durable shared computer (resume / workspace profiles)
 are in the tree. Live Claude-on-VM A/B is still **unknown**. Scope is
@@ -488,11 +492,15 @@ Rebuild Local VM; bump `IMAGE_LAYER_VERSION` in `container-computer.ts`.
 ### P6 — Hermes process lifetime (last resort)
 
 Keeping `hermes acp` alive across turns would be the real Cowork session.
-That lives in **upstream-owned** `server/drivers/acp/core.ts` (`settle` →
-`killCliTree`). Do not do this in the same change as P1–P3. If P3 is not
-enough for frontier Hermes on the VM, a later plan can hold the child keyed
-by `threadId` with a documented idle timeout. Granite still needs P1 either
-way.
+That lives in **upstream-owned** `server/drivers/acp/core.ts` (`settle` used
+to `killCliTree`). Implementation (2026-08-24, ACP-wide, not Hermes-only):
+[`2026-08-24-001-acp-session-keepalive.md`](2026-08-24-001-acp-session-keepalive.md).
+Pool is fork-owned `server/acp-session.ts` (idle 15m, cap 3, bot+thread).
+Do not mix this with Granite wrappers or a first-run model flip.
+
+Chromium inside the VM dumping GLib / `pthread_create` EAGAIN is not a
+desktop boot failure. Classifier:
+[`2026-08-24-002-local-vm-chromium-status.md`](2026-08-24-002-local-vm-chromium-status.md).
 
 ### P7 — Product copy and routing (half day, with P1 overlay)
 
@@ -527,7 +535,7 @@ computer wrappers. Keep P1–P3 and eight `vm_*` names. Details:
 | URL helpers | `server/computer-observation.ts` | yes — **import only** |
 | Box JPEG loop | `server/computer-proxy.ts` | yes — **do not touch** for this plan |
 | Image layer 8 | `server/container-computer.ts` | yes — only in P5 |
-| ACP keep-alive | `server/drivers/acp/core.ts` | yes — only in P6 |
+| ACP keep-alive | `server/drivers/acp/core.ts` (smallest edit) + **new** `server/acp-session.ts` | core.ts yes — pool is fork-owned. See [2026-08-24-001](2026-08-24-001-acp-session-keepalive.md) |
 | Copy | `docs/local-model-path.md`, `docs/known-bugs.md` B-24 note | fork docs |
 
 ---
@@ -550,7 +558,12 @@ Do not bump `OLLAMA_CONTEXT_LENGTH`. Do not publish to
 
 ---
 
-## 10. Order of work (what to do next)
+## 10. Order of work (historical)
+
+P1 / P3 / P4 / P8 are **in the tree**. Do not start this list from step 1.
+What to do next lives in [`../agent-status.md`](../agent-status.md).
+
+The original sequence (kept so the plan still explains itself):
 
 1. **P0 tests** for the lying success line (red).
 2. **P1** until the live tee shows Example Domain.

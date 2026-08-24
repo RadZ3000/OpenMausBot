@@ -201,6 +201,9 @@ export interface SendTurnInput {
     dweb?: { url: string };
   };
   cwd?: string;
+  /** Bot+thread slot for long-lived ACP children. Rooms share one
+   *  threadId across members; omitting this keys on threadId (tests). */
+  sessionKey?: string;
 }
 
 export interface TurnStartResult {
@@ -268,6 +271,11 @@ export interface ProviderAdapter {
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;
+  /** ACP keep-alive: an idle child for this bot+thread matches `fingerprint`.
+   *  Claude/Codex omit this — last-look stays the bandage on a miss. */
+  hasIdleSession?(sessionKey: string, fingerprint: string): boolean;
+  /** ACP keep-alive: kill the parked child (rewind). No-op on other drivers. */
+  dropIdleSession?(sessionKey: string): void;
 }
 
 // ── provider snapshot (upstream ServerProviderShape, reduced) ────────────

@@ -78,9 +78,19 @@ type-system escape hatches (`as unknown as`, `unknown` parameters and returns,
 `Reflect.get`, runtime `typeof`, module mocking). If the type checker is fighting
 you, that is a signal about the design, not an invitation to cast.
 
+## Current state and goals
+
+[`docs/agent-status.md`](docs/agent-status.md) is the standing snapshot (git,
+Path A, computer loop, what to do next, what not to do). **Overwrite it** when
+facts change; do not add another dated handoff. Plan catalog:
+[`docs/plans/README.md`](docs/plans/README.md).
+
 ## The skills, and when to read them
 
-| Skill | Read it when |
+Folders under `.claude/skills/` — open `SKILL.md` in that folder. Names below
+match the folder.
+
+| Skill (folder under `.claude/skills/`) | Read it when |
 |---|---|
 | `check-upstream-first` | Before any non-trivial feature or new file under `server/` or `src/`. |
 | `commercial-fork` | Adding a dependency, touching branding, telemetry, release config, or any outbound call. |
@@ -89,11 +99,11 @@ you, that is a signal about the design, not an invitation to cast.
 | `review-changes` | Reviewing a branch, a merge, or the work just done. |
 | `upstream-merges` | Merging upstream or resolving conflicts without widening divergence. |
 | `research` | A decision turns on how an agent CLI, protocol, or third-party API actually behaves. |
-| `windows-release` | Never as written — it is upstream's, and it publishes to upstream's feed. We have no release runbook yet; read `docs/plans/2026-08-20-004-release-channel-plan.md` instead. |
+| `windows-release` | Never as written — it is upstream's, and it publishes to upstream's feed. We have no release runbook yet; read [`docs/plans/2026-08-20-004-release-channel-plan.md`](docs/plans/2026-08-20-004-release-channel-plan.md) instead. |
 
-`CONTRIBUTING.md` is the fuller version of the constraints above and governs
-anything this file does not cover. Known defects, including ones in upstream code
-we ship, are listed in [`docs/known-bugs.md`](docs/known-bugs.md) — check it
-before assuming something you just hit is new. The 2026-08-21 Path A live walk
-(throwaway data dir, what Continue actually had, why the Local VM skipped) is
-[`docs/plans/2026-08-21-005-path-a-live-walk.md`](docs/plans/2026-08-21-005-path-a-live-walk.md).
+`CONTRIBUTING.md` is **upstream's** contributor guide (their clone URL, their
+release repo). House rules for this fork are this file. Do not follow its
+remotes or publish steps. Known defects, including ones in upstream code we
+ship, are listed in [`docs/known-bugs.md`](docs/known-bugs.md) — check it
+before assuming something you just hit is new. Path A tensions:
+[`docs/local-model-path.md`](docs/local-model-path.md).

@@ -23,6 +23,10 @@
 //                     drained turn was sent)
 //   FAKE_ACP_DUMP   path to write {argv, env} as JSON, so a test can assert
 //                   argv shape (agent/stdio flags) and env hygiene
+//   FAKE_ACP_RPC_DUMP  JSON array of RPC method names this process has seen.
+//                   A keep-alive two-turn test asserts one initialize / one
+//                   session/new / two session/prompt on the same child. The
+//                   process stays on stdin after session/prompt unless killed.
 //   FAKE_ACP_MODELS      comma-separated model ids. Enables the opencode-shaped
 //                        surface: session/new and session/load return
 //                        configOptions, and session/set_config_option switches
@@ -252,7 +256,14 @@ function handle(msg: any) {
         process.exit(3);
       }
       const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
-      result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
+      result(msg.id, {
+        protocolVersion: 1,
+        authMethods,
+        _meta: { modelState: { currentModelId: "fake-acp-model" } },
+        ...(process.env.FAKE_ACP_IMAGE_PROMPT === "1"
+          ? { agentCapabilities: { promptCapabilities: { image: true } } }
+          : {}),
+      });
       break;
     }
     case "authenticate":
@@ -293,8 +304,8 @@ function handle(msg: any) {
     }
     // per-session settings (droid sets model/autonomy here, not via argv).
     // Recorded next to FAKE_ACP_DUMP so a test can assert what was applied.
-    // NOTE: last writer wins — each turn spawns a fresh child, so a two-turn
-    // test would only ever see the final turn's calls.
+    // A kept-alive child appends across prompts; a killed-and-respawned
+    // child overwrites the dump file from an empty list.
     case "session/set_mode":
     case "session/set_model": {
       if (mode === "no-session-config") {
@@ -340,6 +351,10 @@ function handle(msg: any) {
       break;
     }
     case "session/prompt": {
+      if (process.env.FAKE_ACP_DUMP) {
+        dumpState.prompt = msg.params?.prompt;
+        writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
+      }
       if (mode === "hang") {
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);

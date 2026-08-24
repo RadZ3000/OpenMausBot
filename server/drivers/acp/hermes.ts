@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ModelCatalog } from "../../contracts.ts";
+import { compactObserveImageForModel } from "../../compact-computer-observe.ts";
 import { decodeInjectId, hostApiKey, INJECT_SEP, localHost, mergeLocalInject } from "../local-inject.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
@@ -92,16 +93,19 @@ function yamlLines(text: string): string[] {
  *
  * YAML last-key-wins. A CRLF stock config used to miss `model:` (exact
  * `"model:"` vs `"model:\r"`), so we prepended a stub and left the real
- * `provider: "auto"` in place — session/new still saw auto. */
-function upsertHermesModelProvider(text: string, hostId: string): string {
+ * `provider: "auto"` in place — session/new still saw auto.
+ * `supports_vision` is Nous's escape hatch for custom VL endpoints that
+ * are missing from models.dev; Granite must not inherit a sticky true. */
+function upsertHermesModelProvider(text: string, hostId: string, seesImages: boolean): string {
   const quoted = quoteYaml(hostId);
+  const vision = seesImages ? "true" : "false";
   const lines = yamlLines(text);
   const starts: number[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i] === "model:") starts.push(i);
   }
   if (starts.length === 0) {
-    const prefix = `model:\n  provider: ${quoted}\n`;
+    const prefix = `model:\n  provider: ${quoted}\n  supports_vision: ${vision}\n`;
     const body = lines.join("\n");
     return body ? `${prefix}${body.endsWith("\n") ? body : `${body}\n`}` : prefix;
   }
@@ -113,15 +117,24 @@ function upsertHermesModelProvider(text: string, hostId: string): string {
       if (line !== "" && /^\S/.test(line)) break;
       modelEnd++;
     }
-    let providerAt = -1;
-    for (let i = modelStart + 1; i < modelEnd; i++) {
-      if (/^  provider:\s*/.test(lines[i]!)) {
-        providerAt = i;
-        break;
+    const keys = [
+      { prefix: "  provider:", line: `  provider: ${quoted}` },
+      { prefix: "  supports_vision:", line: `  supports_vision: ${vision}` },
+    ];
+    for (const key of keys) {
+      let at = -1;
+      for (let i = modelStart + 1; i < modelEnd; i++) {
+        if (lines[i]!.startsWith(key.prefix)) {
+          at = i;
+          break;
+        }
+      }
+      if (at >= 0) lines[at] = key.line;
+      else {
+        lines.splice(modelStart + 1, 0, key.line);
+        modelEnd++;
       }
     }
-    if (providerAt >= 0) lines[providerAt] = `  provider: ${quoted}`;
-    else lines.splice(modelStart + 1, 0, `  provider: ${quoted}`);
   }
   return lines.join("\n");
 }
@@ -161,7 +174,7 @@ export function selectHermesInjectProvider(
   if (!localHost(inject.host)) return modelId;
 
   const { path, text } = readHermesConfig(env);
-  const next = upsertHermesModelProvider(text, inject.host);
+  const next = upsertHermesModelProvider(text, inject.host, compactObserveImageForModel(modelId));
   if (next !== text) writeFileSync(path, next);
   return hermesAcpModelId(modelId) ?? modelId;
 }
@@ -191,6 +204,7 @@ const BASH_PROBE_STDIN_MARK = "openmausbot-b24";
 const COMPUTER_DISABLES_WEB_MARK = "openmausbot-b24a";
 const COMPUTER_TOOLS_EAGER_MARK = "openmausbot-b24a-eager";
 const COMPUTER_SHORT_NAMES_MARK = "openmausbot-b24a-short";
+const MCP_IMAGE_ENVELOPE_MARK = "openmausbot-eyes-mcp";
 const LOCAL_CATALOG_MARK = "openmausbot-b24a-catalog";
 const ACP_MCP_WAIT_MARK = "openmausbot-b24a-mcpwait";
 const ACP_MCP_REBIND_MARK = "openmausbot-b24a-rebind";
@@ -703,6 +717,77 @@ export function ensureHermesComputerShortNames(
   return true;
 }
 
+const MCP_IMAGE_PARTS_NEEDLE = "            parts: List[str] = []\n            for block in (result.content or []):";
+const MCP_IMAGE_PARTS_NEEDLE_CRLF = MCP_IMAGE_PARTS_NEEDLE.replaceAll("\n", "\r\n");
+const MCP_IMAGE_TAG_NEEDLE =
+  "                image_tag = _cache_mcp_image_block(block)\n                if image_tag:\n                    parts.append(image_tag)\n                    continue";
+const MCP_IMAGE_TAG_NEEDLE_CRLF = MCP_IMAGE_TAG_NEEDLE.replaceAll("\n", "\r\n");
+const MCP_IMAGE_TRUNCATE_NEEDLE = "            text_result = _truncate_mcp_text_result(text_result)\n";
+const MCP_IMAGE_TRUNCATE_NEEDLE_CRLF = MCP_IMAGE_TRUNCATE_NEEDLE.replaceAll("\n", "\r\n");
+
+/** Hermes 0.20.5 flattens MCP ImageContent to MEDIA:path. Return the same
+ * `_multimodal` envelope vision_analyze already uses so Ollama gets pixels. */
+export function patchHermesMcpImageEnvelopeSource(text: string): string {
+  if (text.includes(MCP_IMAGE_ENVELOPE_MARK)) return text;
+  const crlf = text.includes(MCP_IMAGE_TAG_NEEDLE_CRLF);
+  const nl = crlf ? "\r\n" : "\n";
+  const partsNeedle = crlf ? MCP_IMAGE_PARTS_NEEDLE_CRLF : MCP_IMAGE_PARTS_NEEDLE;
+  const tagNeedle = crlf ? MCP_IMAGE_TAG_NEEDLE_CRLF : MCP_IMAGE_TAG_NEEDLE;
+  const truncateNeedle = crlf ? MCP_IMAGE_TRUNCATE_NEEDLE_CRLF : MCP_IMAGE_TRUNCATE_NEEDLE;
+  if (!text.includes(partsNeedle) || !text.includes(tagNeedle) || !text.includes(truncateNeedle)) return text;
+  const py = (lines: string[]) => lines.join(nl);
+  const urlsDecl = py([
+    "            parts: List[str] = []",
+    `            _omb_image_urls: List[str] = []  # ${MCP_IMAGE_ENVELOPE_MARK}`,
+    "            for block in (result.content or []):",
+  ]);
+  const tagBlock = py([
+    "                image_tag = _cache_mcp_image_block(block)",
+    "                if image_tag:",
+    '                    _omb_data = getattr(block, "data", None)',
+    '                    _omb_mime = str(mcp_field(block, "mime_type", "mimeType") or "image/png").split(";", 1)[0].strip() or "image/png"',
+    "                    if _omb_data:",
+    '                        _omb_url = _omb_data if str(_omb_data).startswith("data:") else ("data:%s;base64,%s" % (_omb_mime, _omb_data))',
+    "                        _omb_image_urls.append(_omb_url)",
+    "                    else:",
+    "                        parts.append(image_tag)",
+    "                    continue",
+  ]);
+  const envelope =
+    py([
+      "            text_result = _truncate_mcp_text_result(text_result)",
+      `            if _omb_image_urls:  # ${MCP_IMAGE_ENVELOPE_MARK}`,
+      '                _omb_note = text_result.strip() or "Screenshot attached."',
+      '                _omb_content = [{"type": "text", "text": _omb_note}]',
+      "                for _omb_url in _omb_image_urls:",
+      '                    _omb_content.append({"type": "image_url", "image_url": {"url": _omb_url}})',
+      '                return {"_multimodal": True, "content": _omb_content, "text_summary": _omb_note}',
+    ]) + nl;
+  return text.replace(partsNeedle, urlsDecl).replace(tagNeedle, tagBlock).replace(truncateNeedle, envelope);
+}
+
+/** Keep MCP screenshots as pixels instead of MEDIA:path. */
+export function ensureHermesMcpImageEnvelope(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const path = hermesMcpToolPyPath(env);
+  if (!path) return false;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  const next = patchHermesMcpImageEnvelopeSource(text);
+  if (next === text) return false;
+  try {
+    writeFileSync(path, next);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 const LOCAL_CATALOG_NEEDLE =
   '    """Return ACP toolsets plus explicit MCP server toolsets for this session."""\n    expanded: List[str] = []\n    for name in list(toolsets or ["hermes-acp"]):';
 const LOCAL_CATALOG_NEEDLE_CRLF = LOCAL_CATALOG_NEEDLE.replaceAll("\n", "\r\n");
@@ -1060,6 +1145,7 @@ const support: AcpSupport = {
     ensureHermesBridgeNoCall(env);
     ensureHermesBridgeUnwrap(env);
     ensureHermesComputerShortNames(env);
+    ensureHermesMcpImageEnvelope(env);
     ensureHermesLocalCatalog(env);
   },
   applyTurnEnv: (env, { model, requestedModel }) => {

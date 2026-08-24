@@ -1,14 +1,13 @@
 // Stdio wrapper in front of container-mcp / vps-container-mcp. Hermes sees
 // the compact Path A computer tool list; Cua Driver still runs the calls.
 // Spawned only for local-inject models (see wrapComputerMcpForLocalModel).
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { z } from "zod";
 
 import {
   cuaClickFromIndex,
   cuaRefusalMessage,
-  cuaResultFromMcp,
-  cuaToolResultSchema,
   httpUrlFromArgs,
   lookFromWindowState,
   openVisibleUrl,
@@ -22,6 +21,20 @@ import {
   cuaNameForComputerWire,
   isAllowedCompactComputerInner,
 } from "./compact-computer-tools.ts";
+import {
+  compactObserveImageEnabled,
+  COMPACT_OBSERVE_CAPTION_MODEL_ENV,
+  COMPACT_SHOT_GUEST_PATH,
+  observeCompactText,
+} from "./compact-computer-observe.ts";
+import { ObservationCoordinator } from "./computer-observation.ts";
+import {
+  cuaFromMcpResult,
+  mcpToolResultSchema,
+  wholeObservationImage,
+  type McpToolResult,
+  type ObservationImage,
+} from "./observe-computer.ts";
 import { createComputerLookClient } from "./computer-thread-state.ts";
 import { createLineSplitter } from "./mcp-bridge.ts";
 
@@ -33,6 +46,7 @@ if (!inner || !isAllowedCompactComputerInner(inner)) {
   process.exit(2);
 }
 
+const run = promisify(execFile);
 const jsonValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string())]);
 const callSchema = z.object({
   jsonrpc: z.literal("2.0"),
@@ -87,7 +101,7 @@ const child = spawn(process.execPath, [inner, ...argv.slice(1)], {
 child.stdin.on("error", () => {});
 child.stderr.pipe(process.stderr);
 
-const pending = new Map<string | number, (result: CuaToolResult) => void>();
+const pending = new Map<string | number, (result: McpToolResult) => void>();
 let nextInnerId = 1;
 let chain: Promise<void> = Promise.resolve();
 
@@ -96,12 +110,12 @@ function writeInner(frame: z.infer<typeof looseFrameSchema>): void {
 }
 
 function failPending(message: string): void {
-  const failed: CuaToolResult = { status: "error", refusal: { message } };
+  const failed: McpToolResult = { content: [{ type: "text", text: message }], isError: true };
   for (const finish of pending.values()) finish(failed);
   pending.clear();
 }
 
-function callCua(name: string, args: CuaCallArgs): Promise<CuaToolResult> {
+function callMcp(name: string, args: CuaCallArgs): Promise<McpToolResult> {
   const id = `omb-${nextInnerId}`;
   nextInnerId += 1;
   return new Promise((resolve) => {
@@ -115,18 +129,140 @@ function callCua(name: string, args: CuaCallArgs): Promise<CuaToolResult> {
   });
 }
 
-function reply(id: string | number, text: string, isError: boolean): void {
+function callCua(name: string, args: CuaCallArgs): Promise<CuaToolResult> {
+  return callMcp(name, args).then((result) => cuaFromMcpResult(result));
+}
+
+async function readGuestShot(path: string): Promise<ObservationImage | undefined> {
+  if (path !== COMPACT_SHOT_GUEST_PATH) return;
+  const runtime = argv[1];
+  const container = argv[2];
+  if (runtime !== "podman" && runtime !== "docker") return;
+  if (!container || !/^[a-zA-Z0-9_.-]+$/.test(container)) return;
+  const jpegPath = "/tmp/openmausbot-compact-shot.jpg";
+  try {
+    await run(
+      runtime,
+      [
+        "exec",
+        "-u",
+        "cua",
+        container,
+        "ffmpeg",
+        "-y",
+        "-i",
+        path,
+        "-vf",
+        "scale=512:-1",
+        "-q:v",
+        "8",
+        jpegPath,
+      ],
+      { encoding: "utf8", timeout: 20_000, windowsHide: true },
+    );
+    const { stdout } = await run(runtime, ["exec", "-u", "cua", container, "base64", "-w0", jpegPath], {
+      encoding: "utf8",
+      timeout: 20_000,
+      windowsHide: true,
+    });
+    const b64 = stdout.trim();
+    const check = wholeObservationImage(Buffer.from(b64, "base64"));
+    if (!check.ok) return;
+    return { data: b64, mimeType: check.mime };
+  } catch {
+    return;
+  }
+}
+
+async function captionShot(image: ObservationImage): Promise<string | undefined> {
+  const model = process.env[COMPACT_OBSERVE_CAPTION_MODEL_ENV]?.trim();
+  if (!model) return;
+  const host = process.env.OLLAMA_HOST?.trim() || "127.0.0.1:11434";
+  const url = /^https?:\/\//i.test(host)
+    ? `${host.replace(/\/$/, "")}/v1/chat/completions`
+    : `http://${host}/v1/chat/completions`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        max_tokens: 80,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Read any large painted letters in this screenshot. Reply with only those letters. If there are none, describe the screen in one short sentence.",
+              },
+              {
+                type: "image_url",
+                image_url: { url: `data:${image.mimeType};base64,${image.data}` },
+              },
+            ],
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) return;
+    const parsed = z
+      .object({
+        choices: z
+          .array(z.object({ message: z.object({ content: z.string().optional() }).passthrough() }).passthrough())
+          .optional(),
+      })
+      .safeParse(await res.json());
+    const text = parsed.success ? parsed.data.choices?.[0]?.message.content?.trim() : undefined;
+    if (!text) return;
+    return text.length > 240 ? text.slice(0, 240) : text;
+  } catch {
+    return;
+  }
+}
+
+async function replyObserved(id: string | number, text: string, isError: boolean): Promise<void> {
+  if (!compactObserveImageEnabled() || isError) {
+    reply(id, text, isError);
+    return;
+  }
+  const captioner = process.env[COMPACT_OBSERVE_CAPTION_MODEL_ENV]?.trim() ? captionShot : undefined;
+  const observed = await observeCompactText(
+    text,
+    isError,
+    callMcp,
+    observeCoordinator,
+    undefined,
+    undefined,
+    readGuestShot,
+    captioner,
+  );
+  reply(id, observed.text, false, observed.image);
+}
+
+function reply(
+  id: string | number,
+  text: string,
+  isError: boolean,
+  image?: { data: string; mimeType: "image/png" | "image/jpeg" },
+): void {
+  const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [
+    { type: "text", text },
+  ];
+  if (image) content.push({ type: "image", data: image.data, mimeType: image.mimeType });
   process.stdout.write(
     `${JSON.stringify({
       jsonrpc: "2.0",
       id,
-      result: { content: [{ type: "text", text }], isError },
+      result: { content, isError },
     })}\n`,
   );
 }
 
 let lastLook: LastWindowLook | undefined;
 const lookClient = createComputerLookClient();
+const observeCoordinator = new ObservationCoordinator();
 
 function enqueue(work: () => Promise<void>): void {
   chain = chain.then(work, work);
@@ -187,7 +323,7 @@ const inbound = createLineSplitter((line) => {
           const windowId = opened.look.window_id;
           if (pid != null && windowId != null) await rememberLook(opened.look, pid, windowId);
         }
-        reply(requestId, opened.text, !opened.ok);
+        replyObserved(requestId, opened.text, !opened.ok);
       } catch {
         reply(requestId, "opening the URL on the computer failed", true);
       }
@@ -243,7 +379,7 @@ const inbound = createLineSplitter((line) => {
             return;
           }
           const seen = await readFrontWindow(look.pid, look.windowId);
-          reply(requestId, seen.ok ? `clicked [${index}]\n\n${seen.text}` : `clicked [${index}]`, false);
+          replyObserved(requestId, seen.ok ? `clicked [${index}]\n\n${seen.text}` : `clicked [${index}]`, false);
           return;
         }
         if (x == null || y == null) {
@@ -265,7 +401,7 @@ const inbound = createLineSplitter((line) => {
           return;
         }
         const seen = await readFrontWindow(target.pid, target.windowId);
-        reply(requestId, seen.ok ? `clicked\n\n${seen.text}` : "clicked", false);
+        replyObserved(requestId, seen.ok ? `clicked\n\n${seen.text}` : "clicked", false);
       } catch {
         reply(requestId, "clicking failed", true);
       }
@@ -302,14 +438,15 @@ const outbound = createLineSplitter((line) => {
   if (frame.success && pending.has(frame.data.id)) {
     const finish = pending.get(frame.data.id);
     pending.delete(frame.data.id);
-    const structured = cuaToolResultSchema.safeParse(frame.data.result?.structuredContent);
+    if (frame.data.error?.message) {
+      finish?.({ content: [{ type: "text", text: frame.data.error.message }], isError: true });
+      return;
+    }
+    const parsed = mcpToolResultSchema.safeParse(frame.data.result ?? {});
     finish?.(
-      cuaResultFromMcp({
-        structuredContent: structured.success ? structured.data : undefined,
-        content: frame.data.result?.content,
-        errorMessage: frame.data.error?.message,
-        isError: frame.data.result?.isError === true,
-      }),
+      parsed.success
+        ? parsed.data
+        : { content: [{ type: "text", text: "Cua returned an empty tool result" }], isError: true },
     );
     return;
   }

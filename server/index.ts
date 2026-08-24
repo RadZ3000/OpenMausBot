@@ -67,6 +67,11 @@ import { requestWindowsReboot, runWindowsVirtEnable } from "./windows-virt.ts";
 import { ensureOwnedOllama, runOllamaSetup, stopOwnedOllama } from "./ollama-setup.ts";
 import { DEFAULT_CONTEXT_TOKENS, TIGHT_CONTEXT_TOKENS } from "./local-runtime.ts";
 import { wrapComputerMcpForLocalModel } from "./compact-computer-tools.ts";
+import {
+  compactObserveImageForModel,
+  COMPACT_OBSERVE_CAPTION_MODEL_ENV,
+  COMPACT_OBSERVE_IMAGE_ENV,
+} from "./compact-computer-observe.ts";
 import { wrapComputerMcpForFrontier } from "./observe-computer.ts";
 import {
   ComputerThreadLooks,
@@ -109,6 +114,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
+import { acpFingerprintFromTurn } from "./acp-session.ts";
 import { buildTurnContext, engineIsFresh, withComputerObservation } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
@@ -1729,21 +1735,28 @@ async function startTurn(
             : computerKind === "vps"
               ? computerLookVmKey("vps", bot.id)
               : "";
-        integrations.localComputer =
-          lookVmKey && wrapped.args[0] === SPAWNED_PROXIES.compactComputerMcp
-            ? {
-                ...wrapped,
-                env: {
-                  ...wrapped.env,
-                  ...computerLookBridgeEnv({
-                    url: `http://127.0.0.1:${PORT}/api/internal/computer-look?threadId=${encodeURIComponent(threadId)}`,
-                    token: COMMS_TOKEN,
-                    botId: bot.id,
-                    vmKey: lookVmKey,
-                  }),
-                },
-              }
-            : wrapped;
+        if (wrapped.args[0] === SPAWNED_PROXIES.compactComputerMcp) {
+          const env = { ...wrapped.env };
+          if (lookVmKey) {
+            Object.assign(
+              env,
+              computerLookBridgeEnv({
+                url: `http://127.0.0.1:${PORT}/api/internal/computer-look?threadId=${encodeURIComponent(threadId)}`,
+                token: COMMS_TOKEN,
+                botId: bot.id,
+                vmKey: lookVmKey,
+              }),
+            );
+          }
+          if (compactObserveImageForModel(model)) {
+            env[COMPACT_OBSERVE_IMAGE_ENV] = "1";
+            const inject = decodeInjectId(model);
+            if (inject) env[COMPACT_OBSERVE_CAPTION_MODEL_ENV] = inject.model;
+          }
+          integrations.localComputer = { ...wrapped, env };
+        } else {
+          integrations.localComputer = wrapped;
+        }
       } else if (
         integrations.localComputer &&
         (computerKind === "vm" || computerKind === "vps")
@@ -1790,9 +1803,19 @@ async function startTurn(
       // (activeVpsThreads was already claimed above, before the provision or
       // reuse await, so the backend guards saw this turn the whole time.)
       watchdog.watch(threadId, bot.id);
+      const sessionKey = `${bot.id}:${threadId}`;
+      if (rewound) instance.adapter.dropIdleSession?.(sessionKey);
+      const lastLook = formatComputerObservation(computerLooks.get(threadId));
+      const reuseAcp =
+        !rewound &&
+        instance.adapter.hasIdleSession?.(
+          sessionKey,
+          acpFingerprintFromTurn({ threadId, text: turnText, model, integrations, cwd }),
+        ) === true;
       await instance.adapter.sendTurn({
         threadId,
-        text: withComputerObservation(turnText, formatComputerObservation(computerLooks.get(threadId))),
+        sessionKey,
+        text: withComputerObservation(turnText, reuseAcp ? "" : lastLook),
         model,
         effort,
         // a rewound thread never resumes the abandoned branch's session
@@ -2137,6 +2160,7 @@ async function runGroupMemberTurn(
     instance.adapter
       .sendTurn({
         threadId: group.threadId,
+        sessionKey: `${bot.id}:${group.threadId}`,
         text,
         system: roomSystem,
         cwd,

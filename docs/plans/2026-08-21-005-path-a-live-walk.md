@@ -1,15 +1,11 @@
 # Handoff: Path A live walk, 2026-08-21 (later)
 
-Written at a commit checkpoint so the next agent can pick this up on **another
-machine**. This file is the session log. Design decisions stay in
-[`docs/local-model-path.md`](../local-model-path.md); defects stay in
-[`docs/known-bugs.md`](../known-bugs.md). The earlier morning handoff is
-[`2026-08-21-001-local-path-handoff.md`](2026-08-21-001-local-path-handoff.md)
-— its §0 ("nothing is committed") and §3 (manual Ollama/Hermes) are stale.
-
-Read this, then plan
-[004](2026-08-21-004-b24-investigation.md) for B-24, then plan
-[002](2026-08-21-002-local-path-vm-considerations.md) for the Local VM.
+**Walk log (measurements), not the snapshot.** Current state:
+[`../agent-status.md`](../agent-status.md).
+Design decisions: [`docs/local-model-path.md`](../local-model-path.md).
+Defects: [`docs/known-bugs.md`](../known-bugs.md).
+B-24 diary: [`2026-08-21-004-b24-investigation.md`](2026-08-21-004-b24-investigation.md).
+Local VM: [`2026-08-21-002-local-path-vm-considerations.md`](2026-08-21-002-local-path-vm-considerations.md).
 
 ## 0. What this commit holds
 

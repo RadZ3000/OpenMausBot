@@ -2,7 +2,8 @@
 
 Status: **(b) fixed; (a) Granite issues `vm_open`; compact-computer-mcp binds Cua's existing Chromium (image layer 7: Chromium + `--grant existing-profile`).** Written 2026-08-21.
 Defect: [`docs/known-bugs.md`](../known-bugs.md) B-24.
-Handoff order: [`2026-08-21-001-local-path-handoff.md`](2026-08-21-001-local-path-handoff.md) §4.
+Current snapshot: [`../agent-status.md`](../agent-status.md).
+Walk log: [`2026-08-21-005-path-a-live-walk.md`](2026-08-21-005-path-a-live-walk.md).
 
 ## check-upstream-first
 

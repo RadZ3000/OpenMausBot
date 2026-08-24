@@ -546,6 +546,90 @@ describe("compact-computer-mcp", () => {
       await lookServer.close();
     }
   });
+
+  it("fuses a screenshot onto vm_open only when OMB_COMPACT_OBSERVE_IMAGE=1", async () => {
+    const pngBuf = Buffer.alloc(520, 0);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngBuf, 0);
+    Buffer.from("IEND", "ascii").copy(pngBuf, pngBuf.length - 8);
+    const png = pngBuf.toString("base64");
+    const dir = mkdtempSync(join(tmpdir(), "omb-compact-img-"));
+    const inner = join(dir, "container-mcp.js");
+    const seen = join(dir, "seen.txt");
+    writeFileSync(
+      inner,
+      [
+        'const { appendFileSync } = require("node:fs");',
+        "const seen = process.argv[2];",
+        `const png = ${JSON.stringify(png)};`,
+        'process.stdin.setEncoding("utf8");',
+        'let buf = "";',
+        "let windowLooks = 0;",
+        "function reply(id, payload, text, image) {",
+        "  const content = [{ type: \"text\", text: text || \"✅ markdown\" }];",
+        "  if (image) content.push({ type: \"image\", data: image, mimeType: \"image/png\" });",
+        '  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: { content, structuredContent: payload } }) + "\\n");',
+        "}",
+        'process.stdin.on("data", (chunk) => {',
+        "  buf += chunk;",
+        "  for (;;) {",
+        '    const nl = buf.indexOf("\\n");',
+        "    if (nl < 0) break;",
+        "    const line = buf.slice(0, nl);",
+        "    buf = buf.slice(nl + 1);",
+        "    if (!line) continue;",
+        "    appendFileSync(seen, line + '\\n');",
+        "    const msg = JSON.parse(line);",
+        "    const name = msg.params && msg.params.name;",
+        '    if (name === "list_apps") reply(msg.id, { apps: [{ name: "Chromium Web Browser", bundle_id: "chromium", launch_path: "/usr/bin/chromium", running: true, pid: 11, windows: [{ pid: 11, window_id: 22 }] }] });',
+        '    else if (name === "list_windows") reply(msg.id, { windows: [{ pid: 11, window_id: 22, is_on_screen: true, app_name: "Chromium" }] });',
+        '    else if (name === "get_browser_state") reply(msg.id, { target_id: "tgt", tabs: [{ tab_id: "tab" }] });',
+        '    else if (name === "browser_navigate") reply(msg.id, { status: "ok" });',
+        '    else if (name === "screenshot") reply(msg.id, { status: "ok" }, "shot", png);',
+        '    else if (name === "get_window_state") { windowLooks += 1; reply(msg.id, { status: "ok" }, windowLooks === 1 ? "- [0] frame \\"Quoted For Truth leftover - Chromium\\"" : "- [0] frame \\"Example Domain - Chromium\\"\\n- [9] link \\"More information\\""); }',
+        "    else reply(msg.id, { status: \"ok\" });",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const listed = await new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [COMPACT, COMPACT_COMPUTER_WIRE_FLAG, inner, seen], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          NODE_NO_WARNINGS: "1",
+          OMB_COMPACT_OBSERVE_IMAGE: "1",
+          OMB_OBSERVE_SETTLE_MS: "0",
+        },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code !== 0 && code !== null) reject(new Error(`exit ${code}: ${stderr}`));
+        else resolve(stdout);
+      });
+      child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: { name: "vm_open", arguments: { url: "https://example.com" } },
+        })}\n`,
+      );
+      child.stdin.end();
+    });
+    const frame = JSON.parse(listed.trim().split("\n").find((line) => line.includes('"id":9')) ?? listed.trim());
+    expect(frame.result.isError).toBe(false);
+    expect(JSON.stringify(frame.result.content)).toContain('"type":"image"');
+    expect(readFileSync(seen, "utf8")).toContain('"name":"screenshot"');
+  });
 });
 
 function listenLook(initial: ComputerLookWrite | null): Promise<{

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { resolveCuaDesktopStatus } from "./cua-desktop-status.ts";
 import { augmentedPath } from "./env-path.ts";
 import { DATA_DIR } from "./config.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
@@ -61,8 +62,17 @@ const INTERNAL_VIEWER_PORT = 6901;
 const HOST_VIEWER_PORT = 6080;
 const MEMORY_BYTES = 4 * 1024 * 1024 * 1024;
 const NANO_CPUS = 2_000_000_000;
-const PIDS_LIMIT = 512;
+/** Floor still accepted on inspect so a 512-pid VM is not branded unsafe.
+ *  New runs use 2048: Chromium + XFCE exceeded 512 (`pthread_create` EAGAIN). */
+export const PIDS_LIMIT_MIN = 512;
+export const PIDS_LIMIT = 2048;
 const SHM_BYTES = 512 * 1024 * 1024;
+
+export function pidsLimitIsHardened(limit: number | null | undefined): boolean {
+  if (limit == null) return false;
+  if (!Number.isFinite(limit)) return false;
+  return limit >= PIDS_LIMIT_MIN && limit <= PIDS_LIMIT;
+}
 
 export interface LocalVmTarget {
   /** Stable, non-secret identity used for leases and caches. */
@@ -282,6 +292,7 @@ export interface ContainerComputerStatus {
   persistence: "durable" | "unsafe" | "unknown";
   desktopReady: boolean;
   desktop_error: string | null;
+  desktop_warning: string | null;
   create_supported: boolean;
   ready: boolean;
   problem: string | null;
@@ -312,6 +323,7 @@ function emptyStatus(platform: NodeJS.Platform, target: LocalVmTarget): Containe
     persistence: "unknown",
     desktopReady: false,
     desktop_error: null,
+    desktop_warning: null,
     create_supported: true,
     ready: false,
     problem: "Install a supported container runtime first",
@@ -552,11 +564,16 @@ export async function containerComputerStatus(
     status.security === "hardened" &&
     status.persistence === "durable";
   if (canProbe) {
+    let driverReached = false;
+    let healthOk = false;
+    let screenshotOk = false;
+    let probeError: string | null = null;
     try {
       const expected = `cua-driver ${CUA_DRIVER_VERSION}`;
       const version = await runner(status.runtime, cuaExecArgs(["--version"], { container: target.containerName }), 8000);
       if (version.stdout.trim() !== expected) throw new Error(`expected ${expected}`);
       await runner(status.runtime, cuaExecArgs(["status", "--socket", CUA_SOCKET], { container: target.containerName }), 8000);
+      driverReached = true;
       const health = await runner(
         status.runtime,
         cuaExecArgs(["call", "health_report", "{}", "--socket", CUA_SOCKET], { container: target.containerName }),
@@ -570,6 +587,7 @@ export async function containerComputerStatus(
       ) {
         throw new Error(`Cua health report is ${report.overall ?? "invalid"}`);
       }
+      healthOk = true;
       const readinessShot = "/tmp/openmausbot-readiness.png";
       await runner(
         status.runtime,
@@ -592,25 +610,33 @@ export async function containerComputerStatus(
       if (!wholeScreenshot(Buffer.from(captured.stdout.trim(), "base64")).ok) {
         throw new Error("Cua Driver returned an incomplete readiness screenshot");
       }
-      status.desktopReady = true;
+      screenshotOk = true;
     } catch (error) {
-      // An empty log means XFCE and the supervisor-owned Cua daemon are
-      // probably still starting. A real startup failure should be actionable
-      // in the panel instead of looking like an endless readiness wait.
-      status.desktop_error = error instanceof Error ? error.message.slice(0, 320) : null;
+      probeError = error instanceof Error ? error.message : String(error);
+    }
+    let errorLog = "";
+    if (!screenshotOk) {
       try {
-        const errorLog = await runner(
+        const tailed = await runner(
           status.runtime,
           ["exec", target.containerName, "tail", "-n", "4", "/var/log/supervisor/cua-driver.error.log"],
           4000,
         );
-        status.desktop_error =
-          errorLog.stdout.replace(/\s+/g, " ").trim().slice(0, 320) ||
-          status.desktop_error;
+        errorLog = tailed.stdout;
       } catch {
         // The log may not exist during the first seconds of container boot.
       }
     }
+    const resolved = resolveCuaDesktopStatus({
+      driverReached,
+      healthOk,
+      screenshotOk,
+      probeError,
+      errorLog,
+    });
+    status.desktopReady = resolved.desktopReady;
+    status.desktop_error = resolved.desktop_error;
+    status.desktop_warning = resolved.desktop_warning;
   }
 
   status.problem = statusProblem(status);
@@ -766,7 +792,7 @@ export function dockerSecurityIsHardened(
     config.Memory === MEMORY_BYTES &&
     (config.MemorySwap ?? 0) === MEMORY_BYTES &&
     (config.NanoCpus ?? 0) === NANO_CPUS &&
-    config.PidsLimit === PIDS_LIMIT &&
+    pidsLimitIsHardened(config.PidsLimit) &&
     capDrop.includes("all") &&
     capAdd.join(",") === "setgid,setuid" &&
     config.Privileged === false &&
