@@ -30,6 +30,7 @@ the 2026-08-23 archive) are ours. Other files in this folder are upstream’s.
 | [2026-08-24-003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md) | **tombstone** — superseded by [005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | Instruct 4B @ 8k. Do not implement. |
 | [2026-08-24-004](2026-08-24-004-qwen3vl-vs-qwen-cua.md) | evaluated; Qwen-CUA not first-run | Qwen3-VL vs Qwen-CUA vs Qwen3.8-27B. First-run weight is [005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md), not CUA. |
 | [2026-08-24-005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | in tree; Admin CPU gold **fail** (20 min stall, no `tool_call`) | Path A first-run + new-bot default → `qwen3-vl:8b` Thinking @ 32k. Hermes / VM / eight `vm_*` stay. |
+| [2026-08-24-006](2026-08-24-006-skip-hermes-cpu-tee.md) | measured 2026-08-24 | Skip-Hermes CPU: 4B 166 s tools, 8B 240 s tools; Hermes ACP 8B 20 min / 0 tools. Not a product flip. |
 
 Image-gen / lightbox plans (2026-08-20-001, 002): shipped then partly
 superseded at merge by upstream’s attachments. Do not rebuild them.

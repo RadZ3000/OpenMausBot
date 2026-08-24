@@ -89,6 +89,13 @@ Same process with Ollama docs’ Vulkan off (`OLLAMA_VULKAN=0`,
 | 8k `num_ctx` | **200**, `done_reason: stop`, **not** truncated. `prompt_eval_count` 734, `eval_count` 598. Tools: `write_file`, `terminal`, `vm_open`. Runner ~3.5 GiB RAM. ~3.5 min. |
 | 32k `num_ctx` | **200**, `done_reason: stop`, **not** truncated. Prompt 734, eval 489. Same three tools. Runner ~5.3 GiB RAM, `context_length` 32768. ~3.3 min. |
 
+Timed re-run **2026-08-24 ~15:54 CDT** (4B) and **~16:09 CDT** (8B):
+canonical split is
+[2026-08-24-006](2026-08-24-006-skip-hermes-cpu-tee.md) — skip-Hermes 4B
+**166 s**, 8B **240 s**, same three tools; Hermes ACP 8B still **20 min /
+0 tools**. Decode length moves the 4B wall clock vs the morning ~3.3 min
+32k gate; that is not a new capability.
+
 So: **Vulkan on this iGPU/old AMD card crashed the helper.** CPU inference
 can load 8k **and** 32k. Skip-Hermes Thinking **does emit tools at 8k**
 with the compact catalog; 32k is not what made tools appear. The

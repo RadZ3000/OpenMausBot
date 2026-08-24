@@ -122,8 +122,10 @@ Ollama ≥ 0.12.7; we already pin **0.32.15**.
     `compactObserveImageForModel` is already true for `qwen3-vl*`. 4B at
     8k overflowed a fused JPEG on the Hermes tool role (007). 32k *might*
     hold it. Do not flip fused JPEG on as part of this install job.
-15. **Live gold is Hermes ACP, not skip-Hermes.** 4B skip-Hermes tools at
-    32k do **not** count. Before calling this shipped: one Hermes turn on
+15. **Live gold is Hermes ACP, not skip-Hermes.** Skip-Hermes 4B and 8B
+    both emit tools on this CPU box
+    ([006](2026-08-24-006-skip-hermes-cpu-tee.md)); that does **not**
+    count. Before calling this shipped: one Hermes turn on
     `qwen3-vl:8b` at 32k that emits at least one ACP `tool_call`
     (`write_file` or `vm_open`) without `truncated` filling the window.
 
@@ -241,6 +243,13 @@ pull was Thinking 8B (`901cae732162`). `llama-server -c 32768`.
 no ACP chunks, default `TURN_STALL_MS` (20 min) sent `session/cancel`.
 **Fail:** no `tool_call`. Not thoughts-only, not truncated, not
 `0xc0000409`, not `session/new` timeout. NVIDIA 8B@32k still unmeasured.
+
+Skip-Hermes on the same compact prompt: 8B **240 s**, three tools; 4B
+**166 s**, same tools. Full split (load / prefill / decode, undici 5 min
+header trap) is
+[2026-08-24-006](2026-08-24-006-skip-hermes-cpu-tee.md). Hermes ACP
+20 min / 0 tools is the agent prompt, not 8B weights being unable to
+emit tools.
 
 Unpackaged Vite on the same box: new bots can still open as **Claude**;
 a bot left on Local VM Retry-cards “hello”; Hermes ACP “hey” on **4B**
