@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-24 (harness restarted; shared Local VM recreated at pid cap 2048; Chromium-log classifier in tree).
+Last updated: 2026-08-24 (`c7e19b6` on origin; packaged overlay is this machine only).
 
 ## Start here
 
@@ -23,11 +23,10 @@ cold-start were deleted as duplicates of this file; git still has them.
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` |
-| HEAD | `0cedd9e` — merged upstream (skill recorder, section chiefs, MiniMax, timeline, room setup, driver retry) |
+| HEAD | `c7e19b6` — ACP keep-alive, Chromium VM status, Hermes ACP image paste / VM caption. On `origin`. |
 | Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
-| Keep-alive | uncommitted: `server/acp-session.ts` + smallest `acp/core.ts` settle/reuse edit |
-| Chromium status | uncommitted: `server/cua-desktop-status.ts`; shared VM recreated 2026-08-24 |
-| `origin` | `RadZ3000/OpenMausBot` — **only push target**. Branch is pushed. |
+| Merge base | `0cedd9e` — merged upstream (skill recorder, section chiefs, MiniMax, timeline, room setup, driver retry) |
+| `origin` | `RadZ3000/OpenMausBot` — **only push target**. This branch is pushed. |
 | `origin/main` | `d037f40` — this branch is **not** merged to our `main` |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
@@ -38,19 +37,19 @@ search, quiz-dismiss). **No** `server/cua-desktop-status.ts` there, and no
 is a **separate** merge job. Do not mix it with computer-use work. Their ACP
 core still kills the child on settle — we did not take a keep-alive from them.
 
-Uncommitted when this snapshot was written: Hermes eyes (ACP paste blocks,
-VM caption), ACP keep-alive (P6), Local VM Chromium-log classification
-(`server/cua-desktop-status.ts`, pid cap 2048), and the matching plans
-([001](plans/2026-08-24-001-acp-session-keepalive.md),
-[002](plans/2026-08-24-002-local-vm-chromium-status.md), 004 release-path
-note). Do not commit fleet dumps, `~/.openmausbot`, or VNC passwords.
-First-run constants still Granite. Packaged Electron still advertises
-**upstream** 0.1.32 — do not click Download; the public-release path is
-recorded in
+Working tree was clean after `c7e19b6`. First-run constants still Granite.
+Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
+the public-release path is recorded in
 [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md)
-(not built). Harness on this tree (`pnpm dev:server`, Instruct default).
-Shared Local VM **recreated** 2026-08-24: `ready` / `desktopReady` true,
-`--pids-limit 2048` on the new run args. Durable workspace kept.
+(not built).
+
+**This Windows box only (do not expect on the next machine):** shared Local VM
+recreated at `--pids-limit 2048`; `pnpm build:server` overlay into
+`%LOCALAPPDATA%\Programs\openmausbot\resources\server` so the packaged `.exe`
+accepts that cap. `~/.openmausbot`, Podman, and that overlay do not travel
+with git. On a new box: `git checkout merge/upstream-0.1.27` (already on
+origin), Path A / Local VM first-run as usual. Do not recreate a 2048 VM
+from an *un-overlaid* old `.exe` — it will say “missing safety limits”.
 
 ## Product goals (do not redefine)
 
