@@ -4,6 +4,7 @@ import { StoreProvider, useStore } from "@/state/store";
 import { InstallPathChooser } from "@/components/InstallPathChooser";
 import { Onboarding } from "@/components/Onboarding";
 import { emailGateDone, initAnalytics } from "@/lib/analytics";
+import { unreadConversationCount } from "@/lib/unread";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
@@ -19,9 +20,11 @@ import { NoEngines } from "@/components/NoEngines";
 import { CommandPalette } from "@/components/CommandPalette";
 import { LightboxProvider } from "@/components/Lightbox";
 import { SkillRecorderPage } from "@/components/SkillRecorderPage";
+import { TeamMapPage } from "@/components/TeamMapPage";
 
 function Shell() {
   const { state, dispatch } = useStore();
+  const unreadCount = unreadConversationCount(state.bots, state.groups);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
   // cancelling them with md:, which would still emit a translate value and
@@ -70,6 +73,10 @@ function Shell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [state.bots, state.selectedId, dispatch]);
 
+  useEffect(() => {
+    window.ogb?.setUnreadCount?.(unreadCount);
+  }, [unreadCount]);
+
   // Picking a conversation closes the drawer: on a phone the chat is what you
   // asked for, and leaving the list up would hide it. Watching activeView too
   // catches re-selecting the bot that is already current from another view —
@@ -79,6 +86,25 @@ function Shell() {
   useEffect(() => {
     setDrawerOpen(false);
   }, [state.selectedId, state.activeView, state.pluginsOpen, state.settingsOpen]);
+
+  // The viewer outlives ComputerPanel and can target any bot, so release control
+  // here (always mounted) when a bot's viewer closes. release() is idempotent.
+  useEffect(() => {
+    return window.ogb?.desktopViewer?.onState((viewer) => {
+      if (viewer.open || !viewer.contextId) return;
+      const botId = viewer.contextId;
+      void fetch(`/api/bots/${botId}/computer/control`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "release" }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((snap) => {
+          if (snap) dispatch({ type: "computerControl", botId, held: snap.held === true, helpReason: snap.helpReason ?? null });
+        })
+        .catch(() => {});
+    });
+  }, [dispatch]);
 
   return (
     <div className="flex h-full flex-col">
@@ -109,7 +135,9 @@ function Shell() {
           menuButtonRef.current?.focus();
         }}
       />
-      {state.activeView === "routines" ? (
+      {state.activeView === "team-map" ? (
+        <TeamMapPage />
+      ) : state.activeView === "routines" ? (
         <RoutinesPage />
       ) : state.activeView === "skill-recorder" ? (
         <SkillRecorderPage />

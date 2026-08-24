@@ -66,13 +66,28 @@ export interface ConnectorCardData {
   resumed?: boolean;
 }
 
+export interface SecretRequestCardData {
+  /** Fixed allowlisted credential id; never an arbitrary config path. */
+  target: import("../shared/credential-request.ts").CredentialTargetId;
+  label: string;
+  description: string;
+  placeholder: string;
+  helpUrl: string;
+  requestKey: string;
+  provided?: boolean;
+  dismissed?: boolean;
+  resumed?: boolean;
+  error?: string;
+}
+
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "image" | "connector";
+  kind: "text" | "options" | "activity" | "screen" | "image" | "connector" | "secret";
   text?: string;
   card?: OptionCardData;
   connector?: ConnectorCardData;
+  secret?: SecretRequestCardData;
   /** activity messages: tool name + outcome. `spoken` is the same chip as
    * a phrase a voice can read ("reading a file") — computed once here so
    * call mode never has to re-derive it from the raw tool name, and absent
@@ -94,6 +109,9 @@ export interface Message {
   /** the message this one follows; null = thread root. Edited messages
    * share a parentId with the version they replace — that's a fork. */
   parentId?: string | null;
+  /** Optional flat reply reference. Unlike parentId this never changes the
+   * conversation branch; it only quotes one earlier text message inline. */
+  replyToId?: string;
   /** group threads: which member said this (sender attribution). */
   from?: { botId: string; name: string; color: string };
   /** emoji reactions; by = "user" or a member botId. */
@@ -217,6 +235,14 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       label: redactSecretsInText(out.connector.label),
       description: redactSecretsInText(out.connector.description),
       error: out.connector.error ? redactSecretsInText(out.connector.error) : undefined,
+    };
+  }
+  if (out.secret) {
+    out.secret = {
+      ...out.secret,
+      label: redactSecretsInText(out.secret.label),
+      description: redactSecretsInText(out.secret.description),
+      error: out.secret.error ? redactSecretsInText(out.secret.error) : undefined,
     };
   }
   return out;
@@ -708,7 +734,21 @@ export class Store {
       }
     }
     this.emit({ type: "message", threadId, message: full });
+    // The first-run quiz is not a live ask. Talking past it hides it so the
+    // transcript is just the greeting plus what they said. Cards with a
+    // requestId are permission/question prompts and stay until answered.
+    if (full.role === "user" && full.kind === "text") this.dismissOnboardingCard(threadId);
     return full;
+  }
+
+  /** Hide the first-run quiz on this thread, if it is still open. */
+  dismissOnboardingCard(threadId: string): Message | null {
+    const t = this.thread(threadId);
+    const card = t.messages.find(
+      (message) => message.kind === "options" && message.card && !message.card.requestId && !message.card.dismissed,
+    );
+    if (!card?.card) return null;
+    return this.patchMessage(threadId, card.id, { card: { ...card.card, dismissed: true } });
   }
 
   /** Screen frames are ~100-500KB of base64 each; keeping every frame of a
@@ -745,6 +785,7 @@ export class Store {
       kind: "text",
       text,
       parentId: source.parentId ?? null,
+      replyToId: source.replyToId,
     };
     t.messages.push(full);
     t.activeLeafId = full.id;

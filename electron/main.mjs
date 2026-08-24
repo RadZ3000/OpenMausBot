@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, safeStorage, screen, session, shell, systemPreferences, utilityProcess } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, safeStorage, screen, session, shell, systemPreferences, utilityProcess } from "electron";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
@@ -29,6 +29,7 @@ const { createDisplayMediaGuard, invokeDisplayMediaCallback, selectCaptureSource
 );
 const { STAGE_PREFIX: APPIMAGE_CUA_STAGE_PREFIX } = require("./cua-linux-bundle.cjs");
 const { desktopViewerUrl, sameDesktopViewerOrigin } = require("./desktop-viewer.cjs");
+const { normalizeUnreadCount, parseWindowState, resolveWindowState } = require("./window-state.cjs");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
@@ -40,6 +41,74 @@ const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 let desktopViewerWindow = null;
 let desktopViewerOwner = null;
 let desktopViewerContextId = null;
+let mainWindow = null;
+let unreadCount = 0;
+let unreadOverlayIcon = null;
+
+function windowStateFile() {
+  return path.join(app.getPath("userData"), "window-state.json");
+}
+
+function readWindowState() {
+  try {
+    return parseWindowState(fs.readFileSync(windowStateFile(), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function writeWindowState(win) {
+  if (!win || win.isDestroyed()) return;
+  const file = windowStateFile();
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      temporary,
+      JSON.stringify({ bounds: win.getNormalBounds(), maximized: win.isMaximized() }),
+      { mode: 0o600 },
+    );
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch {}
+    slog(`window state save failed: ${error?.message ?? error}`);
+  }
+}
+
+function installWindowStatePersistence(win) {
+  let timer = null;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    writeWindowState(win);
+  };
+  const schedule = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(flush, 250);
+    timer.unref?.();
+  };
+  win.on("resize", schedule);
+  win.on("move", schedule);
+  win.on("maximize", schedule);
+  win.on("unmaximize", schedule);
+  win.on("close", flush);
+}
+
+function applyUnreadBadge(win = mainWindow) {
+  const count = normalizeUnreadCount(unreadCount);
+  if (process.platform === "win32") {
+    if (!win || win.isDestroyed()) return;
+    unreadOverlayIcon ??= nativeImage.createFromPath(APP_ICON).resize({ width: 16, height: 16 });
+    win.setOverlayIcon(
+      count > 0 && !unreadOverlayIcon.isEmpty() ? unreadOverlayIcon : null,
+      count > 0 ? `${count} unread conversation${count === 1 ? "" : "s"}` : "No unread conversations",
+    );
+    return;
+  }
+  if (process.platform === "darwin" || process.platform === "linux") app.setBadgeCount(count);
+}
 
 // GNOME groups the window with its installed desktop entry only when both
 // identities match. This must run before Electron becomes ready.
@@ -69,8 +138,15 @@ let secureCredentials = {};
 const CREDENTIALS_FILE = path.join(app.getPath("userData"), "credentials.bin");
 
 async function loadSecureCredentials() {
+  if (!fs.existsSync(CREDENTIALS_FILE)) return {};
+  if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+    // Returning nothing here looks identical to "the user never saved keys".
+    // Say why, so an OS-store hiccup is diagnosable instead of reading as
+    // wiped credentials.
+    slog("OS credential store unavailable; saved credentials are not loaded this launch");
+    return {};
+  }
   try {
-    if (!fs.existsSync(CREDENTIALS_FILE) || !(await safeStorage.isAsyncEncryptionAvailable())) return {};
     const decrypted = await safeStorage.decryptStringAsync(fs.readFileSync(CREDENTIALS_FILE));
     return JSON.parse(decrypted.result);
   } catch (error) {
@@ -127,7 +203,7 @@ async function secureComposioConfig() {
   }
 }
 
-// The remaining workspace credentials (xai/box/voice/OpenCode Go keys) get
+// The remaining workspace credentials (xai/box/voice/OpenCode keys) get
 // the same at-rest treatment as the Composio key above. New packaged-app
 // saves go straight through credential:set below; this boot-time sweep also
 // migrates plaintext left by older versions or direct development clients.
@@ -294,7 +370,7 @@ async function startServerOn(port) {
       ...(secureCredentials.composioApiKey
         ? { COMPOSIO_API_KEY: secureCredentials.composioApiKey }
         : {}),
-      // one env var per stored workspace secret (xai/box/voice/OpenCode Go);
+      // one env var per stored workspace secret (xai/box/voice/OpenCode);
       // the server prefers these over config.json, whose plaintext fields
       // the boot migration has deleted
       ...workspaceCredentialEnv(secureCredentials),
@@ -414,12 +490,25 @@ function openDesktopViewer(owner, rawUrl, rawTitle, contextId) {
   const titleCandidate = Object.prototype.toString.call(rawTitle) === "[object String]" ? rawTitle.trim() : "";
   const title = titleCandidate ? titleCandidate.slice(0, 80) : "Live desktop";
 
+  const nextContextId =
+    Object.prototype.toString.call(contextId) === "[object String]" ? contextId.slice(0, 120) : null;
+
   // Desktop URLs contain rotating access tokens. A newly minted URL replaces
   // the old viewer instead of being retained anywhere after its window closes.
-  if (desktopViewerWindow && !desktopViewerWindow.isDestroyed()) desktopViewerWindow.close();
+  // Clear the ref first so the stale window's close handler no-ops; on a bot
+  // change, tell the previous bot to release (same-bot reopen stays quiet).
+  if (desktopViewerWindow && !desktopViewerWindow.isDestroyed()) {
+    const previous = desktopViewerWindow;
+    const previousOwner = desktopViewerOwner;
+    const previousContextId = desktopViewerContextId;
+    desktopViewerWindow = null;
+    previous.close();
+    if (previousContextId !== nextContextId && previousOwner && !previousOwner.isDestroyed()) {
+      previousOwner.send("desktop-viewer:state", { open: false, contextId: previousContextId });
+    }
+  }
   desktopViewerOwner = owner.webContents;
-  desktopViewerContextId =
-    Object.prototype.toString.call(contextId) === "[object String]" ? contextId.slice(0, 120) : null;
+  desktopViewerContextId = nextContextId;
 
   const viewer = new BrowserWindow({
     width: 1220,
@@ -427,7 +516,9 @@ function openDesktopViewer(owner, rawUrl, rawTitle, contextId) {
     minWidth: 760,
     minHeight: 520,
     parent: owner,
-    modal: true,
+    // Not modal: the person still needs the app's "Hand control back" button
+    // while the desktop is open. `parent` keeps it floating above the app.
+    modal: false,
     show: false,
     title,
     icon: APP_ICON,
@@ -455,6 +546,7 @@ function openDesktopViewer(owner, rawUrl, rawTitle, contextId) {
   viewer.on("closed", () => {
     if (desktopViewerWindow !== viewer) return;
     desktopViewerWindow = null;
+    // The panel drops its "viewer open" state and releases control on this.
     notifyDesktopViewer(false);
     desktopViewerOwner = null;
     desktopViewerContextId = null;
@@ -498,11 +590,20 @@ ipcMain.on("screen:preview-intent", (event) => {
   event.returnValue = displayMediaGuard.begin(event.senderFrame);
 });
 
+ipcMain.on("desktop:unread-count", (event, value) => {
+  const sender = BrowserWindow.fromWebContents(event.sender);
+  if (!sender || sender !== mainWindow || sender.isDestroyed()) return;
+  unreadCount = normalizeUnreadCount(value);
+  applyUnreadBadge(sender);
+});
+
 function createWindow() {
   const isMac = process.platform === "darwin";
+  const primary = screen.getPrimaryDisplay();
+  const displays = [primary, ...screen.getAllDisplays().filter((display) => display.id !== primary.id)];
+  const restored = resolveWindowState(readWindowState(), displays.map((display) => display.workArea));
   const win = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    ...restored.bounds,
     minWidth: 900,
     minHeight: 600,
     icon: APP_ICON,
@@ -526,6 +627,13 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, "preload.cjs"),
     },
+  });
+  mainWindow = win;
+  installWindowStatePersistence(win);
+  applyUnreadBadge(win);
+  if (restored.maximized) win.maximize();
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -742,6 +850,21 @@ ipcMain.handle("desktop-viewer:open", (event, rawUrl, title, contextId) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   return openDesktopViewer(owner, rawUrl, title, contextId);
 });
+
+// Close only when the caller owns the current viewer — otherwise one bot's
+// "Hand control back" would close (and release) another bot's viewer.
+ipcMain.handle("desktop-viewer:close", (_event, contextId) => {
+  const scoped = Object.prototype.toString.call(contextId) === "[object String]" ? contextId : null;
+  if (scoped !== desktopViewerContextId) return false;
+  if (desktopViewerWindow && !desktopViewerWindow.isDestroyed()) desktopViewerWindow.close();
+  return true;
+});
+
+// Lets a (re)mounted panel seed viewer-open state instead of defaulting to false.
+ipcMain.handle("desktop-viewer:state-now", () => ({
+  open: Boolean(desktopViewerWindow && !desktopViewerWindow.isDestroyed()),
+  contextId: desktopViewerContextId,
+}));
 
 ipcMain.handle("perm:status", () => ({
   mic:

@@ -15,6 +15,7 @@ import {
   FolderPlus,
   Library,
   Loader2,
+  Network,
   Pencil,
   PanelLeftClose,
   PanelLeftOpen,
@@ -36,6 +37,7 @@ import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
+import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { nextRename } from "@/lib/rename";
 import { downloadAllBots } from "@/lib/team-files";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
@@ -178,7 +180,7 @@ function StackedMauses({ members, density }: { members: Bot[]; density: SidebarD
     const b = members[0];
     return (
       <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
-        {b ? <BotAvatar bot={b} state="happy" size={singleSize} /> : <Users size={24} className="text-ink-secondary" />}
+        {b ? <BotAvatar bot={b} state="happy" size={singleSize} animated={false} /> : <Users size={24} className="text-ink-secondary" />}
       </div>
     );
   }
@@ -188,7 +190,7 @@ function StackedMauses({ members, density }: { members: Bot[]; density: SidebarD
     <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
       <div className="flex items-center -space-x-3">
         {shown.map((b) => (
-          <BotAvatar key={b.id} bot={b} state="happy" size={30} />
+          <BotAvatar key={b.id} bot={b} state="happy" size={30} animated={false} />
         ))}
         {extra > 0 && (
           <span className="z-10 flex size-[22px] items-center justify-center rounded-full border border-hairline/40 bg-raised text-[10px] font-medium text-ink-secondary">
@@ -772,6 +774,11 @@ function BotListItem({
         size={avatarSize}
         motion={mascotMotion?.kind ?? "none"}
         motionKey={mascotMotion?.nonce ?? 0}
+        // Motion means something is happening. A resting bot holds a resting
+        // pose — N idle rows bobbing at display rate was most of the app's
+        // visible-idle CPU (states are keyword-derived, so "working" can be
+        // decorative; busy/unread/motion are the real signals).
+        animated={Boolean(bot.busy) || Boolean(bot.unread) || (mascotMotion?.kind ?? "none") !== "none"}
       />
       <div className={cn("min-w-0 flex-1", iconOnly && "hidden")}>
         <div className="flex items-baseline justify-between gap-2">
@@ -976,7 +983,7 @@ function ArchivedBotsPanel({
           <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
             {bots.map((bot) => (
               <div key={bot.id} className="flex min-h-[82px] items-center gap-3 border-b border-hairline/35 px-1 py-3">
-                <BotAvatar bot={bot} state="happy" size={42} />
+                <BotAvatar bot={bot} state="happy" size={42} animated={false} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[14px] font-medium text-ink">{bot.name}</div>
                   <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary">{bot.title || "Bot"}</div>
@@ -1477,18 +1484,33 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       {/* Footer */}
       <div className={cn("pb-3 pt-2", density === "icons" ? "px-2" : "px-3")}>
         <button
-          onClick={() => dispatch({ type: "showSkillRecorder" })}
-          aria-label={density === "icons" ? "Teach a skill" : undefined}
-          title={density === "icons" ? "Teach a skill" : undefined}
+          onClick={() => dispatch({ type: "showTeamMap" })}
+          aria-label={density === "icons" ? "Team map" : undefined}
+          title={density === "icons" ? "Team map" : undefined}
           className={cn(
             "flex min-h-10 w-full items-center rounded-xl py-2 text-left transition-colors",
             density === "icons" ? "justify-center px-2" : "gap-3 px-3",
-            state.activeView === "skill-recorder" ? "bg-raised text-ink" : "text-ink hover:bg-raised/50",
+            state.activeView === "team-map" ? "bg-raised text-ink" : "text-ink hover:bg-raised/50",
           )}
         >
-          <Sparkles size={20} className={state.activeView === "skill-recorder" ? "text-accent" : "text-ink-secondary"} />
-          <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>Teach a skill</span>
+          <Network size={20} className={state.activeView === "team-map" ? "text-accent" : "text-ink-secondary"} />
+          <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>Team map</span>
         </button>
+        {skillRecorderEnabled(state.config) && (
+          <button
+            onClick={() => dispatch({ type: "showSkillRecorder" })}
+            aria-label={density === "icons" ? "Teach a skill" : undefined}
+            title={density === "icons" ? "Teach a skill" : undefined}
+            className={cn(
+              "flex min-h-10 w-full items-center rounded-xl py-2 text-left transition-colors",
+              density === "icons" ? "justify-center px-2" : "gap-3 px-3",
+              state.activeView === "skill-recorder" ? "bg-raised text-ink" : "text-ink hover:bg-raised/50",
+            )}
+          >
+            <Sparkles size={20} className={state.activeView === "skill-recorder" ? "text-accent" : "text-ink-secondary"} />
+            <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>Teach a skill</span>
+          </button>
+        )}
         <button
           onClick={() => dispatch({ type: "showRoutines" })}
           aria-label={density === "icons" ? "Tasks and routines" : undefined}

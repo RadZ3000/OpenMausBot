@@ -15,10 +15,12 @@ import {
   ListTree,
   Loader2,
   Monitor,
+  MessageSquareReply,
   Pencil,
   Pin,
   PinOff,
   RefreshCw,
+  Search,
   Square,
   Webhook,
   X,
@@ -39,10 +41,14 @@ import { BotAvatar, MausAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { ChatMarkdown } from "./ChatMarkdown";
-import { OptionCard } from "./OptionCard";
+import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
+import { ChatFindBar } from "./ChatFindBar";
+import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
+import { SecretRequestCard } from "./SecretRequestCard";
+import { AttachedImageGallery } from "./AttachmentPreview";
 import { ModelPicker } from "./ModelPicker";
 import { RenameTitle } from "./RenameTitle";
 import { TaskPicker } from "./TaskPicker";
@@ -54,7 +60,7 @@ import { cn } from "@/lib/cn";
 import { COMPACT_BUBBLE, COMPACT_SQUARE } from "@/lib/compact-chip";
 import { useFocusMessage } from "@/lib/focus-message";
 import { webhookMessageView } from "@/lib/webhook-message";
-import { attachmentBasename, splitAttachedImages } from "@/lib/composer-attachments";
+import { splitAttachedImages } from "@/lib/composer-attachments";
 import { messageImageSrc } from "@/lib/message-image";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
 import {
@@ -324,6 +330,8 @@ function Bubble({
   onCancelEdit,
   onSubmitEdit,
   onRegenerate,
+  replyTarget,
+  onReply,
 }: {
   bot: Bot;
   message: Message;
@@ -333,6 +341,8 @@ function Bubble({
   onCancelEdit: () => void;
   onSubmitEdit: (text: string) => void;
   onRegenerate?: () => void;
+  replyTarget?: Message;
+  onReply: () => void;
 }) {
   const { dispatch } = useStore();
   const user = message.role === "user";
@@ -377,6 +387,15 @@ function Bubble({
         {user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
         {user && <CopyButton text={visibleText} />}
         <button
+          type="button"
+          onClick={onReply}
+          aria-label="Reply to message"
+          className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+          title="Reply"
+        >
+          <MessageSquareReply size={14} />
+        </button>
+        <button
           onClick={() =>
             dispatch({
               type: "updateBot",
@@ -405,6 +424,18 @@ function Bubble({
           )}
           title={new Date(message.at).toLocaleString()}
         >
+          {replyTarget && (
+            <div className="mb-2">
+              <ReplyQuote
+                message={replyTarget}
+                fallbackName={bot.name}
+                compact
+                onJump={() =>
+                  dispatch({ type: "focusMessage", threadId: bot.threadId, messageId: replyTarget.id })
+                }
+              />
+            </div>
+          )}
           {user && webhookView ? (
             <div className="min-w-[300px] max-w-[520px]">
               <div className="flex items-center gap-2 border-b border-accent/15 bg-accent/[0.055] px-4 py-2.5 text-[11.5px] font-medium text-accent">
@@ -422,20 +453,7 @@ function Bubble({
           ) : user ? (
             <>
               {attachedImages && attachedImages.images.length > 0 && (
-                <div className="mb-2 flex flex-wrap justify-end gap-2">
-                  {attachedImages.images.map((path) => (
-                    // the thumbnail crops to keep the bubble small, so it
-                    // opens in the same viewer the bot's images use rather
-                    // than throwing the file at a browser tab
-                    <ExpandableImage
-                      key={path}
-                      src={`/api/attachments/${encodeURIComponent(attachmentBasename(path))}`}
-                      alt="Attached image"
-                      caption={path}
-                      className="block max-h-[220px] max-w-[260px] rounded-lg border border-hairline/40 object-cover"
-                    />
-                  ))}
-                </div>
+                <AttachedImageGallery paths={attachedImages.images} />
               )}
               <div
                 className={cn(collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
@@ -640,6 +658,7 @@ function WorkingTimer({ since }: { since: number }) {
 const MessagesList = memo(function MessagesList({
   bot,
   messages,
+  transcript,
   editingId,
   lastBotTextId,
   canRetryLast,
@@ -648,9 +667,12 @@ const MessagesList = memo(function MessagesList({
   onCancelEdit,
   onSubmitEdit,
   onRegenerate,
+  onReply,
 }: {
   bot: Bot;
   messages: Message[];
+  /** Active-branch messages, including ones outside the mounted window. */
+  transcript: Message[];
   editingId: string | null;
   lastBotTextId: string | undefined;
   canRetryLast: boolean;
@@ -660,6 +682,7 @@ const MessagesList = memo(function MessagesList({
   onCancelEdit: () => void;
   onSubmitEdit: (id: string, text: string) => void;
   onRegenerate: () => void;
+  onReply: (message: Message) => void;
 }) {
   const { dispatch } = useStore();
   return (
@@ -683,16 +706,18 @@ const MessagesList = memo(function MessagesList({
         const newDay = !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
         const row = (() => {
           switch (m.kind) {
+            case "secret":
+              return m.secret ? <SecretRequestCard botId={bot.id} threadId={bot.threadId} message={m} /> : null;
             case "connector":
               return m.connector ? <ConnectorCard botId={bot.id} threadId={bot.threadId} message={m} /> : null;
             case "options":
-              // a live permission ask gets the approval box; questions and
-              // the onboarding quiz keep the list card
-              return m.card?.requestId && m.card.tool ? (
-                <ApprovalCard bot={bot} message={m} />
-              ) : (
-                <OptionCard botId={bot.id} message={m} />
-              );
+              // a live permission ask gets the approval box; questions keep
+              // the list card. The first-run quiz drops out once they talk.
+              if (m.card?.requestId && m.card.tool) {
+                return <ApprovalCard bot={bot} message={m} />;
+              }
+              if (shouldHideOnboardingCard(m, transcript)) return null;
+              return <OptionCard botId={bot.id} message={m} />;
             case "activity":
               // a failed turn is an error, not a tool run — render it as one
               return m.tool?.name.startsWith("error:") ? (
@@ -723,6 +748,8 @@ const MessagesList = memo(function MessagesList({
                   onCancelEdit={onCancelEdit}
                   onSubmitEdit={(text) => onSubmitEdit(m.id, text)}
                   onRegenerate={onRegenerate}
+                  replyTarget={m.replyToId ? bot.messages.find((candidate) => candidate.id === m.replyToId) : undefined}
+                  onReply={() => onReply(m)}
                 />
               );
           }
@@ -795,6 +822,20 @@ export function ChatView({ bot }: { bot: Bot }) {
   const reasoning = stream.reasoning[bot.threadId];
   const provisioning = state.provisioning[bot.id];
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
+  const [findOpen, setFindOpen] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  useEffect(() => setFindOpen(false), [bot.threadId]);
+  useEffect(() => setReplyTo(null), [bot.threadId]);
+  useEffect(() => {
+    const onFind = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setFindOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onFind);
+    return () => window.removeEventListener("keydown", onFind);
+  }, []);
 
   // only the active branch is rendered; forks stay reachable via ‹ › nav
   const messages = useMemo(() => visibleMessages(bot), [bot]);
@@ -1007,6 +1048,18 @@ export function ChatView({ bot }: { bot: Bot }) {
           {bot.busy && <Loader2 size={14} className="animate-spin text-ink-secondary" />}
         </div>
         <div className="flex shrink-0 items-center gap-2" style={noDrag}>
+          <button
+            onClick={() => setFindOpen((open) => !open)}
+            aria-label="Find in conversation"
+            aria-pressed={findOpen}
+            className={cn(
+              "rounded-md p-1.5 hover:bg-raised",
+              findOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
+            )}
+            title="Find in conversation (⌘F)"
+          >
+            <Search size={18} />
+          </button>
           {bot.busy && (
             <button
               onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
@@ -1049,6 +1102,8 @@ export function ChatView({ bot }: { bot: Bot }) {
           </button>
         </div>
       </div>
+
+      {findOpen && <ChatFindBar threadId={bot.threadId} onClose={() => setFindOpen(false)} />}
 
       {/* Error banner */}
       {state.error && (
@@ -1121,6 +1176,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           <MessagesList
             bot={bot}
             messages={windowedMessages}
+            transcript={messages}
             editingId={editingId}
             lastBotTextId={lastBotTextId}
             canRetryLast={!bot.busy && Boolean(lastUserMessage)}
@@ -1129,6 +1185,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             onCancelEdit={cancelEdit}
             onSubmitEdit={submitEdit}
             onRegenerate={regenerate}
+            onReply={setReplyTo}
           />
           {laterCount > 0 && (
             <div className="flex justify-center">
@@ -1187,6 +1244,8 @@ export function ChatView({ bot }: { bot: Bot }) {
       <Composer
         key={bot.id}
         bot={bot}
+        replyTo={replyTo}
+        onClearReply={() => setReplyTo(null)}
         onEditLast={lastUserMessage && !bot.busy ? () => setEditingId(lastUserMessage.id) : undefined}
       />
 

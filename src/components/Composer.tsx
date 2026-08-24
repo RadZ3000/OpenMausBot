@@ -1,14 +1,16 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Clock, Mic, Square, Users, X } from "lucide-react";
-import { useStore, visibleMessages, type Bot, type Group } from "@/state/store";
+import { ArrowUp, Clock, Mic, Plus, Square, Users, X, Zap } from "lucide-react";
+import { useStore, visibleMessages, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useComposerDraft } from "@/lib/drafts";
 import { MausAvatar } from "./Avatar";
-import { ComposerAttachments } from "./ComposerAttachments";
+import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
+import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   composeMessage,
   imageAttachmentFromFile,
+  intakeFiles,
   isImageFile,
   isLongPaste,
   pasteAttachment,
@@ -18,6 +20,7 @@ import { normalizeState } from "@/lib/mascot";
 import { groupComposerHint, roomRespondersForComposer } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
+import { ReplyQuote } from "./ReplyQuote";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -38,12 +41,16 @@ export function Composer({
   group,
   members,
   onEditLast,
+  replyTo,
+  onClearReply,
   locked = false,
 }: {
   bot?: Bot;
   group?: Group;
   members?: Bot[];
   onEditLast?: () => void;
+  replyTo?: Message | null;
+  onClearReply?: () => void;
   /** New rooms keep the composer inert until their setup is saved or skipped. */
   locked?: boolean;
 }) {
@@ -156,13 +163,43 @@ export function Composer({
   // the moment the room settles. 1:1 mid-turn sends still POST (the harness
   // queue), but stay off the transcript until drain — the chip here is the
   // pending row so they cannot become the active leaf mid-turn.
-  const [queued, setQueued] = useState<string | null>(null);
+  const [queued, setQueued] = useState<{ text: string; replyToId?: string } | null>(null);
   const pendingChip = group
-    ? queued
+    ? queued?.text
     : bot
       ? state.pendingQueued?.[bot.threadId]?.map((entry) => entry.text).join("\n")
       : undefined;
   // a chip on its own is a message: the send control has to appear for it
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [autoWarn, setAutoWarn] = useState(false);
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+  // Auto mode belongs to one bot; a room has several, each with its own.
+  const autoBot = group ? undefined : bot;
+  const pickFiles = async (picked: FileList | null) => {
+    if (!picked?.length) return;
+    const { attachments: added, notice } = await intakeFiles(Array.from(picked), {
+      allowImages: engineSupportsImages,
+      getPath: pathForFile,
+      uploadImage: imageAttachmentFromFile,
+    });
+    if (added.length) addAttachments(added);
+    // Keep file-specific failures beside the attachments. A successful
+    // overlapping intake must not erase an earlier failure before it is read.
+    if (notice) setAttachmentNotice(notice);
+  };
+  const toggleAuto = () => {
+    if (!autoBot) return;
+    // Turning it on for a bot that drives THIS computer is the one case that
+    // has to be acknowledged first. The flag the dialog sends is stripped by
+    // the reducer rather than stored, so — exactly like the settings panel —
+    // the warning is shown on every switch-on, not just the first.
+    if (!autoBot.autoApprove && autoBot.computer === "local") {
+      setAutoWarn(true);
+      return;
+    }
+    dispatch({ type: "updateBot", botId: autoBot.id, patch: { autoApprove: !autoBot.autoApprove } });
+  };
+
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
   const send = () => {
     if (locked) return;
@@ -173,30 +210,32 @@ export function Composer({
     const t = composeMessage(text, attachments);
     if (!t) return;
     if (busy && group) {
-      setQueued(t);
+      setQueued({ text: t, replyToId: replyTo?.id });
       setText("");
       setAttachments([]);
+      onClearReply?.();
       return;
     }
     if (group) {
-      dispatch({ type: "sendGroup", groupId: group.id, text: t });
+      dispatch({ type: "sendGroup", groupId: group.id, text: t, replyToId: replyTo?.id });
       track("message_sent", { room: true });
     } else if (bot) {
-      dispatch({ type: "send", botId: bot.id, text: t });
+      dispatch({ type: "send", botId: bot.id, text: t, replyToId: replyTo?.id });
       track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy && !canSteer });
     }
     setText("");
     setAttachments([]);
+    onClearReply?.();
   };
   useEffect(() => {
     if (busy || !queued) return;
     if (group) {
-      if (queued.includes("<attached-image ") && !imageTargetsSupport(queued)) {
+      if (queued.text.includes("<attached-image ") && !imageTargetsSupport(queued.text)) {
         dispatch({ type: "error", message: "The selected responder does not support image attachments." });
         setQueued(null);
         return;
       }
-      dispatch({ type: "sendGroup", groupId: group.id, text: queued });
+      dispatch({ type: "sendGroup", groupId: group.id, text: queued.text, replyToId: queued.replyToId });
       track("message_sent", { room: true, queued: true });
     }
     setQueued(null);
@@ -321,13 +360,45 @@ export function Composer({
             />
           </div>
         )}
+        {replyTo && (
+          <div className="mb-2 px-1">
+            <ReplyQuote
+              message={replyTo}
+              fallbackName={bot?.name}
+              onClear={onClearReply}
+            />
+          </div>
+        )}
         <ComposerAttachments
           items={attachments}
           onAdd={addAttachments}
           onRemove={removeAttachment}
           allowImages={engineSupportsImages}
+          notice={attachmentNotice}
+          onNotice={setAttachmentNotice}
         />
-        <div className="flex items-end gap-2 rounded-3xl border border-hairline/40 bg-raised/60 py-2 pl-3 pr-2">
+        <div className="flex items-end gap-2 rounded-3xl border border-hairline/40 bg-raised/60 py-2 pl-2 pr-2">
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            void pickFiles(e.target.files);
+            // same file twice in a row still fires onChange
+            e.target.value = "";
+          }}
+        />
+        {!locked && (
+          <button
+            onClick={() => fileInput.current?.click()}
+            aria-label="Attach a file"
+            title="Attach a file"
+            className="flex size-8 shrink-0 items-center justify-center self-end rounded-full text-ink-secondary hover:bg-control hover:text-ink"
+          >
+            <Plus size={18} />
+          </button>
+        )}
         <textarea
           ref={inputRef}
           rows={1}
@@ -428,6 +499,28 @@ export function Composer({
           aria-label={`Message ${group ? group.name : (bot?.name ?? "")}`}
           className="max-h-40 w-full resize-none self-center bg-transparent py-1 text-[15px] leading-6 text-ink placeholder:text-ink-secondary focus:outline-none"
         />
+        {autoBot && !locked && (
+          <button
+            onClick={toggleAuto}
+            role="switch"
+            aria-checked={Boolean(autoBot.autoApprove)}
+            aria-label="Auto mode"
+            title={
+              autoBot.autoApprove
+                ? "Auto mode is on — this bot keeps going without asking. Anything destructive still stops for you."
+                : "Auto mode is off — you approve each action"
+            }
+            className={cn(
+              "flex shrink-0 items-center gap-1 self-end rounded-full px-2 py-1.5 text-[12.5px] font-medium",
+              autoBot.autoApprove
+                ? "bg-accent/15 text-accent-text"
+                : "text-ink-secondary hover:bg-control hover:text-ink",
+            )}
+          >
+            <Zap size={13} className={autoBot.autoApprove ? "fill-current" : undefined} />
+            Auto
+          </button>
+        )}
         {busy && !locked && (
           <button
             onClick={() => {
@@ -471,6 +564,20 @@ export function Composer({
         )}
         </div>
       </div>
+      <LocalComputerAutoWarning
+        open={autoWarn}
+        onCancel={() => setAutoWarn(false)}
+        onConfirm={() => {
+          if (autoBot) {
+            dispatch({
+              type: "updateBot",
+              botId: autoBot.id,
+              patch: { autoApprove: true, acknowledgeLocalAuto: true },
+            });
+          }
+          setAutoWarn(false);
+        }}
+      />
     </div>
   );
 }
