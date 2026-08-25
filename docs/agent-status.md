@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-24 (merged `upstream/main` through `1602f97` / 0.1.32+. Path A first-run is Thinking **8B @ 32k**. Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-08-24 (merged `upstream/main` through `1602f97` / 0.1.32+. Path A first-run is Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
@@ -32,7 +32,7 @@ cold-start were deleted as duplicates of this file; git still has them.
 
 Caught up to `upstream/main` `1602f97` on 2026-08-24. We kept consent-gated analytics (not their default-on settings row), compact `vm_*` wrap, ACP keep-alive, Chromium VM status, and Path A 8B@32k. Joined `imageGenApiKey` onto their `request_credential` allowlist. Their ACP core still `stop()`s on settle; ours still parks the child via `server/acp-session.ts`.
 
-Hermes ACP gold on this box **failed** (stall cancel, not truncation). Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
+Hermes ACP gold **passed on this NVIDIA box** and **failed on Admin CPU**. Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
 [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md)
 (not built).
@@ -125,9 +125,16 @@ Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
 
 `RECOMMENDED_MODEL` / `modelForTier` are `qwen3-vl:8b`. Context 32768 on both tiers. Comfortable floor 24 GB. `NEW_SESSION_TIMEOUT` 120s.
 
-Hermes ACP 8B@32k gold on this Admin box (no NVIDIA, Vulkan off, CPU, Local VM down): **fail**. Thread `7105ac50-…`. Digest `901cae732162`. `llama-server -c 32768`, `size_vram` 0. `session/new` ~6s. Combined file+echo+open prompt, `computer: off`. After ~20.7 min with no ACP chunks, default `TURN_STALL_MS` (20 min) sent `session/cancel`. **No** `tool_call`, **not** truncated, no `0xc0000409`. Same shape as 4B@16k Admin cancel in 006. Does **not** prove thoughts filled 32k.
+Hermes ACP 8B@32k gold, same prompt, `computer: off`, digest `901cae732162`, `llama-server -c 32768`:
 
-**UI on this box after the flip (Vite :5199, unpackaged harness):** new bots still prefer **Claude** when that CLI is available (`PREFERRED_ENGINE` default `claudeAgent`; packaged bake is Hermes). A bot left on **Local VM** Retry-cards even “hello” (`Prepare the Cua desktop image…`) — **Runs on → Off** to talk. Hermes ACP “hello”/“hey” on CPU at 32k sits at **0 tok** for minutes (8B or 4B); the picker can flash **Hermes not installed** while `GET /api/instances` waits on a busy Ollama. Do not treat that flash as a missing CLI. Skip-Hermes on this box (compact catalog, 32k, CPU): 4B **166 s**, 8B **240 s**, same three tools — tee [`plans/2026-08-24-006-skip-hermes-cpu-tee.md`](plans/2026-08-24-006-skip-hermes-cpu-tee.md). Chat still goes through Hermes.
+| Box | Result |
+|---|---|
+| **This machine** (RTX 2060 6 GB, 15.72 GB RAM **tight**, ~3.3 GB `size_vram`) | **Pass.** Thread `cf3a8ba9-…`. `session/new` ~3 s. First ACP `tool_call` at **~7.5 min** (`write` `omb-tee.txt` / `8241`), then `terminal` `echo OMB-TEE-OK`, then `terminal` `start https://example.com`. ~1773 thought chunks before tools. **Not** truncated, no `0xc0000409`. Turn stayed busy on the write approval — do not score the grant. |
+| **Admin** (no NVIDIA, Vulkan off, CPU, VM down) | **Fail.** Thread `7105ac50-…`. `session/new` ~6 s. `size_vram` 0. After ~20.7 min with **no** ACP chunks, default `TURN_STALL_MS` sent `session/cancel`. **No** `tool_call`, **not** truncated. Same shape as 4B@16k Admin cancel in 006. |
+
+Skip-Hermes on Admin (compact catalog, 32k, CPU): 4B **166 s**, 8B **240 s**, same three tools — tee [`plans/2026-08-24-006-skip-hermes-cpu-tee.md`](plans/2026-08-24-006-skip-hermes-cpu-tee.md). Chat still goes through Hermes. GPU is the Path A speed class for the agent prompt; do not bump `TURN_STALL_MS` to paper over CPU.
+
+**UI after the flip (Vite :5199, unpackaged harness):** new bots still prefer **Claude** when that CLI is available (`PREFERRED_ENGINE` default `claudeAgent`; packaged bake is Hermes). A bot left on **Local VM** Retry-cards even “hello” (`Prepare the Cua desktop image…`) — **Runs on → Off** to talk. On Admin CPU, Hermes ACP “hello”/“hey” at 32k sits at **0 tok** for minutes (8B or 4B); the picker can flash **Hermes not installed** while `GET /api/instances` waits on a busy Ollama. Do not treat that flash as a missing CLI.
 
 ## Two ceilings (do not confuse)
 
@@ -158,7 +165,7 @@ Hermes eyes (paste ACP + VM caption) is in tree; ACP keep-alive is in tree
 NVIDIA tee; Admin no-NVIDIA crash was Vulkan; CPU skip-Hermes Thinking
 tools at 8k and 32k; do not hunt more `vm_*`.
 
-1. **Path A gold failed on this CPU box** — 20 min silence watchdog, not a 32k-full thoughts miss. Skip-Hermes 8B on the same prompt finished in **4 min** with tools ([006](plans/2026-08-24-006-skip-hermes-cpu-tee.md)); that does not replace Hermes gold. NVIDIA 8B@32k still unmeasured. Unpackaged new-bot default is still Claude (not a 005 bug). Spec:
+1. **Path A gold is measured on both boxes** — NVIDIA **pass** (~7.5 min, three tools); Admin CPU **fail** (20 min silence watchdog, not a 32k-full thoughts miss). Skip-Hermes 8B on Admin finished in **4 min** with tools ([006](plans/2026-08-24-006-skip-hermes-cpu-tee.md)); that does not replace Hermes gold. Unpackaged new-bot default is still Claude (not a 005 bug). Spec:
    [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md).
    4B tee remains
    [`plans/2026-08-23-006-qwen3vl-replace-granite-plan.md`](plans/2026-08-23-006-qwen3vl-replace-granite-plan.md).
@@ -203,8 +210,8 @@ tools at 8k and 32k; do not hunt more `vm_*`.
 | [`plans/2026-08-24-002-local-vm-chromium-status.md`](plans/2026-08-24-002-local-vm-chromium-status.md) | Chromium stderr ≠ desktop failed to start. Pid cap 2048. |
 | [`plans/2026-08-24-003-path-a-qwen3vl-first-run-plan.md`](plans/2026-08-24-003-path-a-qwen3vl-first-run-plan.md) | **Tombstone.** Instruct 4B @ 8k. Do not implement. |
 | [`plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md`](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md) | Qwen-CUA is not first-run. 4B Instruct pick overridden by 005. |
-| [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | In tree; Admin CPU gold **fail** (20 min stall, no `tool_call`). |
-| [`plans/2026-08-24-006-skip-hermes-cpu-tee.md`](plans/2026-08-24-006-skip-hermes-cpu-tee.md) | Measured 2026-08-24. Skip-Hermes CPU 4B 166 s / 8B 240 s tools vs Hermes ACP 20 min / 0 tools. |
+| [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | In tree; NVIDIA Hermes gold **pass**; Admin CPU gold **fail**. |
+| [`plans/2026-08-24-006-skip-hermes-cpu-tee.md`](plans/2026-08-24-006-skip-hermes-cpu-tee.md) | Skip-Hermes CPU 4B 166 s / 8B 240 s tools; Admin Hermes 20 min / 0 tools; NVIDIA Hermes ~7.5 min / 3 tools. |
 | [`server/cua-desktop-status.ts`](../server/cua-desktop-status.ts) | Classifier used by Local VM and VPS. |
 | `.claude/skills/<folder>/SKILL.md` | Folders = table in `AGENTS.md`. |
 

@@ -1,6 +1,6 @@
 # Path A first-run: Qwen3-VL Thinking 8B at 32k
 
-Status: **in tree 2026-08-24; Admin CPU Hermes ACP 8B@32k gold fail** (20 min `TURN_STALL_MS`, `session/cancel`, no `tool_call`; not truncated). This **supersedes**
+Status: **in tree 2026-08-24; NVIDIA Hermes ACP 8B@32k gold pass** (~7.5 min, three `tool_call`s); **Admin CPU gold fail** (20 min `TURN_STALL_MS`, `session/cancel`, no `tool_call`; not truncated). This **supersedes**
 [2026-08-24-003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md)
 (Instruct 4B, 8k). Parent tees stay
 [2026-08-23-006](2026-08-23-006-qwen3vl-replace-granite-plan.md)
@@ -23,8 +23,8 @@ cancelled). None of that was an 8B Hermes-at-32k gold turn.
 
 The product owner overrode the size/context caution: **ship Thinking 8B
 at 32k anyway.** Constants are in tree. Admin CPU Hermes ACP gold
-**failed** (20 min stall, no `tool_call`). NVIDIA 8B@32k is still
-unmeasured.
+**failed** (20 min stall, no `tool_call`). NVIDIA 8B@32k Hermes ACP gold
+**passed** (~7.5 min, three tools; RTX 2060 6 GB, ~3.3 GB `size_vram`).
 
 ## check-upstream-first (2026-08-24)
 
@@ -140,7 +140,7 @@ Rollback: flip the same constants back to Granite / 8192 / 4096 / 2.5 GB
 | Context | 8192 / 4096 | **32768 / 32768** |
 | 16 GB + 6 GB VRAM NVIDIA laptop | Fits, tight | **Tight / CPU spill / VM fight.** Not the 003 “fits this laptop” story. |
 | Admin 48 GB, no NVIDIA | N/A | CPU path if Vulkan off; first Hermes turn will be **slow** |
-| Hermes Thinking tools | 4B @ 8k: **miss** (NVIDIA) | 8B @ 32k Admin CPU: **fail** (20 min stall, no tools). NVIDIA unmeasured. |
+| Hermes Thinking tools | 4B @ 8k: **miss** (NVIDIA) | 8B @ 32k Admin CPU: **fail** (20 min stall, no tools). NVIDIA: **pass** (~7.5 min, three tools). |
 
 [004](2026-08-24-004-qwen3vl-vs-qwen-cua.md) “do not pull 8B as first-run”
 is **overridden** for Path A install only. Qwen-CUA is still not first-run.
@@ -242,14 +242,25 @@ pull was Thinking 8B (`901cae732162`). `llama-server -c 32768`.
 `session/new` ~6s. Combined prompt, `computer: off`. After ~20.7 min of
 no ACP chunks, default `TURN_STALL_MS` (20 min) sent `session/cancel`.
 **Fail:** no `tool_call`. Not thoughts-only, not truncated, not
-`0xc0000409`, not `session/new` timeout. NVIDIA 8B@32k still unmeasured.
+`0xc0000409`, not `session/new` timeout.
 
-Skip-Hermes on the same compact prompt: 8B **240 s**, three tools; 4B
+**Measured 2026-08-24 (this NVIDIA box, RTX 2060 6 GB, 15.72 GB RAM tight, VM down):**
+same tag (`901cae732162`), `llama-server -c 32768`, `context_length` 32768,
+`size_vram` 3509091040. Thread `cf3a8ba9-…`. Combined prompt,
+`computer: off`. `session/new` ~3 s. ~1773 `agent_thought_chunk`s, then at
+**~7.5 min** ACP `tool_call` write `omb-tee.txt` / `8241` (permission
+prompt), then `terminal` `echo OMB-TEE-OK`, then `terminal`
+`start https://example.com`. **Pass:** ≥1 `tool_call`, window not
+truncated-full. No `0xc0000409`. 6 GB VRAM spilled part of the ~6.1 GB
+weights to RAM — still a valid NVIDIA Hermes tee. Do not score the write
+approval or host `start`.
+
+Skip-Hermes on the same compact prompt (Admin CPU): 8B **240 s**, three tools; 4B
 **166 s**, same tools. Full split (load / prefill / decode, undici 5 min
 header trap) is
 [2026-08-24-006](2026-08-24-006-skip-hermes-cpu-tee.md). Hermes ACP
-20 min / 0 tools is the agent prompt, not 8B weights being unable to
-emit tools.
+20 min / 0 tools **on CPU** is the agent prompt without a GPU, not 8B
+weights being unable to emit tools.
 
 Unpackaged Vite on the same box: new bots can still open as **Claude**;
 a bot left on Local VM Retry-cards “hello”; Hermes ACP “hey” on **4B**

@@ -302,9 +302,11 @@ not `0xc0000409`. UI “hello”/“hey” on 8B **or** 4B Thinking sits at
 picker while Ollama is busy can flash **Hermes not installed** until
 `GET /api/instances` returns. Skip-Hermes compact catalog on this CPU
 box emits tools: 4B **166 s**, 8B **240 s** vs Hermes ACP 8B **20 min /
-0 tools**. Splits, digests, and the undici 5 min header trap:
+0 tools**. Same prompt on NVIDIA (RTX 2060 6 GB, 32k): Hermes ACP 8B
+**pass** at **~7.5 min**, three `tool_call`s. Splits, digests, and the
+undici 5 min header trap:
 [2026-08-24-006](plans/2026-08-24-006-skip-hermes-cpu-tee.md). GPU is the
-speed fix; a longer stall is only a model verdict. Chat in the app still
+speed fix; a longer stall is only a CPU-box model verdict. Chat in the app still
 goes through Hermes.
 
 ### Slowness compounds in a way a chatbot's does not — **Decided**
