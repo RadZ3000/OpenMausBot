@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-25 (docs hop-on is [`README.md`](README.md); historical plans live in [`plans/archive/`](plans/archive/README.md). Merged `upstream/main` through `dae7631` / 0.1.33 as `f574f0d`. Path C in tree, uncommitted: capability-then-credits Worker, `hostedInference` instance, chooser live. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-08-25 (merged `upstream/main` through `bb087fa` / 0.1.34. Docs hop-on is [`README.md`](README.md); historical plans live in [`plans/archive/`](plans/archive/README.md). Path C and brand pack A–C are in `51a5a74`. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
@@ -24,14 +24,14 @@ this file; git still has them.
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` |
-| HEAD | `f574f0d` merge of `upstream/main` through `dae7631` (0.1.33). Path A 8B@32k is `033f1ab`. |
+| HEAD | this merge of `upstream/main` through `bb087fa` (0.1.34). Path A 8B@32k is `033f1ab`. Brand + Path C is `51a5a74`. |
 | Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
-| Merge base | this merge — 0.1.33 (companion/control-plane, live desktop, autoStartVps, playbooks). Path A 8B@32k and the fork layers sit on top. |
+| Merge base | this merge — 0.1.34 (companion auth errors, control-plane Worker redirects). Path A 8B@32k and the fork layers sit on top. |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `origin/main` | `d037f40` — this branch is **not** merged to our `main` |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Caught up to `upstream/main` `dae7631` on 2026-08-25 (hosted companion, control-plane, live-desktop-from-preview, autoStartVps, BotMRR playbooks). Previous catch-up was `1602f97` on 2026-08-24. We kept consent-gated analytics, compact `vm_*` wrap, ACP keep-alive, Chromium VM status, Path A 8B@32k, and image-gen. Their ACP core still `stop()`s on settle; ours still parks the child via `server/acp-session.ts`.
+Caught up to `upstream/main` `bb087fa` on 2026-08-25 (0.1.34, companion auth error codes + request-id, control-plane Worker redirects). Previous catch-up was `dae7631` / `f574f0d` the same day. We kept consent-gated analytics, compact `vm_*` wrap, ACP keep-alive, Chromium VM status, Path A 8B@32k, image-gen, brand pack A–C, and Path C. Their companion error copy won except `network_unavailable`, which still uses `OMB_PRODUCT_NAME`. Their ACP core still `stop()`s on settle; ours still parks the child via `server/acp-session.ts`.
 
 Hermes ACP gold **passed on this NVIDIA box** and **failed on Admin CPU**. Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
@@ -66,7 +66,7 @@ Keep-alive does **not** make that a coworker.
 
 ## In the tree (do not redo)
 
-**Brand pack** (uncommitted until asked). Phases A–C of
+**Brand pack**. Phases A–C of
 [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md)
 are in the tree: `brand/profile.ts` + overlay `brand/electron-builder.yml`,
 copy through `distribution.productName` / `PRODUCT_NAME`, Team Library off,
@@ -83,7 +83,7 @@ Path A first-run **in code**: pinned Ollama zip, `qwen3-vl:8b` Thinking pull (~6
 ([B-11](known-bugs.md) leftover). Chooser can stick in Electron userData
 ([B-26](known-bugs.md)).
 
-**Path C** (uncommitted until asked): capability-then-credits Worker at
+**Path C**: capability-then-credits Worker at
 [`cloudflare/inference-broker/`](../cloudflare/inference-broker/), instance
 enable in [`server/hosted-inference.ts`](../server/hosted-inference.ts),
 desktop registration in [`electron/managed-inference.mjs`](../electron/managed-inference.mjs).
@@ -194,7 +194,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Catch upstream** — done through `dae7631` (`f574f0d`). Next catch-up is a new fetch, not this gap.
+4. **Catch upstream** — done through `bb087fa` (this merge). Next catch-up is a new fetch, not this gap.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
 7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
