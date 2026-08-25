@@ -25,6 +25,10 @@ follow-up the next agent is supposed to remember.
 - Finding, fixing, or reclassifying a defect.
 - A measurement that other agents would act on (tee, gold pass/fail, RAM, stall).
 - Anything that looks like a handoff, "where we are", or "what to do next".
+- First-run arms, the two-process split, or the Path A computer wedge moved
+  (hop-on map "What this app is" — not the snapshot).
+- A living fork doc added or removed, or a file moved into or out of
+  `git diff --stat upstream/main` (whose-file cheat sheet).
 - The docs tree looking scattered: duplicate owners, a finished plan still in
   Open, a new standing file next to one that already owns the fact.
 
@@ -39,7 +43,7 @@ snapshot.
 
 | File | Owns |
 |---|---|
-| [`docs/README.md`](../../../docs/README.md) | Hop-on map: where architecture, conventions, and docs live. Keep the path obvious. |
+| [`docs/README.md`](../../../docs/README.md) | Hop-on map: app shape (processes, first-run arms, Path A computer wedge), whose-file cheat sheet, where architecture, conventions, and docs live. Keep the path obvious. Campaign state stays in `agent-status.md`. |
 | [`docs/agent-status.md`](../../../docs/agent-status.md) | Git, what's in the tree, product goals, next work, do-not list. **Overwrite in place.** |
 | [`docs/plans/README.md`](../../../docs/plans/README.md) | Catalog of *our* plans: Open / in tree / archive. |
 | The plan for this job | Spec, leftovers, tee record for *this* job. Status line must match the catalog. |
@@ -59,7 +63,7 @@ do not rewrite those as a handoff.
 
 In this order. Stop at the plan for *this* job; do not read the whole catalog.
 
-1. [`docs/README.md`](../../../docs/README.md) — where to look.
+1. [`docs/README.md`](../../../docs/README.md) — app shape, whose file, where to look.
 2. [`docs/agent-status.md`](../../../docs/agent-status.md) — where we are, what
    not to do, what is already in the tree.
 3. [`docs/plans/README.md`](../../../docs/plans/README.md) — pick the one **Open**
@@ -93,8 +97,14 @@ stale snapshot is an incomplete change.
 - **`docs/known-bugs.md`**: delete a fixed entry; add a new one with the next
   `B-NN` id. A heading that still says `open` while the body says fixed is how
   [B-14](../../../docs/known-bugs.md) already lies — believe and fix both.
-- **Tensions / identity / hop-on map**: only if those facts moved. A new
-  standing doc gets a row on `docs/README.md` the same turn.
+- **Tensions / identity**: only if those facts moved.
+- **`docs/README.md` (hop-on map)**: a new standing doc gets a Living-docs row
+  the same turn. Update "What this app is" only when processes, first-run arms,
+  or the Path A computer wedge move — never SHAs or gold scores. Update the
+  whose-file **ours** column when adding a living fork doc. The rule is
+  `git diff --stat upstream/main` (absent = theirs); the table is a cheat
+  sheet. If they disagree, the **diff** wins — fix the cheat sheet the same
+  turn.
 
 Never create `docs/plans/YYYY-MM-DD-*-handoff.md`. Never add a second standing
 snapshot. The deletion of the two handoffs is the precedent.
@@ -107,9 +117,12 @@ After the edit, these must not contradict each other:
 - agent-status "Next work" vs a plan that already landed
 - a bug id cited as open that was deleted, or deleted while still open in the snapshot
 - `docs/README.md` vs files that actually exist (no links into a dump that moved)
+- whose-file cheat sheet vs `git diff --stat upstream/main` (diff wins)
 
-If two files disagree, the snapshot wins for *now*, and the other file is what
-you fix in this turn.
+Campaign facts: if two files disagree, the snapshot wins for *now*, and the
+other file is what you fix in this turn. Whose-file follows the diff, not the
+snapshot. App shape lives on the hop-on map — do not copy it into the snapshot
+to force agreement.
 
 ### 4. Keep the workspace organized
 
@@ -187,6 +200,8 @@ tombstone, not a new file.
 ## What not to write
 
 - A new current-state file because this chat feels special.
+- `docs/architecture.md`, or app-shape pasted into `agent-status.md`. The
+  hop-on map already owns that.
 - "Session notes", "handoff", or "cold start" documents under `docs/plans/`.
 - Restating AGENTS.md rules inside the snapshot.
 - Inventing brand slots, publish URLs, or `appId` values in docs to look complete.

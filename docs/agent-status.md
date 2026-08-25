@@ -3,13 +3,13 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-25 (brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Merged `upstream/main` through `bb087fa` / 0.1.34. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-08-25 (hop-on map has app shape + whose-file. Brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Merged `upstream/main` through `bb087fa` / 0.1.34. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
 1. [`AGENTS.md`](../AGENTS.md) — always-on rules.
-2. [`README.md`](README.md) — where to look (architecture, living vs upstream
-   docs, archive).
+2. [`README.md`](README.md) — where to look (app shape, whose file, living vs
+   upstream docs, archive).
 3. This file — where we are, what we want, what not to do.
 4. Then only the plan for the job in front of you. Catalog:
    [`plans/README.md`](plans/README.md).
@@ -230,7 +230,7 @@ Hop-on index: [`README.md`](README.md). Full catalog:
 | File | Owns |
 |---|---|
 | [`AGENTS.md`](../AGENTS.md) | Rules. Keep short. |
-| [`README.md`](README.md) | Where to look. |
+| [`README.md`](README.md) | App shape, whose file, where to look. |
 | **This file** | State + goals. Overwrite. |
 | [`plans/README.md`](plans/README.md) | Open / in tree / archive. |
 | [`local-model-path.md`](local-model-path.md) | Path A tensions and decisions. |

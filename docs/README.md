@@ -2,8 +2,8 @@
 
 Hop-on page for a new agent. **Rules** live in [`../AGENTS.md`](../AGENTS.md).
 **Current state** lives in [`agent-status.md`](agent-status.md). This file is
-only the map: where architecture, conventions, and docs live, and what not to
-touch.
+only the map: app shape, whose file, where architecture, conventions, and docs
+live, and what not to touch.
 
 Overwrite [`agent-status.md`](agent-status.md) when facts change. Add, archive,
 or delete files when the tree scatters (`keep-docs-current`: plans that left
@@ -13,17 +13,40 @@ Open are archived; duplicates and pass-throughs are deleted).
 
 1. [`../AGENTS.md`](../AGENTS.md) — always-on rules. Skills under
    `.claude/skills/<folder>/SKILL.md`.
-2. This file — where to look.
+2. This file — app shape, whose file, where to look.
 3. [`agent-status.md`](agent-status.md) — git, what's in the tree, next work,
    stop-lines.
 4. **One** plan from [`plans/README.md`](plans/README.md). Historical work is
    under [`plans/archive/`](plans/archive/README.md). Do not start from a walk
    log or a dated handoff.
 
-Architecture is [`../server/contracts.ts`](../server/contracts.ts) — read that
-before inventing a seam. Two processes: `src/` is the React app (HTTP out, one
-SSE stream in); `server/` owns every agent process on `127.0.0.1:8799`.
-Platform-specific code is `electron/`. Fork overlay is `brand/`.
+## What this app is
+
+Electron chat. Each sidebar bot is a real agent CLI (or API driver), not one
+boxed assistant.
+
+Two processes: [`../src/`](../src/) is the React UI (HTTP commands out, one SSE
+stream in); [`../server/`](../server/) owns every agent process on
+`127.0.0.1:8799`. Platform code is [`../electron/`](../electron/). Fork overlay
+is [`../brand/`](../brand/). [`../server/contracts.ts`](../server/contracts.ts)
+is the driver SPI — read it before inventing a seam. It is types and events, not
+a turn walkthrough; trace a send if you need the flow.
+
+First-run arms (names from
+[003](plans/2026-08-20-003-product-foundation-plan.md); spec
+[005](plans/2026-08-20-005-three-path-first-run-plan.md)):
+
+- **Path A** — local open-source (runtime, weights, Hermes, Local VM). No API key.
+- **Path B** — bring your own key.
+- **Path C** — hosted "just run" (capability then credits). Fail closed: no
+  default Worker URL.
+
+Path A computer is the **Local VM**. Upstream Box/cloud computer is inherited;
+it is not the wedge.
+
+Repo-root [`../README.md`](../README.md) is **upstream marketing** (their
+downloads, Polar). Do not follow it for this fork. Campaign state:
+[`agent-status.md`](agent-status.md).
 
 ## Living docs (ours)
 
@@ -33,7 +56,7 @@ One fact, one file. If a fact already has an owner, edit that file.
 |---|---|
 | [`../AGENTS.md`](../AGENTS.md) | Rules. Keep short. |
 | [`agent-status.md`](agent-status.md) | State + goals. Overwrite in place. |
-| **This file** | Where to look. Keep the hop-on path obvious. |
+| **This file** | App shape, whose file, where to look. Keep the hop-on path obvious. |
 | [`plans/README.md`](plans/README.md) | Catalog of *our* plans (open / in tree / archive). |
 | [`known-bugs.md`](known-bugs.md) | Defects we ship. Delete the entry when fixed. |
 | [`local-model-path.md`](local-model-path.md) | Path A tensions and decisions. |
@@ -44,6 +67,7 @@ One fact, one file. If a fact already has an owner, edit that file.
 
 | Path | What it is |
 |---|---|
+| [`../README.md`](../README.md) | **Upstream** marketing. This file is the hop-on map. |
 | `src/` | React UI |
 | `server/` | Node harness. New capability = new file at an existing seam. |
 | `electron/` | Desktop shell (platform gates) |
@@ -55,12 +79,17 @@ One fact, one file. If a fact already has an owner, edit that file.
 | `docs/plans/archive/` | Done, superseded, walks, diaries. Git has them. |
 | `docs/superpowers/` | **Upstream.** Do not start here. Do not add files. |
 
-## Upstream docs (read, do not rewrite)
+## Whose file (fork vs upstream)
 
-Everything under `docs/` that does **not** appear in
-`git diff --stat upstream/main -- docs` is theirs. Product guides (`cursor.md`,
-`voice-mode.md`, `releasing.md`, `composio.md`, `ios-*.md`, …) and their plans
-(`docs/plans/2026-08-18-*`, `agent-harness-upgrades*.md`,
+The rule is `git diff --stat upstream/main`. In that list → ours. Absent →
+theirs. The table below is a cheat sheet for files that look like "the docs";
+if it disagrees with the diff, the **diff** wins.
+
+| Ours | Theirs — read, do not rewrite |
+|---|---|
+| This map, [`agent-status.md`](agent-status.md), [`plans/README.md`](plans/README.md), [`known-bugs.md`](known-bugs.md), [`local-model-path.md`](local-model-path.md), [`identity-surface.md`](identity-surface.md), [`image-generation.md`](image-generation.md), [`../AGENTS.md`](../AGENTS.md), [`../brand/`](../brand/), [`../cloudflare/inference-broker/`](../cloudflare/inference-broker/) | Repo-root [`../README.md`](../README.md), [`../CONTRIBUTING.md`](../CONTRIBUTING.md), [`releasing.md`](releasing.md), [`superpowers/`](superpowers/), `docs/plans/2026-08-18-*`, product guides (`cursor.md`, `voice-mode.md`, `composio.md`, `ios-*.md`, …) |
+
+Product guides and their plans (`agent-harness-upgrades*.md`,
 `opencode-go-integration.md`) stay byte-identical unless we are merging.
 Do not park fork state in them.
 
