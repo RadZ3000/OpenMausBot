@@ -61,6 +61,7 @@ permission boundaries, or a test for new server behaviour.
 - No sleeps in tests. Wait on the event that proves the behaviour. Never touch the real `~/.openmausbot`.
 - API keys are write-only: never log them, echo them in responses or events, or bake them into argv.
 - Never hand-edit `dist-server/`; it is build output.
+- Never merge, cherry-pick, or rebase `upstream` until `pnpm check:upstream-license` is green, **even if the user asked to merge**. Fetch is allowed. On red: stop, paste the script's alert, wait. The merge request is not acknowledgment. `ok` / `continue` / `do it` / `proceed` / `lgtm` do not count. After a named acknowledgment, freeze by default; merging the new terms requires naming that license and saying to merge despite it.
 
 ## Verifying a change
 
@@ -72,6 +73,7 @@ pnpm check:electron     # desktop-shell changes
 pnpm check:licenses     # any dependency change
 pnpm check:distribution # anything that ships a URL, endpoint, or key
 pnpm check:brand        # product name, overlay, leftover OpenMausBot. `--release` before a customer artifact
+pnpm check:upstream-license # before merging upstream. A merge order does not skip this.
 ```
 
 `pnpm lint` carries the `anti-slop` rules in `tools/oxlint/`, which reject

@@ -12,22 +12,46 @@ owns is a conflict we hand-resolve forever.
 Before building anything, see `check-upstream-first`. This skill is for after
 the divergence already exists.
 
-## 1. Know what you are merging
+## 1. License gate (before any merge)
+
+`git fetch upstream` stays vanilla — that is how we see they changed `LICENSE`.
+A user order to fetch and merge does **not** skip this step.
 
 ```sh
 git fetch upstream
+pnpm check:upstream-license
+```
+
+Green → continue. Red → **do not start** `git merge` / cherry-pick / rebase of
+`upstream`. If a merge is already in progress, stop resolving and do not
+commit it; say so. Paste the script's alert. Wait for a **new** user message
+after the alert that names the detected license (AGPL, SSPL, Commons Clause, …).
+
+- The original "fetch and merge" / "catch upstream" is **not** acknowledgment.
+- `ok` / `continue` / `do it` / `proceed` / `lgtm` do not count.
+- After a named acknowledgment, the **default** is freeze at the last clean SHA
+  the script printed — not merge.
+- Taking the new terms requires that same (or a later) message to also say to
+  merge **despite that named license**. A bare "I acknowledge" is not a merge
+  order.
+
+Looking at their tree for ideas is fine. Copying those commits is not.
+
+## 2. Know what you are merging
+
+```sh
 git log --oneline HEAD..upstream/main
 git diff --stat upstream/main
 ```
 
-The second command is what is coming. The third is what we own, and it is the
-list you are defending. Read it before you start — every entry you cannot
-justify is a conflict you are about to pay for again.
+The log is what is coming. The diff-stat is what we own, and it is the list
+you are defending. Read it before you start — every entry you cannot justify
+is a conflict you are about to pay for again.
 
 Merge onto a branch, never straight onto `dev`. Commit our work first so there
 is a recoverable base if the merge goes badly.
 
-## 2. Resolve each hunk on ownership, not preference
+## 3. Resolve each hunk on ownership, not preference
 
 The rule that settles most conflicts here:
 
@@ -44,7 +68,7 @@ Understand the intent behind both sides before choosing: read `git show <sha>`
 for the upstream commits touching the file, not just the commit titles. Never
 invent new behaviour while resolving, and never `--abort` — resolve it.
 
-## 3. Reconcile our features on top
+## 4. Reconcile our features on top
 
 Ours generally survive as additive layers: a capability flag in
 `server/contracts.ts`, a mount in the turn paths, a proxy under
@@ -62,7 +86,7 @@ failed. For any credential we own, confirm it is registered in
 `src/components/ApiKeys.tsx`, and both `syncCredentialEnv` and
 `WORKSPACE_CREDENTIAL_ENV` in `server/config.ts`.
 
-## 4. Take the whole feature, including its consequences
+## 5. Take the whole feature, including its consequences
 
 If upstream shipped a feature we are adopting, adopt its surface too. Their
 image attachments landed with the tag rendering handled in one view and not the
@@ -70,7 +94,7 @@ other, so a room showed users raw `<attached-image path="..."/>` markup. Walk
 the feature through every place it can appear — 1:1 and rooms, the export, the
 iOS companion — rather than assuming their coverage is complete.
 
-## 5. Prove it
+## 6. Prove it
 
 ```sh
 pnpm typecheck
@@ -82,7 +106,7 @@ pre-existing baseline that is mostly upstream's, so compare against that
 baseline rather than chasing zero: the only question is whether *our* files
 added anything new.
 
-## 6. Leave the record honest
+## 7. Leave the record honest
 
 - `git diff --stat upstream/main` should now contain only things upstream
   genuinely lacks. Revert cosmetic drift — a reflowed call, a rename that only

@@ -103,6 +103,10 @@ Because this fork is sold, that list is also our record of what we own. Flag any
 new dependency, any hardcoded endpoint or key, and any default that points at
 upstream — `commercial-fork` has the standard.
 
+On a merge review, run `pnpm check:upstream-license` (or confirm it was green
+before the merge). A merge that landed on a red license is a spec fail — the
+gate in `AGENTS.md` does not yield to a "fetch and merge" order.
+
 ## 6. Report
 
 Present the two reports under `## Standards` and `## Spec`, then the divergence

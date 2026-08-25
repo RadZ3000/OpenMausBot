@@ -48,6 +48,17 @@ them:
 It also, in §6, grants **no trademark rights**. The name, the mascot, and the
 brand are not ours by way of the licence, whatever we do to the code.
 
+Apache §2 is irrevocable for the copy we already have. A later upstream
+relicense applies to **new commits**, not to that snapshot. The dangerous step
+is merging those commits. `git fetch upstream` stays vanilla — do not wrap it.
+`pnpm check:upstream-license` is the merge gate. Run it after every fetch,
+before any merge / cherry-pick / rebase of `upstream`, **even when the user
+asked to merge**. On red: stop, paste the alert, wait. The merge request is not
+acknowledgment. `ok` / `continue` / `do it` do not count. After a named
+acknowledgment, freeze at the last clean SHA by default; taking the new terms
+requires naming that license and saying to merge despite it. Spec:
+[`docs/plans/2026-08-25-003-upstream-license-gate.md`](../../docs/plans/2026-08-25-003-upstream-license-gate.md).
+
 ## The rule that does the most work
 
 Keep the divergence from upstream small and **additive**, and it doubles as the
@@ -201,6 +212,8 @@ rebranding anything.
 ## Before a build leaves the building
 
 - `pnpm check:licenses` passes, and any new `REVIEWED` entry has a real reason.
+- `pnpm check:upstream-license` is green on the `upstream/main` we last fetched.
+  Never ship a tree that merged a red check.
 - `LICENSE` and `NOTICE` ship, plus the `third_party/cua-driver/` notices.
 - Files we modified carry a modification notice; keep this cheap by not
 modifying many.

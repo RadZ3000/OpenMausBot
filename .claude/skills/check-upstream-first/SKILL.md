@@ -33,11 +33,17 @@ The cost is highest where it is least visible: a feature is not obviously
 
 ```sh
 git fetch upstream
+pnpm check:upstream-license
 git log --oneline HEAD..upstream/main | head -40
 ```
 
 If we are behind by more than a handful of commits, say so — the feature may
 already be sitting in the gap.
+
+If the license check is red, paste the alert and **do not merge**. A user order
+to fetch and merge is not acknowledgment — wait for a new message that names
+the detected license; default after that is freeze. Still search their tree so
+we do not duplicate a feature we would have to rewrite ourselves.
 
 ### 2. Ask whether they built it
 

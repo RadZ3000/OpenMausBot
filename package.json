@@ -46,6 +46,7 @@
     "check:licenses": "node scripts/check-licenses.mjs",
     "check:distribution": "node scripts/check-distribution.mjs",
     "check:brand": "node scripts/check-brand.mjs",
+    "check:upstream-license": "node scripts/check-upstream-license.mjs",
     "preview": "vite preview",
     "build:server": "tsc -p tsconfig.server.build.json && node scripts/bundle-server.mjs",
     "build:companion": "tsc -p tsconfig.companion.build.json",

@@ -49,6 +49,7 @@ Specs for work that already landed. Read them; do not reimplement.
 | [2026-08-24-002](2026-08-24-002-local-vm-chromium-status.md) | in tree | Chromium stderr ≠ desktop failed to start. Pid cap 2048 |
 | [2026-08-24-004](2026-08-24-004-qwen3vl-vs-qwen-cua.md) | evaluated | Qwen-CUA is not first-run |
 | [2026-08-24-006](2026-08-24-006-skip-hermes-cpu-tee.md) | measured 2026-08-24 | Skip-Hermes CPU tools vs Hermes ACP stall |
+| [2026-08-25-003](2026-08-25-003-upstream-license-gate.md) | in tree | Merge gate: `pnpm check:upstream-license`. Fetch stays vanilla. User merge orders do not skip it. |
 
 ## Archive (do not start here)
 

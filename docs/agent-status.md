@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-25 (hop-on map has app shape + whose-file. Brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Merged `upstream/main` through `bb087fa` / 0.1.34. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-08-25 (upstream license merge gate in tree: `pnpm check:upstream-license`. Hop-on map has app shape + whose-file. Brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Merged `upstream/main` through `bb087fa` / 0.1.34. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
@@ -78,6 +78,13 @@ desktop fails closed (no `accounts.openmausbot.com` default). **Phase D is
 not done.** `pnpm check:brand --release` stays red. Do not invent those
 values to go green. Map: [`identity-surface.md`](identity-surface.md).
 Read `commercial-fork`; do not add a second profile.
+
+**Upstream license gate.** [`plans/2026-08-25-003-upstream-license-gate.md`](plans/2026-08-25-003-upstream-license-gate.md)
+is in tree. `pnpm check:upstream-license` after `git fetch upstream`, before any
+merge. Green today on `bb087fa` (Apache-2.0). A “fetch and merge” order does
+**not** skip it. On red: stop, paste the alert, wait for a named acknowledgment;
+default is freeze. Do not wrap fetch. Weekly Action:
+`.github/workflows/check-upstream-license.yml`.
 
 Path A first-run **in code**: pinned Ollama zip, `qwen3-vl:8b` Thinking pull (~6.1 GB), in-app Hermes, Local VM
 (WSL/Podman/Cua). Checklist is serial CTAs, not one pass
@@ -195,7 +202,8 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Catch upstream** — done through `bb087fa` (this merge). Next catch-up is a new fetch, not this gap.
+4. **Catch upstream** — done through `bb087fa` (this merge). Next catch-up is a
+   new fetch **plus** `pnpm check:upstream-license`, then merge only if green.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
 7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
@@ -221,6 +229,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
 - Start a job from `docs/plans/archive/` or `docs/superpowers/`.
 - Leave a finished plan in the Open table — archive it.
 - Invent an `appId`, data-dir name, icons, mailbox, `accounts.` host, or 004 URLs to make `pnpm check:brand --release` green. Phase D waits on real ingredients.
+- Merge, cherry-pick, or rebase `upstream` while `pnpm check:upstream-license` is red. A “fetch and merge” / “catch upstream” order is not license acknowledgment. `ok` / `continue` / `do it` do not count. After a named acknowledgment, freeze by default.
 
 ## Map (one job, one file)
 
@@ -240,6 +249,7 @@ Hop-on index: [`README.md`](README.md). Full catalog:
 | [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | Path A first-run: Thinking 8B @ 32k. |
 | [`plans/2026-08-25-001-path-c-hosted-trial-plan.md`](plans/2026-08-25-001-path-c-hosted-trial-plan.md) | Path C hosted router. |
 | [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md) | Brand pack. A–C in tree; Phase D unset. |
+| [`plans/2026-08-25-003-upstream-license-gate.md`](plans/2026-08-25-003-upstream-license-gate.md) | Upstream license merge gate. |
 | [`../cloudflare/inference-broker/`](../cloudflare/inference-broker/) | Path C Worker. |
 | [`../server/hosted-inference.ts`](../server/hosted-inference.ts) | Distinct `hostedInference` instance. |
 | `.claude/skills/<folder>/SKILL.md` | Folders = table in `AGENTS.md`. |

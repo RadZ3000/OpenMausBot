@@ -1,0 +1,41 @@
+# Tripwire: milind-soni/OpenMausBot relicensed off terms we can sell.
+#
+# Fetch is how we see LICENSE move; merge is the dangerous step. Agents run
+# `pnpm check:upstream-license` before any merge. This workflow is the backstop
+# for weeks when nobody is merging. Do not edit ci.yml for this — that file is
+# upstream's, and a normal checkout has no `upstream` remote.
+name: Upstream license
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-license
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: pnpm check:upstream-license
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/milind-soni/OpenMausBot.git
+          git remote set-url --push upstream DISABLED
+          git fetch --no-tags upstream main
+      - run: pnpm check:upstream-license
