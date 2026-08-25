@@ -1,6 +1,8 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, safeStorage, screen, session, shell, systemPreferences, utilityProcess } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, screen, session, shell, systemPreferences, utilityProcess } from "electron";
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc, setCuaStateListener } from "./cua.mjs";
@@ -19,6 +21,28 @@ import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
+import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
+import {
+  ensureManagedComposioCredentials,
+  managedComposioAccess,
+  managedComposioChildEnvironment,
+  normalizeManagedComposioBrokerUrl,
+} from "./managed-composio.mjs";
+import {
+  createManagedCompanionTunnel,
+  managedCompanionTunnelAccess,
+  resolveCloudflaredBinary,
+  resolveManagedCompanionGuardian,
+  withManagedCompanionTunnelAccess,
+  withoutManagedCompanionTunnelAccess,
+} from "./managed-companion-tunnel.mjs";
+import { createSecureCredentialState } from "./secure-credential-state.mjs";
+import { createControlPlaneClient } from "./control-plane-client.mjs";
+import {
+  companionAccountCleanupPending,
+  createCompanionAccountService,
+  resolveCompanionControlPlaneURL,
+} from "./companion-account-service.mjs";
 import capabilitiesModule from "./capabilities.cjs";
 
 const { desktopCapabilities, nativeDesktopActions } = capabilitiesModule;
@@ -41,6 +65,7 @@ const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 let desktopViewerWindow = null;
 let desktopViewerOwner = null;
 let desktopViewerContextId = null;
+let pendingPackageInstallUrl = packageUrlFromCommandLine(process.argv);
 let mainWindow = null;
 let unreadCount = 0;
 let unreadOverlayIcon = null;
@@ -111,8 +136,14 @@ function applyUnreadBadge(win = mainWindow) {
 }
 
 // GNOME groups the window with its installed desktop entry only when both
-// identities match. This must run before Electron becomes ready.
-if (process.platform === "linux") app.setDesktopName("com.openmausbot.app.desktop");
+// identities match. This must run before Electron becomes ready. Ubuntu also
+// uses Chromium's software renderer: the supported machine reproduced two
+// NVIDIA/libGLES GPU-process crashes that left an invisible focused window
+// intercepting input. This app is not graphics-heavy, so reliability wins.
+if (process.platform === "linux") {
+  app.disableHardwareAcceleration();
+  app.setDesktopName("com.openmausbot.app.desktop");
+}
 
 // One instance per user: without this lock a second launch forks a second
 // harness server on a fallback port and splits data dirs in two. The loser
@@ -121,8 +152,34 @@ if (!app.requestSingleInstanceLock()) {
   console.log("[desktop] OpenMausBot is already running — focusing that window");
   process.exit(0);
 }
-app.on("second-instance", () => {
+function deliverPackageInstall(win) {
+  if (!pendingPackageInstallUrl || !win || win.isDestroyed()) return;
+  if (win.webContents.isLoadingMainFrame()) return;
+  win.webContents.send("package:install", pendingPackageInstallUrl);
+  pendingPackageInstallUrl = null;
+}
+
+function queuePackageInstall(rawLink) {
+  const packageUrl = packageUrlFromDeepLink(rawLink);
+  if (!packageUrl) return false;
+  pendingPackageInstallUrl = packageUrl;
   activateExistingWindow(BrowserWindow.getAllWindows());
+  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
+  deliverPackageInstall(target);
+  return true;
+}
+
+app.on("open-url", (event, url) => {
+  if (!queuePackageInstall(url)) return;
+  event.preventDefault();
+});
+
+app.on("second-instance", (_event, commandLine) => {
+  const packageUrl = packageUrlFromCommandLine(commandLine);
+  if (packageUrl) pendingPackageInstallUrl = packageUrl;
+  activateExistingWindow(BrowserWindow.getAllWindows());
+  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
+  deliverPackageInstall(target);
 });
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
@@ -134,6 +191,7 @@ app.on("second-instance", () => {
 let serverProc = null;
 let serverReady = true;
 let secureCredentials = {};
+let secureCredentialState = null;
 
 const CREDENTIALS_FILE = path.join(app.getPath("userData"), "credentials.bin");
 
@@ -230,50 +288,9 @@ async function secureWorkspaceConfig() {
 
 function composioBrokerUrl() {
   const configured = process.env.OMB_COMPOSIO_BROKER_URL?.trim();
-  return configured || (app.isPackaged ? DEFAULT_COMPOSIO_BROKER_URL : "");
-}
-
-async function ensureManagedComposioCredentials() {
-  const brokerUrl = composioBrokerUrl();
-  if (!brokerUrl) return;
-  if (/^[0-9a-f]{64}$/.test(secureCredentials.composioBrokerToken ?? "")) {
-    try {
-      const check = await fetch(`${brokerUrl}/v1/me`, {
-        headers: { authorization: `Bearer ${secureCredentials.composioBrokerToken}` },
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (check.ok) return;
-      // Only a definitive auth failure rotates the credential. A transient
-      // outage keeps the existing identity so reconnecting cannot strand
-      // the user's already-authorized accounts under a new installation.
-      if (check.status !== 401) return;
-      delete secureCredentials.composioBrokerToken;
-      delete secureCredentials.composioInstallationId;
-    } catch {
-      return;
-    }
-  }
-  try {
-    const response = await fetch(`${brokerUrl}/v1/installations`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-      signal: AbortSignal.timeout(15_000),
-    });
-    const body = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
-    if (!/^[0-9a-f]{64}$/.test(body?.token ?? "") || typeof body?.installationId !== "string") {
-      throw new Error("the connected-apps service returned invalid credentials");
-    }
-    secureCredentials.composioBrokerToken = body.token;
-    secureCredentials.composioInstallationId = body.installationId;
-    await saveSecureCredentials(secureCredentials);
-    slog("connected-apps installation registered");
-  } catch (error) {
-    // Never block app startup on a hosted integration. A user running their
-    // own Composio project key still has the local fallback below.
-    slog(`connected-apps registration failed: ${error?.message ?? error}`);
-  }
+  return normalizeManagedComposioBrokerUrl(
+    configured || (app.isPackaged ? DEFAULT_COMPOSIO_BROKER_URL : ""),
+  );
 }
 
 // The packaged app has no terminal: everything about the server child's life
@@ -284,15 +301,33 @@ async function ensureManagedComposioCredentials() {
 const LOG_DIR = app.getPath("logs");
 let logStream = null;
 import {
+  companionAdvertisedHostedUrl,
   companionEnabledAtRest,
+  companionOriginTarget,
   companionPairing,
   companionCloudDesktopAccess,
   companionRevoke,
+  companionRunning,
   companionState,
   rememberCompanionEnabled,
+  rememberCompanionKeepAwake,
+  setCompanionHostedUrl,
+  setCompanionLifecycleListener,
   startCompanion,
   stopCompanion,
 } from "./companion.mjs";
+
+let companionPowerBlocker = null;
+
+function syncCompanionKeepAwake(companionEnabled, keepAwake) {
+  const shouldBlock = companionEnabled && keepAwake;
+  if (shouldBlock && companionPowerBlocker === null) {
+    companionPowerBlocker = powerSaveBlocker.start("prevent-app-suspension");
+  } else if (!shouldBlock && companionPowerBlocker !== null) {
+    if (powerSaveBlocker.isStarted(companionPowerBlocker)) powerSaveBlocker.stop(companionPowerBlocker);
+    companionPowerBlocker = null;
+  }
+}
 
 function slog(line) {
   try {
@@ -304,6 +339,253 @@ function slog(line) {
   } catch {
     /* logging must never break startup */
   }
+}
+
+// ── managed companion connection ───────────────────────────────────────
+// Account onboarding provisions one remote Cloudflare Tunnel per desktop,
+// then calls reconcileManagedCompanionEndpointProvision below. Only the
+// endpoint is public state. The connector token stays in credentials.bin and
+// is passed to cloudflared through a private token file by the lifecycle
+// module — never through IPC, argv, the environment, or logs.
+let managedCompanionConnector = null;
+let companionAccountService = null;
+let companionDesiredThisLaunch = false;
+let companionLaunchGeneration = 0;
+let advertisementTransition = Promise.resolve();
+
+/** The one serialized credential mutation hook. Account onboarding and every
+ * other runtime credential writer share this state, so persisting a tunnel
+ * token can never overwrite an API key saved at the same time (or vice
+ * versa). */
+export async function updateSecureCredentialDocument(derive, afterPersist) {
+  if (!secureCredentialState) throw new Error("Secure credentials are not ready");
+  try {
+    return await secureCredentialState.update(derive, afterPersist);
+  } finally {
+    secureCredentials = secureCredentialState.read();
+  }
+}
+
+function publicManagedCompanionState() {
+  const access = managedCompanionTunnelAccess(secureCredentials);
+  const status = managedCompanionConnector?.getStatus();
+  if (status) {
+    const publicState = {
+      status: status.status,
+      configured: status.configured,
+      ready: status.ready,
+    };
+    if (status.endpoint) publicState.url = status.endpoint;
+    if (status.retryInMs) publicState.retryInMs = status.retryInMs;
+    if (status.error) publicState.error = status.error;
+    return publicState;
+  }
+  return access
+    ? { status: "stopped", configured: true, ready: false, url: access.endpoint }
+    : { status: "unconfigured", configured: false, ready: false };
+}
+
+async function desktopCompanionState() {
+  const state = await companionState();
+  // The panel polls this state, so a sidecar that exited on its own releases
+  // the blocker within one poll instead of keeping the computer awake forever.
+  syncCompanionKeepAwake(state.enabled && !state.error, state.keepAwake === true);
+  return { ...state, managedConnection: publicManagedCompanionState() };
+}
+
+function companionLaunchOptions(hostedUrl = null) {
+  return {
+    resourcesPath: process.resourcesPath,
+    harnessPort: SERVER_PORT,
+    hostedUrl,
+    log: slog,
+  };
+}
+
+function ensureManagedCompanionConnector() {
+  if (managedCompanionConnector) return managedCompanionConnector;
+  managedCompanionConnector = createManagedCompanionTunnel({
+    binaryPath: resolveCloudflaredBinary({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    }),
+    guardianEntry: resolveManagedCompanionGuardian({ appPath: app.getAppPath() }),
+    runtimeExecutable: process.execPath,
+    runtimeRoot: path.join(app.getPath("userData"), "managed-companion-tunnel"),
+    onChange: (status) => {
+      slog(`managed companion connection ${status.status}`);
+      if (!companionDesiredThisLaunch) return;
+      void reconcileCompanionAdvertisement(status.ready ? status.endpoint : null);
+    },
+    log: slog,
+  });
+  return managedCompanionConnector;
+}
+
+/** Publish a hosted address only after its connector has passed public health
+ * verification. Updating the owned sidecar in place preserves the exact
+ * private origin generation and cannot invalidate an open pairing window. */
+function reconcileCompanionAdvertisement(
+  endpoint,
+  ownedGeneration = companionLaunchGeneration,
+) {
+  const normalizedEndpoint = endpoint || null;
+  const work = advertisementTransition.then(async () => {
+    if (
+      ownedGeneration !== companionLaunchGeneration ||
+      !companionDesiredThisLaunch ||
+      !companionRunning() ||
+      companionAdvertisedHostedUrl() === normalizedEndpoint
+    ) {
+      return desktopCompanionState();
+    }
+    const updated = await setCompanionHostedUrl(normalizedEndpoint);
+    return { ...updated, managedConnection: publicManagedCompanionState() };
+  });
+  advertisementTransition = work.then(
+    () => {},
+    () => {},
+  );
+  return work;
+}
+
+async function startManagedCompanionConnection({ waitForVerification = true } = {}) {
+  if (companionAccountCleanupPending(secureCredentials)) {
+    return publicManagedCompanionState();
+  }
+  const access = managedCompanionTunnelAccess(secureCredentials);
+  if (!access) return publicManagedCompanionState();
+  const target = companionOriginTarget();
+  if (!target) return publicManagedCompanionState();
+  const operation = ensureManagedCompanionConnector().start({ ...access, originTarget: target });
+  if (!waitForVerification) {
+    void operation.catch(() => {});
+    return publicManagedCompanionState();
+  }
+  const status = await operation;
+  await reconcileCompanionAdvertisement(status.ready ? status.endpoint : null);
+  return publicManagedCompanionState();
+}
+
+async function startDesktopCompanion({ waitForHosted = true, remember = true } = {}) {
+  companionDesiredThisLaunch = true;
+  companionLaunchGeneration += 1;
+  // Direct LAN comes up first. The hosted endpoint is added in place only
+  // after the guardian has verified the public route to this exact sidecar.
+  const localState = await startCompanion(companionLaunchOptions());
+  if (!localState.enabled || localState.error) {
+    companionDesiredThisLaunch = false;
+    return desktopCompanionState();
+  }
+  if (remember) rememberCompanionEnabled(true);
+  await startManagedCompanionConnection({ waitForVerification: waitForHosted });
+  return desktopCompanionState();
+}
+
+async function stopDesktopCompanion({ remember = true } = {}) {
+  companionDesiredThisLaunch = false;
+  companionLaunchGeneration += 1;
+  if (remember) rememberCompanionEnabled(false);
+  syncCompanionKeepAwake(false, false);
+  await managedCompanionConnector?.stop();
+  await stopCompanion();
+  return desktopCompanionState();
+}
+
+setCompanionLifecycleListener(({ expected, pid }) => {
+  if (expected) return;
+  slog(`owned companion exited unexpectedly pid=${pid ?? "unknown"}`);
+  companionDesiredThisLaunch = false;
+  companionLaunchGeneration += 1;
+  syncCompanionKeepAwake(false, false);
+  // stop() invalidates the guardian's owner pipe synchronously, before the
+  // sidecar module removes this generation's private socket.
+  void managedCompanionConnector?.stop().catch(() => {});
+});
+
+/** Narrow main-process hook for the account onboarding flow. Its return value
+ * is explicitly secret-free and can be used to refresh the settings panel. */
+export async function reconcileManagedCompanionEndpointProvision(provision) {
+  await updateSecureCredentialDocument((credentials) =>
+    withManagedCompanionTunnelAccess(credentials, provision),
+  );
+  if (companionDesiredThisLaunch) {
+    await startManagedCompanionConnection({ waitForVerification: true });
+  }
+  return publicManagedCompanionState();
+}
+
+/** Called only after the control plane has revoked/deleted the endpoint. */
+export async function clearManagedCompanionEndpointCredentials() {
+  await updateSecureCredentialDocument((credentials) =>
+    withoutManagedCompanionTunnelAccess(credentials),
+  );
+  await managedCompanionConnector?.stop();
+  if (companionDesiredThisLaunch) await reconcileCompanionAdvertisement(null);
+  return publicManagedCompanionState();
+}
+
+/** Account sign-out must stop advertising the hosted route before it asks
+ * the control plane to revoke anything, but it must not erase the retry
+ * credentials until that remote cleanup is durably scheduled. */
+async function stopManagedCompanionEndpointLocally() {
+  await managedCompanionConnector?.stop();
+  if (companionDesiredThisLaunch) await reconcileCompanionAdvertisement(null);
+  return publicManagedCompanionState();
+}
+
+async function activatePersistedManagedCompanionEndpoint() {
+  if (companionDesiredThisLaunch) {
+    return startManagedCompanionConnection({ waitForVerification: true });
+  }
+  return publicManagedCompanionState();
+}
+
+function installationDisplayName() {
+  const hostname = [...os.hostname()]
+    .filter((character) => character.codePointAt(0) >= 32 && character.codePointAt(0) !== 127)
+    .join("")
+    .trim();
+  return hostname.slice(0, 80) || "This computer";
+}
+
+function ensureCompanionAccountService() {
+  if (companionAccountService) return companionAccountService;
+  const baseURL = resolveCompanionControlPlaneURL({
+    isPackaged: app.isPackaged,
+    environment: process.env,
+  });
+  let client = null;
+  if (baseURL) {
+    try {
+      client = createControlPlaneClient({ baseURL });
+    } catch {
+      // An invalid explicit override disables hosted access. Direct LAN,
+      // Bonjour, and Tailscale pairing remain completely independent.
+    }
+  }
+  companionAccountService = createCompanionAccountService({
+    client,
+    readCredentials: () => secureCredentialState?.read() ?? secureCredentials,
+    updateCredentials: updateSecureCredentialDocument,
+    identity: {
+      name: installationDisplayName(),
+      platform:
+        process.platform === "win32"
+          ? "windows"
+          : process.platform === "darwin"
+            ? "darwin"
+            : "linux",
+      appVersion: app.getVersion().slice(0, 64),
+    },
+    newClientInstanceId: randomUUID,
+    activatePersistedEndpoint: activatePersistedManagedCompanionEndpoint,
+    stopManagedEndpoint: stopManagedCompanionEndpointLocally,
+    managedConnectionState: publicManagedCompanionState,
+    companionIsOn: () => companionDesiredThisLaunch,
+  });
+  return companionAccountService;
 }
 
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -355,32 +637,27 @@ async function gatherDiagnostics() {
 
 async function startServerOn(port) {
   const entry = path.join(process.resourcesPath, "server", "index.js");
+  const childEnv = managedComposioChildEnvironment(composioBrokerUrl(), secureCredentials, {
+    ...process.env,
+    OMB_STATIC_DIR: path.join(process.resourcesPath, "ui"),
+    OMB_RESOURCES_PATH: process.resourcesPath,
+    OMB_SKILLS_DIR: path.join(process.resourcesPath, "skills"),
+    OMB_PORT: String(port),
+    OMB_USER_DATA: app.getPath("userData"),
+    // what this build prefers a new bot to run on, baked in at packaging
+    // time; absent in an unconfigured build, and the real environment wins
+    ...distributionEnv(readDistributionMetadata(app.getAppPath()), process.env),
+    ...(secureCredentials.composioApiKey
+      ? { COMPOSIO_API_KEY: secureCredentials.composioApiKey }
+      : {}),
+    // one env var per stored workspace secret (xai/box/voice/OpenCode Go);
+    // the server prefers these over config.json, whose plaintext fields
+    // the boot migration has deleted
+    ...workspaceCredentialEnv(secureCredentials),
+  });
   slog(`fork ${entry} port=${port}`);
   const proc = utilityProcess.fork(entry, [], {
-    env: {
-      ...process.env,
-      OMB_STATIC_DIR: path.join(process.resourcesPath, "ui"),
-      OMB_RESOURCES_PATH: process.resourcesPath,
-      OMB_SKILLS_DIR: path.join(process.resourcesPath, "skills"),
-      OMB_PORT: String(port),
-      OMB_USER_DATA: app.getPath("userData"),
-      // what this build prefers a new bot to run on, baked in at packaging
-      // time; absent in an unconfigured build, and the real environment wins
-      ...distributionEnv(readDistributionMetadata(app.getAppPath()), process.env),
-      ...(secureCredentials.composioApiKey
-        ? { COMPOSIO_API_KEY: secureCredentials.composioApiKey }
-        : {}),
-      // one env var per stored workspace secret (xai/box/voice/OpenCode);
-      // the server prefers these over config.json, whose plaintext fields
-      // the boot migration has deleted
-      ...workspaceCredentialEnv(secureCredentials),
-      ...(composioBrokerUrl() && secureCredentials.composioBrokerToken
-        ? {
-            OMB_COMPOSIO_BROKER_URL: composioBrokerUrl(),
-            OMB_COMPOSIO_BROKER_TOKEN: secureCredentials.composioBrokerToken,
-          }
-        : {}),
-    },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   proc.stdout?.on("data", (d) => slog(`[out] ${String(d).trimEnd()}`));
@@ -430,6 +707,18 @@ async function startServerPackaged() {
     await new Promise((r) => setTimeout(r, 2500));
   }
   return false;
+}
+
+function syncManagedComposioCredentials() {
+  if (!serverProc) return;
+  try {
+    serverProc.postMessage({
+      type: "openmausbot:managed-composio",
+      access: managedComposioAccess(composioBrokerUrl(), secureCredentials),
+    });
+  } catch (error) {
+    slog(`connected-apps credential sync failed: ${error?.message ?? error}`);
+  }
 }
 
 const ERROR_PAGE =
@@ -640,6 +929,43 @@ function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  win.webContents.on("did-finish-load", () => deliverPackageInstall(win));
+
+  // Native context menu for text inputs — without this, right-click does
+  // nothing in the Electron window (no Cut/Copy/Paste/Select All).
+  win.webContents.on("context-menu", (_event, params) => {
+    // nothing actionable here — no menu at all, rather than a wall of
+    // disabled items
+    if (!params.isEditable && !params.linkURL && !params.misspelledWord && !params.selectionText) return;
+    const menuItems = [];
+    if (params.misspelledWord) {
+      for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
+        menuItems.push({
+          label: suggestion,
+          click: () => win.webContents.replaceMisspelling(suggestion),
+        });
+      }
+      if (menuItems.length) menuItems.push({ type: "separator" });
+    }
+    if (params.linkURL) {
+      menuItems.push(
+        { label: "Copy Link", click: () => clipboard.writeText(params.linkURL) },
+        { type: "separator" },
+      );
+    }
+    menuItems.push(
+      { label: "Undo", role: "undo", enabled: params.editFlags.canUndo },
+      { label: "Redo", role: "redo", enabled: params.editFlags.canRedo },
+      { type: "separator" },
+      { label: "Cut", role: "cut", enabled: params.editFlags.canCut },
+      { label: "Copy", role: "copy", enabled: params.editFlags.canCopy },
+      { label: "Paste", role: "paste", enabled: params.editFlags.canPaste },
+      { label: "Paste and Match Style", role: "pasteAndMatchStyle", enabled: params.editFlags.canPaste },
+      { type: "separator" },
+      { label: "Select All", role: "selectAll", enabled: params.editFlags.canSelectAll },
+    );
+    Menu.buildFromTemplate(menuItems).popup({ window: win, frame: params.frame });
+  });
 
   // Packaged CI smoke hook. It validates the real renderer/preload bridge and
   // same-origin embedded server, then follows the normal window-close path.
@@ -733,6 +1059,7 @@ function createWindow() {
             mcpEnv: connection?.mcp?.env,
           };
         }
+        result.hardwareAccelerationEnabled = app.isHardwareAccelerationEnabled();
         result.displayMediaRequests = displayMediaRequestCount;
         console.log(`[smoke] renderer-ready ${JSON.stringify(result)}`);
       } catch (error) {
@@ -926,28 +1253,35 @@ ipcMain.handle("skill-recorder:save", (_event, payload) => saveSkillRecording(pa
 // The renderer gets these five and nothing else: it can turn the companion
 // on and off, look at it, open or cancel a pairing window, and remove a
 // device. It cannot reach the sidecar's control port itself.
-ipcMain.handle("companion:state", () => companionState());
-ipcMain.handle("companion:start", async () => {
-  const state = await startCompanion({
-    resourcesPath: process.resourcesPath,
-    harnessPort: SERVER_PORT,
-    log: slog,
-  });
-  // Remember only a start that worked: persisting the intent behind a failed
-  // one would greet every launch with the same error for a toggle the panel
-  // showed as off.
-  if (state.enabled && !state.error) rememberCompanionEnabled(true);
-  return state;
+ipcMain.handle("companion:state", () => desktopCompanionState());
+ipcMain.handle("companion:start", () => startDesktopCompanion());
+ipcMain.handle("companion:stop", () => stopDesktopCompanion());
+ipcMain.handle("companion:keep-awake", async (_event, enabled) => {
+  rememberCompanionKeepAwake(Boolean(enabled));
+  return desktopCompanionState();
 });
-ipcMain.handle("companion:stop", () => {
-  rememberCompanionEnabled(false);
-  return stopCompanion();
+ipcMain.handle("companion:pairing", async (_event, open) => {
+  await companionPairing(Boolean(open));
+  return desktopCompanionState();
 });
-ipcMain.handle("companion:pairing", (_event, open) => companionPairing(Boolean(open)));
 ipcMain.handle("companion:cloud-desktop", (_event, deviceId, allowed) =>
-  companionCloudDesktopAccess(deviceId, Boolean(allowed)),
+  companionCloudDesktopAccess(deviceId, Boolean(allowed)).then(() => desktopCompanionState()),
 );
-ipcMain.handle("companion:revoke", (_event, deviceId) => companionRevoke(deviceId));
+ipcMain.handle("companion:revoke", (_event, deviceId) =>
+  companionRevoke(deviceId).then(() => desktopCompanionState()),
+);
+
+// Auth and connector credentials never cross this boundary. Every handler
+// returns the same deliberately tiny, secret-free public account state.
+ipcMain.handle("companion-account:state", () => ensureCompanionAccountService().state());
+ipcMain.handle("companion-account:request-code", (_event, email) =>
+  ensureCompanionAccountService().requestCode(email),
+);
+ipcMain.handle("companion-account:verify-code", (_event, email, code) =>
+  ensureCompanionAccountService().verifyCode(email, code),
+);
+ipcMain.handle("companion-account:retry", () => ensureCompanionAccountService().retry());
+ipcMain.handle("companion-account:sign-out", () => ensureCompanionAccountService().signOut());
 
 ipcMain.handle("desktop:capabilities", async () =>
   desktopCapabilities({
@@ -968,11 +1302,11 @@ ipcMain.handle("assemblyai:set-key", async (_event, value) => {
     throw new Error("The operating-system credential store is unavailable");
   }
   const secret = value.trim();
-  const nextCredentials = { ...secureCredentials };
-  if (secret) nextCredentials.assemblyAiApiKey = secret;
-  else delete nextCredentials.assemblyAiApiKey;
-  await saveSecureCredentials(nextCredentials);
-  secureCredentials = nextCredentials;
+  await updateSecureCredentialDocument((credentials) => {
+    if (secret) credentials.assemblyAiApiKey = secret;
+    else delete credentials.assemblyAiApiKey;
+    return credentials;
+  });
   return { configured: Boolean(secret) };
 });
 
@@ -999,18 +1333,7 @@ ipcMain.handle("credential:set", async (_event, name, value) => {
     throw new Error("The operating-system credential store is unavailable");
   }
   const secret = value.trim();
-  const previousCredentials = secureCredentials;
-  if (app.isPackaged) {
-    const nextCredentials = { ...secureCredentials };
-    if (secret) nextCredentials[name] = secret;
-    else delete nextCredentials[name];
-    // Commit the encrypted value before the server makes it live. If
-    // validation or reload fails below, restore the previous store so the
-    // next launch cannot disagree with the response the user saw.
-    await saveSecureCredentials(nextCredentials);
-    secureCredentials = nextCredentials;
-  }
-  try {
+  const applyToHarness = async () => {
     // In development the server is a separately launched process, so it
     // cannot receive credentials from Electron at boot. Keep its established
     // local config path there; production always uses the encrypted store.
@@ -1023,13 +1346,20 @@ ipcMain.handle("credential:set", async (_event, name, value) => {
     const body = await response.json().catch(() => null);
     if (!response.ok) throw new Error(body?.error || `Could not save credential (HTTP ${response.status})`);
     return body;
-  } catch (error) {
-    if (app.isPackaged) {
-      await saveSecureCredentials(previousCredentials);
-      secureCredentials = previousCredentials;
-    }
-    throw error;
-  }
+  };
+  if (!app.isPackaged) return applyToHarness();
+
+  // Commit the encrypted value before the server makes it live. The shared
+  // state rolls credentials.bin back if validation/reload fails, while also
+  // keeping concurrent account and provider updates serialized.
+  return updateSecureCredentialDocument(
+    (credentials) => {
+      if (secret) credentials[name] = secret;
+      else delete credentials[name];
+      return credentials;
+    },
+    applyToHarness,
+  );
 });
 
 async function broadcastDesktopCapabilities() {
@@ -1052,13 +1382,18 @@ setCuaStateListener((connection) => {
 });
 
 app.whenReady().then(async () => {
+  if (app.isPackaged) app.setAsDefaultProtocolClient("openmausbot");
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
   secureCredentials = await loadSecureCredentials();
   if (app.isPackaged) {
     await secureComposioConfig();
     await secureWorkspaceConfig();
-    await ensureManagedComposioCredentials();
   }
+  // Boot migrations above are deliberately sequential. From this point on,
+  // every account/API-key writer must use the shared serialized state.
+  secureCredentialState = createSecureCredentialState(secureCredentials, saveSecureCredentials);
+  secureCredentials = secureCredentialState.read();
+  const hostedAccount = ensureCompanionAccountService();
   // Display capture remains user-initiated. The renderer first sends a
   // short-lived one-shot intent, then calls getDisplayMedia in the same click.
   // The handler binds that request to the same frame/origin, rejects audio,
@@ -1130,9 +1465,29 @@ app.whenReady().then(async () => {
   // (the panel shows the error) rather than retrying; and it never delays
   // the window.
   if (serverReady && companionEnabledAtRest()) {
-    void startCompanion({ resourcesPath: process.resourcesPath, harnessPort: SERVER_PORT, log: slog });
+    void startDesktopCompanion({ waitForHosted: false, remember: false });
   }
   const win = createWindow();
+  // Reconcile incomplete setup and resume interrupted sign-out only after the
+  // local app is usable. This background network work never gates LAN pairing
+  // or the first window.
+  void hostedAccount.restore().catch(() => {});
+  // Registration is optional network work. Start it only after the local
+  // server and first window are usable, then update the server child over its
+  // private parent port so Connected Apps becomes available without restart.
+  if (app.isPackaged && composioBrokerUrl()) {
+    void updateSecureCredentialDocument(async (credentials) => {
+      await ensureManagedComposioCredentials({
+        brokerUrl: composioBrokerUrl(),
+        credentials,
+        // The shared credential state performs the one atomic encrypted
+        // write after this registration has derived its complete document.
+        saveCredentials: async () => {},
+        log: slog,
+      });
+      return credentials;
+    }).finally(syncManagedComposioCredentials);
+  }
   // in-app auto-update (packaged only) — checks GitHub releases, downloads on
   // the user's click, installs on "Restart to update"
   startUpdater(win);
@@ -1150,21 +1505,42 @@ app.on("window-all-closed", () => {
 // Cap the defer so a wedged daemon cannot keep the app alive forever.
 const CUA_STOP_TIMEOUT_MS = 2500;
 let cuaCleanedUp = false;
+let signalQuitRequested = false;
+
+// Package managers, desktop watchdogs, and terminal launchers commonly stop
+// Linux apps with SIGTERM/SIGINT. Convert the first signal into Electron's
+// normal quit path so the embedded server, Cua descriptor/socket, and private
+// AppImage stage receive the same bounded cleanup as a window close. A second
+// signal keeps Node's default force-quit behavior because these are `once`
+// listeners.
+const requestSignalQuit = () => {
+  if (signalQuitRequested) return;
+  signalQuitRequested = true;
+  app.quit();
+};
+process.once("SIGINT", requestSignalQuit);
+process.once("SIGTERM", requestSignalQuit);
+
 app.on("before-quit", (e) => {
   if (cuaCleanedUp) return;
   e.preventDefault();
   try {
     serverProc?.kill();
   } catch {}
-  // the sidecar holds a socket that is reachable from off this machine —
-  // it should not outlive the window by even a moment
-  void stopCompanion();
+  // Release the sleep blocker synchronously; child shutdown is awaited below.
+  syncCompanionKeepAwake(false, false);
   // a live dictation session runs its own helper child that holds the mic —
   // stop it here so quitting never orphans a recording process
   if (nativeActions.appleSpeech) stopSpeech();
   stopRecorder();
   const cleanup = Promise.race([
-    stopCua().catch(() => {}),
+    Promise.all([
+      stopCua().catch(() => {}),
+      // Both listeners reachable from outside the app are owned children.
+      // Shut the connector down first, then the sidecar, without changing the
+      // remembered toggle the next launch will restore.
+      stopDesktopCompanion({ remember: false }).catch(() => {}),
+    ]),
     new Promise((resolve) => setTimeout(resolve, CUA_STOP_TIMEOUT_MS).unref()),
   ]);
   cleanup.then(() => {

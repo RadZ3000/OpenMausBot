@@ -302,6 +302,9 @@ export interface BotRecord {
   computer?: "cloud" | "vm" | "local" | "off";
   /** Which cloud computer backs `computer: "cloud"`; absent means Box. */
   cloudBackend?: CloudBackend;
+  /** Auto mode may prepare/start this bot's managed VPS container. Off by
+   * default because starting remote infrastructure is an external action. */
+  autoStartVps?: boolean;
   /** where NEW tasks run their shell tools; each task pins its own copy
    * on its first turn (TaskRecord.cwd). Absent = the home folder. */
   cwd?: string;
@@ -347,6 +350,12 @@ export interface BotRecord {
    * unset/true = allowed, false = never mounted. The credential is
    * workspace-wide; the grant is per bot, because generating costs money. */
   imageGen?: boolean;
+  /** Public, package-authored playbooks installed for this bot. They carry
+   * process guidance only—never executable code, credentials, or grants. */
+  playbooks?: InstalledPlaybook[];
+  /** Listing provenance and connector intent retained for package details
+   * and future re-export. It never means the apps are authorized. */
+  installedPackage?: InstalledPackageMetadata;
   /** Derived from `activity` — kept so the 200+ readers across the app and
    * tests keep working unchanged. Write through setActivity(), never here. */
   busy?: boolean;
@@ -355,6 +364,21 @@ export interface BotRecord {
    * Transient like busy: reset to idle on load. */
   activity?: BotActivity;
   createdAt: number;
+}
+
+export interface InstalledPlaybook {
+  key: string;
+  name: string;
+  summary: string;
+  triggers: string[];
+  instructions: string;
+}
+
+export interface InstalledPackageMetadata {
+  id: string;
+  name: string;
+  release: string;
+  requiredApps: Array<{ slug: string; label: string; reason: string; optional?: boolean }>;
 }
 
 const BOTS_FILE = join(DATA_DIR, "bots.json");
@@ -495,6 +519,10 @@ export class Store {
       b.activity = "idle";
       if (b.cloudBackend !== undefined && b.cloudBackend !== "box" && b.cloudBackend !== "vps") {
         delete b.cloudBackend;
+        botsMigrated = true;
+      }
+      if (b.autoStartVps !== undefined && b.autoStartVps !== true && b.autoStartVps !== false) {
+        delete b.autoStartVps;
         botsMigrated = true;
       }
       const avatar = botAvatarProfile(b);

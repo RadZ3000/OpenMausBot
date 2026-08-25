@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createProxyHandler } from "../src/proxy.ts";
+import type { CompanionEndpoint } from "../src/endpoints.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -78,7 +79,7 @@ const device = async (
   method: string,
   path: string,
   opts: { token?: string | null; body?: unknown; headers?: Record<string, string> } = {},
-): Promise<{ status: number; body: any }> => {
+): Promise<{ status: number; body: any; headers: Headers }> => {
   const token = opts.token === undefined ? TOKEN : opts.token;
   const res = await fetch(`${SIDECAR}${path}`, {
     method,
@@ -96,7 +97,7 @@ const device = async (
   } catch {
     /* not JSON */
   }
-  return { status: res.status, body };
+  return { status: res.status, body, headers: res.headers };
 };
 
 /** raw request with a chosen Host header — fetch will not let us set one */
@@ -230,9 +231,22 @@ describe("the sidecar in front of an unmodified harness", () => {
   });
 
   it("requires a paired token", async () => {
-    expect((await device("GET", "/api/bots", { token: null })).status).toBe(401);
+    const unauthenticated = await device("GET", "/api/bots", { token: null });
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get("cache-control")).toContain("no-store");
+    expect(unauthenticated.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
     expect((await device("GET", "/api/bots", { token: "omb_wrong" })).status).toBe(401);
     expect((await device("GET", "/api/bots")).status).toBe(200);
+  });
+
+  it("serves a minimal, non-cacheable companion health identity", async () => {
+    const health = await device("GET", "/api/health", { token: null });
+    expect(health.status).toBe(200);
+    expect(health.body).toEqual({ app: "openmausbot" });
+    expect(health.headers.get("cache-control")).toBe("private, no-store");
+    expect(health.headers.get("cdn-cache-control")).toBe("no-store");
+    expect(JSON.stringify(health.body)).not.toContain("pid");
+    expect(JSON.stringify(health.body)).not.toContain("static");
   });
 
   it("refuses what a device has no business doing, by default", async () => {
@@ -319,6 +333,7 @@ describe("the sidecar in front of an unmodified harness", () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
+    expect(res.headers.get("cache-control")).toContain("no-store");
 
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
@@ -534,6 +549,88 @@ describe("the sidecar in front of an unmodified harness", () => {
   }, 20_000);
 });
 
+describe("live companion endpoint refresh", () => {
+  it("requires a valid paired bearer and reflects hosted add/remove without restart", async () => {
+    let endpoints: Array<CompanionEndpoint & { internal?: string }> = [
+      {
+        kind: "lan",
+        priority: 200,
+        url: "http://192.168.1.42:8810",
+        internal: "must never cross the boundary",
+      },
+    ];
+    const endpointServer = createServer(
+      createProxyHandler({
+        // A successful response with no harness on this port also proves the
+        // sidecar terminated the route locally.
+        harnessPort: 1,
+        authenticate: (token) => token === TOKEN ? { cloudDesktopAccess: false } : null,
+        redeem: () => ({ error: "not used" }),
+        serverName: () => "Test computer",
+        endpoints: () => endpoints,
+      }),
+    );
+    await new Promise<void>((resolve) => endpointServer.listen(0, "127.0.0.1", resolve));
+    // SAFETY: an IP server that has completed listen() has an AddressInfo
+    // object with a numeric port.
+    const port = (endpointServer.address() as { port: number }).port;
+    const load = (token?: string) =>
+      fetch(`http://127.0.0.1:${port}/api/companion/endpoints`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+
+    try {
+      expect((await load()).status).toBe(401);
+      expect((await load("wrong-token")).status).toBe(401);
+
+      const direct = await load(TOKEN);
+      expect(direct.status).toBe(200);
+      expect(await direct.json()).toEqual({
+        serverName: "Test computer",
+        endpoints: [{ kind: "lan", priority: 200, url: "http://192.168.1.42:8810" }],
+      });
+      expect(direct.headers.get("cache-control")).toBe("private, no-store");
+
+      endpoints = [
+        { kind: "hosted", priority: 0, url: "https://c-opaque.openmausbot.test" },
+        { kind: "lan", priority: 200, url: "http://192.168.1.42:8810" },
+      ];
+      expect(await (await load(TOKEN)).json()).toEqual({
+        serverName: "Test computer",
+        endpoints,
+      });
+
+      endpoints = [{ kind: "lan", priority: 200, url: "http://192.168.1.42:8810" }];
+      expect(await (await load(TOKEN)).json()).toEqual({
+        serverName: "Test computer",
+        endpoints,
+      });
+
+      endpoints = Array.from({ length: 12 }, (_unused, index) => ({
+        kind: "lan" as const,
+        priority: 200 + index,
+        url: `http://192.168.1.${index + 1}:8810`,
+        internal: `private-${index}`,
+      }));
+      // SAFETY: the endpoint route has just returned 200 JSON and this shape
+      // is asserted immediately below; the cast grants no runtime behavior.
+      const bounded = await (await load(TOKEN)).json() as {
+        endpoints: CompanionEndpoint[];
+        serverName: string;
+      };
+      expect(bounded.endpoints).toHaveLength(8);
+      expect(
+        bounded.endpoints.every(
+          (endpoint) => Object.keys(endpoint).sort().join(",") === "kind,priority,url",
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(bounded)).not.toContain("private-");
+    } finally {
+      await new Promise<void>((resolve) => endpointServer.close(() => resolve()));
+    }
+  });
+});
+
 // The whole loop, with the real registry rather than a stub: open a pairing
 // window on the control surface, redeem its QR credential the way the phone
 // does, and
@@ -549,9 +646,13 @@ describe("pairing, end to end", () => {
       createProxyHandler({
         harnessPort: HARNESS_PORT,
         authenticate: (t) => registry.authenticate(t ?? undefined),
-        redeem: (code, deviceName) => registry.redeem(code, deviceName),
+        redeem: (code, deviceName, pairRequestId) => registry.redeem(code, deviceName, pairRequestId),
         serverName: () => "Ada's computer",
         hosts: () => ["macbook.tail1234.ts.net", "192.168.1.42", "openmausbot-abcd1234.local"],
+        endpoints: () => [
+          { url: "https://device-123.companion.example", kind: "hosted", priority: 0 },
+          { url: "http://192.168.1.42:8810", kind: "lan", priority: 200 },
+        ],
       }),
     );
     await new Promise<void>((r) => paired.listen(0, "127.0.0.1", r));
@@ -591,20 +692,46 @@ describe("pairing, end to end", () => {
       expect(wrong.status).toBe(401);
 
       // The QR token is redeemed exactly once and never forwarded upstream.
+      const pairRequestId = "4c825d5b-cf40-4db7-aac5-2455f805a8ec";
+      const pairBody = JSON.stringify({
+        credential: opened.token,
+        deviceName: "Ada's iPhone",
+        pairRequestId,
+      });
       const res = await fetch(`${base}/api/pair`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ credential: opened.token, deviceName: "Ada's iPhone" }),
+        body: pairBody,
       });
       expect(res.status).toBe(201);
       // SAFETY: a 201 from /api/pair carries exactly this shape — the
       // sidecar's own contract, pinned by the expects that follow.
-      const body = (await res.json()) as { token: string; serverName: string; hosts: string[] };
+      const body = (await res.json()) as {
+        token: string;
+        serverName: string;
+        hosts: string[];
+        endpoints: Array<{ url: string; kind: string; priority: number }>;
+      };
       expect(body.serverName).toBe("Ada's computer");
       expect(body.token).toMatch(/^omb_/);
       // The fallback list rides on the redeem response so a phone that paired
       // by typed address learns the other ways to reach this computer too.
       expect(body.hosts).toEqual(["macbook.tail1234.ts.net", "192.168.1.42", "openmausbot-abcd1234.local"]);
+      expect(body.endpoints).toEqual([
+        { url: "https://device-123.companion.example", kind: "hosted", priority: 0 },
+        { url: "http://192.168.1.42:8810", kind: "lan", priority: 200 },
+      ]);
+
+      // Losing the first response after it reached the Mac must not strand an
+      // orphan device. The same logical request can arrive through a fallback
+      // address and receives the exact token already committed to disk.
+      const replay = await fetch(`${base}/api/pair`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: pairBody,
+      });
+      expect(replay.status).toBe(201);
+      expect((await replay.json() as { token: string }).token).toBe(body.token);
 
       // and the token works on the real API, through the real proxy
       const bots = await fetch(`${base}/api/bots`, { headers: { authorization: `Bearer ${body.token}` } });

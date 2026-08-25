@@ -55,6 +55,9 @@ final class Session: ObservableObject {
     /// and persisted — when a stream goes live.
     private var rotation = CandidateRotation(hosts: [])
     private var streamTask: Task<Void, Never>?
+    /// Best-effort authenticated route refresh started by the latest live SSE
+    /// hello. Kept separate so endpoint discovery never stalls event delivery.
+    private var endpointRefreshTask: Task<Void, Never>?
     /// Identifies the task currently stored in `streamTask`. A cancelled task
     /// can finish after its replacement starts; its cleanup must not clear
     /// the replacement's handle.
@@ -146,38 +149,65 @@ final class Session: ObservableObject {
 
         connection = saved
         token = stored
-        // `orderedHosts` puts the stored host first, so the address that
-        // worked last time is the one dialed first this time.
-        rotation = CandidateRotation(hosts: saved.orderedHosts)
-        client = CompanionClient(connection: saved, token: stored)
+        // New connections honor the desktop's transport policy. Automatic
+        // walking is credential-safe: protected routes stay protected, while
+        // a legacy/local route is only tried when it was the exact saved route.
+        rotation = CandidateRotation(endpoints: saved.orderedEndpoints)
+        let first = rotation.currentEndpoint.map(saved.dialing) ?? saved
+        client = CompanionClient(connection: first, token: stored)
         status = .connecting
     }
 
     /// Redeem a one-time pairing credential. On success the device token goes
     /// to the keychain and the connection to defaults — deliberately apart,
     /// so the thing that gets backed up is never the credential.
-    func pair(with connection: Connection, credential: String, deviceName: String) async throws {
-        let paired = try await CompanionClient.pair(
+    func pair(
+        with connection: Connection,
+        credential: String,
+        deviceName: String,
+        pairRequestId: String
+    ) async throws {
+        let outcome = try await CompanionClient.pairFirstReachable(
             connection: connection,
             credential: credential,
-            deviceName: deviceName
+            deviceName: deviceName,
+            pairRequestId: pairRequestId
         )
+        let paired = outcome.response
         // prefer the name the computer calls itself over the Bonjour label
-        var stored = connection
+        var stored = outcome.connection
         if !paired.serverName.isEmpty { stored.name = paired.serverName }
         // The computer knows every address it answers on, and what it says at
-        // redeem time beats whatever the invite carried. Then the host that
-        // just redeemed the code leads: it demonstrably works from here.
-        if let hosts = paired.hosts, !hosts.isEmpty { stored.hosts = hosts }
-        stored.promote(stored.host)
+        // redeem time beats whatever the invite carried. The route that just
+        // redeemed leads this live session; future launches return to the
+        // desktop's security-prioritized typed order.
+        if let hosts = paired.hosts, !hosts.isEmpty { stored.hosts = Array(hosts.prefix(8)) }
+        if let endpoints = paired.endpoints, !endpoints.isEmpty {
+            stored.endpoints = Array(endpoints.prefix(8))
+        }
+        let winner = outcome.connection.activeEndpoint ?? CompanionEndpoint.direct(
+            host: outcome.connection.host,
+            port: outcome.connection.port,
+            priority: 10_000
+        )
+        if let winner { stored.promote(winner) }
+        if stored.endpoints?.isEmpty != false {
+            stored.hosts = Array(stored.orderedHosts.prefix(8))
+        }
 
         try Keychain.save(paired.token, for: stored.id)
         UserDefaults.standard.set(try? JSONEncoder().encode(stored), forKey: Self.connectionKey)
 
         self.connection = stored
         self.token = paired.token
-        self.rotation = CandidateRotation(hosts: stored.orderedHosts)
-        self.client = CompanionClient(connection: stored, token: paired.token)
+        let liveRoutes = winner.map { route in
+            [route] + stored.orderedEndpoints.filter { $0.url != route.url }
+        } ?? stored.orderedEndpoints
+        self.rotation = CandidateRotation(endpoints: liveRoutes)
+        self.client = CompanionClient(
+            connection: winner.map(stored.dialing) ?? stored,
+            token: paired.token
+        )
         self.state = CompanionState()
         // A fresh pairing settles any restore that was still waiting on the
         // keychain — the token is in hand, so there is nothing left to retry.
@@ -204,6 +234,8 @@ final class Session: ObservableObject {
     func signOut() {
         streamTask?.cancel()
         streamTask = nil
+        endpointRefreshTask?.cancel()
+        endpointRefreshTask = nil
         restorePending = false
         pendingNotification = nil
         if let id = connection?.id { Keychain.remove(id) }
@@ -297,6 +329,8 @@ final class Session: ObservableObject {
     func disconnect() {
         streamTask?.cancel()
         streamTask = nil
+        endpointRefreshTask?.cancel()
+        endpointRefreshTask = nil
         endLinger()
     }
 
@@ -354,9 +388,11 @@ final class Session: ObservableObject {
                             state.resetCursor(cursor)
                         }
                         status = .live
-                        // this candidate carried a live stream — dial it
-                        // first from now on, including next launch
-                        promoteWorkingHost()
+                        // Remember what actually carried the stream for
+                        // display and legacy ordering. Typed routes retain
+                        // their explicit security priority next launch.
+                        rememberWorkingRoute()
+                        refreshConnectionMetadata(using: client)
                         continue
                     }
                     state.apply(frame)
@@ -408,32 +444,86 @@ final class Session: ObservableObject {
     /// A 401 never reaches here: the unauthorized path returns above, which
     /// is what keeps a token problem from masquerading as an address walk.
     private func failureMessage(for error: Error) -> String {
-        guard let urlError = error as? URLError, let connection else {
-            return error.localizedDescription
-        }
-        let failed = rotation.current.isEmpty ? connection.host : rotation.current
+        guard let connection else { return error.localizedDescription }
+        let failed = rotation.currentEndpoint ?? connection.activeEndpoint ??
+            CompanionEndpoint.direct(host: connection.host, port: connection.port, priority: 10_000)
         var next: String?
-        if ConnectionAdvice.shouldTryAnotherHost(urlError.code), rotation.count > 1 {
-            let candidate = rotation.advance()
-            if let token {
-                client = CompanionClient(connection: connection.dialing(candidate), token: token)
-            }
-            next = candidate
-            log.info("advancing to candidate host \(candidate, privacy: .public)")
+        if let candidate = rotation.advanceEndpoint(after: error), let token {
+            client = CompanionClient(connection: connection.dialing(candidate), token: token)
+            next = candidate.displayAddress
+            log.info("advancing to companion route \(candidate.url, privacy: .public)")
         }
-        return ConnectionAdvice.message(for: urlError.code, host: failed, port: connection.port, tryingNext: next)
+        if let urlError = error as? URLError {
+            return ConnectionAdvice.message(
+                for: urlError.code,
+                host: failed?.displayAddress ?? connection.host,
+                port: failed?.port ?? connection.port,
+                tryingNext: next
+            )
+        }
+        if let apiError = error as? APIError,
+           case let .status(code, _) = apiError,
+           ConnectionAdvice.shouldTryAnotherRoute(after: error) {
+            return ConnectionAdvice.message(
+                forGatewayStatus: code,
+                host: failed?.displayAddress ?? connection.host,
+                tryingNext: next
+            )
+        }
+        return error.localizedDescription
     }
 
-    /// The candidate that just carried a live stream dials first from now on.
-    /// Persisted, so the next launch starts from the address that works
-    /// rather than re-walking the list from a stale front-runner.
-    private func promoteWorkingHost() {
-        let winner = rotation.current
-        guard !winner.isEmpty, var updated = connection,
-              updated.host != Connection.urlHost(winner) else { return }
+    /// Persist the route that carried a live stream. Legacy host lists promote
+    /// it for the next launch; typed lists keep their explicit policy order.
+    private func rememberWorkingRoute() {
+        guard let winner = rotation.currentEndpoint, var updated = connection,
+              updated.activeEndpoint?.url != winner.url else { return }
         updated.promote(winner)
         connection = updated
         UserDefaults.standard.set(try? JSONEncoder().encode(updated), forKey: Self.connectionKey)
+    }
+
+    /// Learn routes enabled after this phone originally paired. The endpoint
+    /// response is authenticated with the existing device token and is a
+    /// replacement snapshot, but failure is deliberately non-fatal: older
+    /// sidecars return 404 and a transient refresh error must not tear down a
+    /// perfectly healthy event stream.
+    private func refreshConnectionMetadata(using sourceClient: CompanionClient) {
+        guard let connectionID = connection?.id else { return }
+        let workingEndpoint = rotation.currentEndpoint ?? sourceClient.connection.activeEndpoint
+        endpointRefreshTask?.cancel()
+        endpointRefreshTask = Task { [weak self] in
+            do {
+                let metadata = try await sourceClient.connectionMetadata()
+                try Task.checkCancellation()
+                guard let self,
+                      self.connection?.id == connectionID,
+                      self.client?.connection.baseURL == sourceClient.connection.baseURL,
+                      var updated = self.connection
+                else { return }
+
+                updated.reconcile(metadata)
+                self.connection = updated
+                UserDefaults.standard.set(
+                    try? JSONEncoder().encode(updated),
+                    forKey: Self.connectionKey
+                )
+
+                // Keep the currently live route first until this stream ends.
+                // CandidateRotation applies the same no-downgrade policy used
+                // by pairing, while the saved connection uses advertised
+                // security priorities on the next launch.
+                let liveRoutes = workingEndpoint.map { route in
+                    [route] + updated.orderedEndpoints.filter { $0.url != route.url }
+                } ?? updated.orderedEndpoints
+                self.rotation = CandidateRotation(endpoints: liveRoutes)
+                log.info("refreshed \(metadata.endpoints.count, privacy: .public) companion routes")
+            } catch is CancellationError {
+                return
+            } catch {
+                log.debug("endpoint refresh unavailable: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     /// Replace the stored address by hand, keeping the pairing and its token.
@@ -441,12 +531,22 @@ final class Session: ObservableObject {
     @discardableResult
     func updateAddress(_ text: String) -> Bool {
         guard var updated = connection, let parsed = Connection.parse(text) else { return false }
-        updated.port = parsed.port
-        updated.promote(parsed.host)
+        let existingRoutes = updated.orderedEndpoints
+        guard let endpoint = parsed.activeEndpoint ?? CompanionEndpoint.direct(
+            host: parsed.host,
+            port: parsed.port,
+            priority: 0
+        ) else { return false }
+        updated.promote(endpoint)
+        updated.endpoints = [endpoint] + existingRoutes.filter { $0.url != endpoint.url }
         connection = updated
         UserDefaults.standard.set(try? JSONEncoder().encode(updated), forKey: Self.connectionKey)
-        rotation = CandidateRotation(hosts: updated.orderedHosts)
-        if let token { client = CompanionClient(connection: updated, token: token) }
+        rotation = CandidateRotation(
+            endpoints: [endpoint] + updated.orderedEndpoints.filter { $0.url != endpoint.url }
+        )
+        if let token {
+            client = CompanionClient(connection: updated.dialing(endpoint), token: token)
+        }
         // Dial the new address now rather than on the next backoff tick —
         // someone who just typed an address is watching the banner.
         restartStream()

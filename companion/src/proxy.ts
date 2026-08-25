@@ -14,6 +14,11 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { bearerToken } from "./devices.ts";
+import {
+  COMPANION_ENDPOINT_KINDS,
+  MAX_COMPANION_ENDPOINTS,
+  type CompanionEndpoint,
+} from "./endpoints.ts";
 import { denyReason, isCloudDesktopJoin } from "./routes.ts";
 import { createSseScrubber, isJson, scrub } from "./wire.ts";
 
@@ -29,6 +34,7 @@ export interface ProxyOptions {
   redeem: (
     code: string,
     deviceName: unknown,
+    pairRequestId?: unknown,
   ) => { token: string; device: unknown } | { error: string };
   /** What the phone should call this computer in its connection list. */
   serverName: () => string;
@@ -37,9 +43,17 @@ export interface ProxyOptions {
    * stops resolving. Optional and advisory: a phone that never receives it
    * simply keeps dialing the one host it paired with. */
   hosts?: () => string[];
+  /** Complete connection URLs for current mobile clients. `hosts` remains
+   * alongside this field for builds that predate typed endpoints. */
+  endpoints?: () => CompanionEndpoint[];
   /** How long the harness may take to produce response *headers*. Optional,
    * and only ever set by tests — the default is the one that ships. */
   headersTimeoutMs?: number;
+}
+
+export interface CompanionEndpointSnapshot {
+  serverName: string;
+  endpoints: CompanionEndpoint[];
 }
 
 /** The harness has this long to send a status line and headers.
@@ -93,6 +107,23 @@ const readJson = (req: IncomingMessage, limit = 64 * 1024): Promise<Record<strin
  * with nothing to catch it. Dropping the socket is the only honest ending
  * left there: the device sees a truncated response and reconnects, which is
  * what it already does for any dropped connection. */
+const PRIVATE_RESPONSE_HEADERS = {
+  "cache-control": "private, no-store",
+  "cdn-cache-control": "no-store",
+  "cloudflare-cdn-cache-control": "no-store",
+  pragma: "no-cache",
+  vary: "Authorization",
+} as const;
+
+/** Device responses can cross a public CDN when the managed HTTPS endpoint
+ * is enabled. Never let chat JSON, images, audio, pairing responses, or even
+ * authorization failures become shared cache entries. These values override
+ * anything the loopback harness supplied. */
+const privateHeaders = (headers: IncomingMessage["headers"] = {}): IncomingMessage["headers"] => ({
+  ...headers,
+  ...PRIVATE_RESPONSE_HEADERS,
+});
+
 const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
   if (res.headersSent) {
     res.destroy();
@@ -102,8 +133,60 @@ const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(text),
+    ...PRIVATE_RESPONSE_HEADERS,
   });
   res.end(text);
+};
+
+/** Reduce live endpoint metadata to the same tiny public shape returned at
+ * pairing time. The hook is internal, but this still validates and caps it at
+ * the network boundary so a future producer cannot accidentally publish an
+ * extra field, path-bearing URL, or unbounded list. */
+const endpointSnapshot = (options: ProxyOptions): CompanionEndpointSnapshot => {
+  const endpoints: CompanionEndpoint[] = [];
+  const seen = new Set<string>();
+  for (const candidate of options.endpoints?.() ?? []) {
+    if (endpoints.length >= MAX_COMPANION_ENDPOINTS) break;
+    if (
+      !candidate ||
+      !COMPANION_ENDPOINT_KINDS.includes(candidate.kind) ||
+      typeof candidate.url !== "string" ||
+      !Number.isSafeInteger(candidate.priority) ||
+      candidate.priority < 0 ||
+      candidate.priority > 10_000 ||
+      Buffer.byteLength(candidate.url) > 2_048
+    ) {
+      continue;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(candidate.url);
+    } catch {
+      continue;
+    }
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      (parsed.pathname !== "" && parsed.pathname !== "/") ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      continue;
+    }
+    const url = parsed.origin;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    endpoints.push({
+      kind: candidate.kind,
+      priority: candidate.priority,
+      url,
+    });
+  }
+  return {
+    serverName: [...options.serverName()].slice(0, 200).join(""),
+    endpoints,
+  };
 };
 
 /** Headers worth carrying to the harness. An allowlist rather than a
@@ -111,7 +194,13 @@ const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
  * is the sidecar's credential and means nothing to the harness, and hop-by-hop
  * headers are by definition not ours to relay. */
 const forwardHeaders = (req: IncomingMessage): Record<string, string> => {
-  const out: Record<string, string> = { accept: String(req.headers.accept ?? "*/*") };
+  const out: Record<string, string> = {
+    accept: String(req.headers.accept ?? "*/*"),
+    // Lets a response whose URL is intentionally loopback-only (the VPS SSH
+    // viewer) fail before opening a tunnel a phone cannot reach. This header
+    // carries no authority; it only narrows behavior at the harness.
+    "x-openmausbot-companion": "1",
+  };
   const contentType = req.headers["content-type"];
   if (contentType) out["content-type"] = String(contentType);
   // Last-Event-ID is how a reconnecting client asks for the gap. Dropping it
@@ -165,7 +254,11 @@ export function createProxyHandler(options: ProxyOptions) {
         (body) => {
           // New clients redeem the high-entropy credential carried by the QR.
           // `code` remains accepted for manual entry and older mobile builds.
-          const result = options.redeem(String(body.credential ?? body.code ?? ""), body.deviceName);
+          const result = options.redeem(
+            String(body.credential ?? body.code ?? ""),
+            body.deviceName,
+            body.pairRequestId,
+          );
           if ("error" in result) return sendJson(res, 401, { error: result.error });
           // `hosts` rides along whichever way the phone paired — QR, typed
           // address, or discovery — so every paired device learns the full
@@ -173,16 +266,29 @@ export function createProxyHandler(options: ProxyOptions) {
           // empty, when there is nothing to offer: absent is what a sidecar
           // predating the field sends, and one decode path beats two.
           const hosts = options.hosts?.() ?? [];
-          const response: typeof result & { serverName: string; hosts?: string[] } = {
+          const endpoints = options.endpoints?.() ?? [];
+          const response: typeof result & {
+            serverName: string;
+            hosts?: string[];
+            endpoints?: CompanionEndpoint[];
+          } = {
             ...result,
             serverName: options.serverName(),
           };
           if (hosts.length) response.hosts = hosts;
+          if (endpoints.length) response.endpoints = endpoints;
           return sendJson(res, 201, response);
         },
         (error: Error) => sendJson(res, 400, { error: error.message }),
       );
       return;
+    }
+
+    // A paired phone refreshes connection candidates here after setup. This
+    // is sidecar-owned state, so answer locally after the shared bearer and
+    // default-deny checks above and never send it to the harness.
+    if (method === "GET" && path === "/api/companion/endpoints") {
+      return sendJson(res, 200, endpointSnapshot(options));
     }
 
     const upstream = httpRequest(
@@ -195,6 +301,56 @@ export function createProxyHandler(options: ProxyOptions) {
       },
       (harness) => {
         clearTimeout(headersDeadline);
+        // Keep liveness tied to the actual harness. Answering from the
+        // sidecar alone made a dead bot server look healthy and caused the
+        // desktop to advertise a hosted route that could not serve chats.
+        // The harness response is inspected under a tiny bound, then replaced
+        // completely so its pid/static fields never cross the public tunnel.
+        if (method === "GET" && path === "/api/health") {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          let finished = false;
+          const fail = () => {
+            if (finished) return;
+            finished = true;
+            sendJson(res, 502, { error: "OpenMausBot is not ready on this computer" });
+          };
+          harness.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > 4_096) {
+              harness.destroy();
+              fail();
+              return;
+            }
+            chunks.push(chunk);
+          });
+          harness.on("error", fail);
+          harness.on("end", () => {
+            if (finished) return;
+            let identity: unknown;
+            try {
+              identity = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            } catch {
+              fail();
+              return;
+            }
+            // SAFETY: identity came from untrusted JSON, and this assertion
+            // grants no domain behavior; it permits one optional property
+            // read whose value must equal a fixed literal before success.
+            if (
+              (harness.statusCode ?? 500) < 200 ||
+              (harness.statusCode ?? 500) >= 300 ||
+              (identity as { app?: unknown } | null)?.app !== "openmausbot"
+            ) {
+              fail();
+              return;
+            }
+            finished = true;
+            sendJson(res, 200, { app: "openmausbot" });
+          });
+          return;
+        }
+
         const contentType = harness.headers["content-type"];
         const isStream = String(contentType ?? "").includes("text/event-stream");
 
@@ -204,7 +360,8 @@ export function createProxyHandler(options: ProxyOptions) {
           // content-encoding would be a lie once we rewrite the bytes.
           res.writeHead(harness.statusCode ?? 200, {
             "content-type": "text/event-stream",
-            "cache-control": "no-cache, no-transform",
+            ...PRIVATE_RESPONSE_HEADERS,
+            "cache-control": "private, no-store, no-transform",
             connection: "keep-alive",
             // Nagle would hold a small frame back waiting for company. On a
             // stream whose frames are small and whose whole value is being
@@ -257,7 +414,7 @@ export function createProxyHandler(options: ProxyOptions) {
           // never sends accept-encoding, so this is a guard rather than a
           // path: if it ever fires, the body passes through unscrubbed and
           // intact rather than scrubbed and broken.
-          res.writeHead(harness.statusCode ?? 200, harness.headers);
+          res.writeHead(harness.statusCode ?? 200, privateHeaders(harness.headers));
           // `pipe` does not carry a failure from source to destination. An
           // upstream that dies part-way through an image would otherwise
           // leave the phone holding an open connection and a content-length
@@ -327,7 +484,7 @@ export function createProxyHandler(options: ProxyOptions) {
           delete headers["content-encoding"];
           delete headers["transfer-encoding"];
           res.writeHead(status, {
-            ...headers,
+            ...privateHeaders(headers),
             "content-length": Buffer.byteLength(text),
           });
           res.end(text);

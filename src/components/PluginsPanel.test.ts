@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  connectedInventoryCopy,
+  connectorActionLabel,
   disconnectAccountConfirmation,
   mergeCompleteConnectorStatus,
   mergeCurrentConnectorStatus,
+  requiresAccountAlias,
+  onlyLatestConnectorResponses,
   type ConnectorStatus,
 } from "./PluginsPanel";
 
@@ -42,6 +46,21 @@ describe("connected-app status races", () => {
     );
 
     expect(merged.gmail).toEqual({ connected: true, pending: false, status: "ACTIVE" });
+  });
+
+  it("drops an older status response when a newer request for the same app has started", () => {
+    const latestRequests = new Map([["gmail", 2], ["slack", 1]]);
+    const requestIds = new Map([["gmail", 1], ["slack", 1]]);
+    expect(
+      onlyLatestConnectorResponses(
+        {
+          gmail: { connected: false, status: "not_connected" },
+          slack: { connected: true, status: "ACTIVE" },
+        },
+        latestRequests,
+        requestIds,
+      ),
+    ).toEqual({ slack: { connected: true, status: "ACTIVE" } });
   });
 
   it("keeps a connected account beyond the first 40 marketplace cards", () => {
@@ -111,5 +130,35 @@ describe("connected-app status races", () => {
     expect(disconnectAccountConfirmation("GitHub", { id: "ca_personal" })).toContain(
       "Disconnect “ca_personal” from GitHub? Only this GitHub account will be revoked.",
     );
+  });
+
+  it("recognizes the existing-account alias guard and ignores unrelated errors", () => {
+    expect(requiresAccountAlias("Add an account alias so the existing connection is not replaced")).toBe(true);
+    expect(requiresAccountAlias("Authorization expired")).toBe(false);
+  });
+
+  it("never presents unloaded account state as disconnected", () => {
+    expect(connectedInventoryCopy("loading").title).toBe("Checking connected apps…");
+    expect(connectorActionLabel("loading", {
+      busy: false,
+      included: false,
+      canContinue: false,
+      hasAccounts: false,
+      failed: false,
+    })).toBe("Checking…");
+    expect(connectorActionLabel("ready", {
+      busy: false,
+      included: false,
+      canContinue: false,
+      hasAccounts: true,
+      failed: false,
+    })).toBe("Add account");
+    expect(connectorActionLabel("error", {
+      busy: false,
+      included: false,
+      canContinue: false,
+      hasAccounts: false,
+      failed: false,
+    })).toBe("Unavailable");
   });
 });

@@ -99,6 +99,13 @@ type SkillRecordingPayload = {
       platform: NodeJS.Platform;
       getCapabilities(): Promise<DesktopCapabilities>;
       onCapabilitiesChanged(cb: (capabilities: DesktopCapabilities) => void): () => void;
+      companionAccount?: {
+        state(): Promise<CompanionAccountState>;
+        requestCode(email: string): Promise<CompanionAccountState>;
+        verifyCode(email: string, code: string): Promise<CompanionAccountState>;
+        retry(): Promise<CompanionAccountState>;
+        signOut(): Promise<CompanionAccountState>;
+      };
       localControl: {
         status(): Promise<LinuxLocalControlStatus>;
         enable(): Promise<LinuxLocalControlStatus>;
@@ -152,6 +159,8 @@ type SkillRecordingPayload = {
       openInstallTerminal?(command: string): Promise<boolean>;
       /** Opens an http(s) link in the user's default browser. */
       openExternal?(url: string): Promise<boolean>;
+      /** Receives a GitHub package URL opened through openmausbot://install. */
+      onPackageInstall?(cb: (url: string) => void): () => void;
       /** Updates the native Dock/taskbar unread indicator. */
       setUnreadCount?(count: number): void;
       /** Opens a live desktop as a sandboxed window owned by OpenMausBot. */
@@ -210,6 +219,14 @@ export interface UpdaterState {
     | "error";
   version?: string;
   percent?: number;
+  message?: string;
+}
+
+export interface CompanionAccountState {
+  available: boolean;
+  status: "signed-out" | "connecting" | "ready" | "error";
+  email?: string;
+  endpoint?: string;
   message?: string;
 }
 

@@ -9,7 +9,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
 import { SettingsPanel } from "@/components/SettingsPanel";
-import { PluginsPanel } from "@/components/PluginsPanel";
+import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -77,6 +77,14 @@ function Shell() {
     window.ogb?.setUnreadCount?.(unreadCount);
   }, [unreadCount]);
 
+  // Warm connected-account state as soon as the local server is available.
+  // The modal then opens with the correct Connect/Add account buttons and
+  // quietly revalidates instead of rediscovering every account from scratch.
+  useEffect(() => {
+    if (!state.connected) return;
+    void preloadConnectedApps().catch(() => {});
+  }, [state.connected]);
+
   // Picking a conversation closes the drawer: on a phone the chat is what you
   // asked for, and leaving the list up would hide it. Watching activeView too
   // catches re-selecting the bot that is already current from another view —
@@ -103,6 +111,11 @@ function Shell() {
           if (snap) dispatch({ type: "computerControl", botId, held: snap.held === true, helpReason: snap.helpReason ?? null });
         })
         .catch(() => {});
+      void fetch(`/api/bots/${botId}/computer/viewer-close`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }).catch(() => {});
     });
   }, [dispatch]);
 

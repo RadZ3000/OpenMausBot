@@ -20,6 +20,10 @@ struct PairingView: View {
     @State private var manualAddress = ""
     @State private var code = ""
     @State private var scannedCredential: String?
+    /// Stable across Retry. If the Mac committed a device but the response
+    /// was lost, repeating this same logical request recovers its token
+    /// instead of creating an orphan device.
+    @State private var pairRequestId: String?
     @State private var chosen: Connection?
     @State private var pairing = false
     @State private var failure: String?
@@ -342,7 +346,7 @@ struct PairingView: View {
                             .font(.system(size: 14))
                             .foregroundColor(isDark ? Color(hex: "#64748B") : Color(hex: "#94A3B8"))
 
-                        TextField("192.168.1.42:8810 or mac.ts.net:8810", text: $manualAddress)
+                        TextField("https://mac.example or 192.168.1.42:8810", text: $manualAddress)
                             .font(.system(size: 14, design: .monospaced))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
@@ -360,11 +364,12 @@ struct PairingView: View {
                         Haptics.selection()
                         failure = nil
                         guard let connection = Self.parse(manualAddress) else {
-                            failure = "That should look like 192.168.1.42:8810 or host.ts.net:8810."
+                            failure = "Enter a secure https:// address, 192.168.1.42:8810, or host.ts.net:8810."
                             return
                         }
                         choiceGeneration += 1
                         scannedCredential = nil
+                        pairRequestId = nil
                         chosen = connection
                     } label: {
                         Text("Connect to Address")
@@ -408,13 +413,15 @@ struct PairingView: View {
                 Text(connection.name)
                     .font(.title2.weight(.bold))
                     .foregroundColor(isDark ? .white : Color(hex: "#0F172A"))
-                Text("\(connection.host):\(connection.port)")
+                Text(connection.displayAddress)
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundColor(isDark ? Color(hex: "#94A3B8") : Color(hex: "#64748B"))
             }
 
             if let credential = scannedCredential {
-                Text("Confirm this computer to establish an authenticated companion connection. Use a trusted Wi-Fi network or a tailnet; OpenMausBot does not encrypt local Wi-Fi traffic.")
+                Text(connection.activeEndpoint?.isSecure == true
+                    ? "Confirm this computer to establish an authenticated HTTPS companion connection."
+                    : "Confirm this computer to establish an authenticated companion connection. Use a trusted Wi-Fi network or a tailnet; OpenMausBot does not encrypt local Wi-Fi traffic.")
                     .font(.caption)
                     .foregroundColor(isDark ? Color(hex: "#94A3B8") : Color(hex: "#64748B"))
                     .multilineTextAlignment(.center)
@@ -493,6 +500,7 @@ struct PairingView: View {
                 chosen = nil
                 code = ""
                 scannedCredential = nil
+                pairRequestId = nil
                 failure = nil
             }
             .font(.caption.weight(.semibold))
@@ -536,6 +544,7 @@ struct PairingView: View {
         choiceGeneration += 1
         let generation = choiceGeneration
         failure = nil
+        pairRequestId = nil
         do {
             let resolved = try await discovery.resolve(service)
             guard generation == choiceGeneration else { return }
@@ -551,20 +560,35 @@ struct PairingView: View {
         failure = nil
         defer { pairing = false }
         let cameFromScanner = scannedCredential != nil
+        let requestId = pairRequestId ?? UUID().uuidString
+        pairRequestId = requestId
         do {
             try await session.pair(
                 with: connection,
                 credential: credential,
-                deviceName: Self.deviceName()
+                deviceName: Self.deviceName(),
+                pairRequestId: requestId
             )
+            pairRequestId = nil
         } catch {
             if cameFromScanner {
-                failure = "\(error.localizedDescription) Start pairing again on your computer and rescan the new QR code."
-                chosen = nil
-                scannedCredential = nil
+                if error is PairingRouteError {
+                    // The same request id makes Retry safe whether no route
+                    // was reached or the Mac committed the device and its
+                    // response was lost while the route changed.
+                    failure = error.localizedDescription
+                } else {
+                    failure = "\(error.localizedDescription) Start pairing again on your computer and rescan the new QR code."
+                    chosen = nil
+                    scannedCredential = nil
+                    pairRequestId = nil
+                }
             } else {
                 failure = error.localizedDescription
-                code = ""
+                if !(error is PairingRouteError) {
+                    code = ""
+                    pairRequestId = nil
+                }
             }
         }
     }
@@ -574,6 +598,7 @@ struct PairingView: View {
         choiceGeneration += 1
         chosen = invite.connection
         scannedCredential = invite.credential
+        pairRequestId = UUID().uuidString
         code = ""
         failure = nil
         session.consumePairingInvite()

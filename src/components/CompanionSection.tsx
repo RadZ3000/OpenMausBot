@@ -12,10 +12,11 @@
 // The panel is deliberately blunt about what it does. "Your bots can run
 // shell commands" is the honest reason a network switch here deserves a
 // sentence of explanation rather than a bare toggle.
-import { useCallback, useEffect, useState } from "react";
-import { Loader2, Smartphone, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Cloud, Loader2, LogOut, Smartphone, Trash2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { companionPairingLink } from "../lib/companion-pairing";
+import { companionPairingLink, type CompanionEndpoint } from "../lib/companion-pairing";
+import type { CompanionAccountState } from "../types/ogb";
 import { Card } from "./SettingsPrimitives";
 
 interface Device {
@@ -28,6 +29,7 @@ interface Device {
 
 interface CompanionState {
   enabled: boolean;
+  keepAwake: boolean;
   port: number;
   devices: Device[];
   pairing: { code: string; token: string; expiresAt: number } | null;
@@ -43,6 +45,8 @@ interface CompanionState {
   lan?: string | null;
   /** Ordered fallback hosts for the phone — tailnet name, LAN, mDNS last. */
   hosts?: string[];
+  /** Complete URLs for current mobile builds, hosted HTTPS first. */
+  endpoints?: CompanionEndpoint[];
   /** Bonjour: when advertising, the phone finds this computer by name. */
   discovery?: { advertising: boolean; name: string };
   /** Why it is not running, or not answering. */
@@ -55,14 +59,43 @@ type Bridge = {
   state: () => Promise<CompanionState>;
   start: () => Promise<CompanionState>;
   stop: () => Promise<CompanionState>;
+  keepAwake: (enabled: boolean) => Promise<CompanionState>;
   pairing: (open: boolean) => Promise<CompanionState>;
   cloudDesktop: (deviceId: string, allowed: boolean) => Promise<CompanionState>;
   revoke: (deviceId: string) => Promise<CompanionState>;
 };
 
+type AccountBridge = NonNullable<NonNullable<Window["ogb"]>["companionAccount"]>;
+
+type StateBridge<T> = { state: () => Promise<T> };
+
 const bridge = (): Bridge | null =>
   // SAFETY: the preload owns `ogb.companion`; every call is still guarded for browser builds where it is absent.
   (globalThis as { ogb?: { companion?: Bridge } }).ogb?.companion ?? null;
+
+const accountBridge = (): AccountBridge | null =>
+  // SAFETY: Electron exposes only these five account operations. Account,
+  // installation, and connector credentials never enter the renderer.
+  (globalThis as { ogb?: { companionAccount?: AccountBridge } }).ogb?.companionAccount ?? null;
+
+export const loadCompanionBridgeState = async (
+  companion: StateBridge<CompanionState> | null,
+  remote: StateBridge<CompanionAccountState> | null,
+): Promise<{ companion: CompanionState | null; account: CompanionAccountState | null }> => {
+  const [companionResult, accountResult] = await Promise.allSettled([
+    companion ? Promise.resolve().then(() => companion.state()) : Promise.resolve(null),
+    remote ? Promise.resolve().then(() => remote.state()) : Promise.resolve(null),
+  ]);
+  return {
+    companion: companionResult.status === "fulfilled" ? companionResult.value : null,
+    account: accountResult.status === "fulfilled" ? accountResult.value : null,
+  };
+};
+
+export const shouldHydrateCompanionEmail = (
+  userEdited: boolean,
+  account: CompanionAccountState,
+): boolean => !userEdited && Boolean(account.email);
 
 const relative = (at: number) => {
   const seconds = Math.round((Date.now() - at) / 1000);
@@ -74,19 +107,46 @@ const relative = (at: number) => {
   return `${Math.round(hours / 24)} d ago`;
 };
 
+const endpointHost = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
+
+export const companionAccountActionError = (
+  account: CompanionAccountState | null,
+  actionError: string | null,
+): string | null => {
+  if (actionError) return actionError;
+  return account?.status === "signed-out" ? account.message ?? null : null;
+};
+
 export function CompanionSection() {
   const [state, setState] = useState<CompanionState | null>(null);
+  const [account, setAccount] = useState<CompanionAccountState | null>(null);
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const emailEdited = useRef(false);
 
   const load = useCallback(async () => {
     const companion = bridge();
-    if (!companion) return;
-    try {
-      setState(await companion.state());
-    } catch {
-      /* the main process is gone; the rest of the app already says so */
+    const remote = accountBridge();
+    if (!companion && !remote) return;
+    const next = await loadCompanionBridgeState(companion, remote);
+    if (next.companion) setState(next.companion);
+    if (next.account) {
+      setAccount(next.account);
+      if (shouldHydrateCompanionEmail(emailEdited.current, next.account)) {
+        setEmail(next.account.email ?? "");
+      }
     }
   }, []);
 
@@ -101,6 +161,22 @@ export function CompanionSection() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const accountAct = async (call: (remote: AccountBridge) => Promise<CompanionAccountState>) => {
+    const remote = accountBridge();
+    if (!remote) return;
+    setAccountBusy(true);
+    setAccountError(null);
+    try {
+      const next = await call(remote);
+      setAccount(next);
+      await load();
+    } catch (cause) {
+      setAccountError(cause instanceof Error ? cause.message : "Remote access could not be updated");
+    } finally {
+      setAccountBusy(false);
     }
   };
 
@@ -155,7 +231,15 @@ export function CompanionSection() {
   // clients. A bare 100.64/10 address is not dialable by the iOS app over
   // HTTP, so fall back to LAN instead of putting a broken address in the QR.
   const tailnet = state.tailnetName;
-  const address = tailnet ?? state.lan ?? state.addresses?.find((candidate) => candidate !== state.tailscale);
+  const hosted = state.endpoints?.find((endpoint) => endpoint.kind === "hosted");
+  const accountActionError = companionAccountActionError(account, accountError);
+  // `address` is deliberately still a direct host. Older iOS builds assume
+  // this field means host:port over HTTP and would corrupt an HTTPS URL.
+  const address =
+    tailnet ??
+    state.lan ??
+    state.addresses?.find((candidate) => candidate !== state.tailscale) ??
+    state.hosts?.[0];
   const pairingLink =
     state.pairing && address
       ? companionPairingLink({
@@ -165,6 +249,7 @@ export function CompanionSection() {
           token: state.pairing.token,
           name: state.discovery?.name,
           hosts: state.hosts,
+          endpoints: state.endpoints,
         })
       : null;
 
@@ -187,6 +272,8 @@ export function CompanionSection() {
             <div className="mt-0.5 text-[13px] text-ink-secondary">
               {!state.enabled
                 ? "Nothing on this computer is reachable from the network."
+                : hosted
+                  ? `Secure connection ready at ${endpointHost(hosted.url)} — your phone can connect from any network.`
                 : !address
                   ? `Listening on port ${state.port} — no network address yet.`
                   : tailnet
@@ -221,7 +308,7 @@ export function CompanionSection() {
         {/* A tailnet address with no name is workable on a laptop and not on
             a phone, so say so rather than letting pairing fail with an
             unexplained policy error. */}
-        {state.enabled && state.tailscale && !state.tailnetName && (
+        {state.enabled && !hosted && state.tailscale && !state.tailnetName && (
           <div className="mt-3 text-[13px] text-ink-secondary">
             You're on a tailnet, but this computer's MagicDNS name couldn't be read from the
             Tailscale app — either MagicDNS is off, or the Tailscale command line tool isn't
@@ -229,7 +316,7 @@ export function CompanionSection() {
             OpenMausBot log for which paths were tried.
           </div>
         )}
-        {state.enabled && !state.tailscale && (
+        {state.enabled && !hosted && !state.tailscale && (
           <div className="mt-3 text-[13px] text-ink-secondary">
             Only reachable on this network. Install Tailscale on both this computer and your phone
             to reach it from anywhere — including networks that stop devices from seeing each other.
@@ -238,7 +325,145 @@ export function CompanionSection() {
         {(error || state.error) && (
           <div className="mt-3 text-[13px] text-danger">{error ?? state.error}</div>
         )}
+        <div className="mt-4 flex items-center justify-between gap-4 border-t border-hairline/30 pt-4">
+          <div className="min-w-0">
+            <div className="text-[13px] text-ink">Keep this computer awake</div>
+            <div className="mt-0.5 text-[11.5px] text-ink-secondary">
+              While Companion is on, prevent system sleep so your phone and scheduled work stay reachable. The screen may still turn off and battery use may increase.
+            </div>
+          </div>
+          <button
+            role="switch"
+            aria-checked={state.keepAwake}
+            aria-label="Keep this computer awake while Companion is on"
+            disabled={busy || !state.enabled}
+            onClick={() => void act((c) => c.keepAwake(!state.keepAwake))}
+            className={cnSwitch(state.keepAwake)}
+          >
+            <span className={cnKnob(state.keepAwake)} />
+          </button>
+        </div>
       </Card>
+
+      {account?.available && (
+        <Card
+          title="Use your phone anywhere"
+          subtitle="Optional. Sign in once to give this computer a private HTTPS address. Wi-Fi, Bonjour, and Tailscale continue to work without an account."
+        >
+          {account.status === "signed-out" ? (
+            <div className="flex max-w-lg flex-col gap-3">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[12px] font-medium text-ink-secondary">Email</span>
+                <input
+                  autoComplete="email"
+                  inputMode="email"
+                  value={email}
+                  disabled={accountBusy || codeSent}
+                  onChange={(event) => {
+                    emailEdited.current = true;
+                    setEmail(event.target.value);
+                  }}
+                  placeholder="you@example.com"
+                  className="rounded-lg border border-hairline/50 bg-inset px-3 py-2 text-[13px] text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent disabled:opacity-50"
+                />
+              </label>
+              {codeSent && (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[12px] font-medium text-ink-secondary">8-digit code</span>
+                  <input
+                    autoComplete="one-time-code"
+                    inputMode="numeric"
+                    value={code}
+                    disabled={accountBusy}
+                    onChange={(event) => setCode(event.target.value.replaceAll(/\D/g, "").slice(0, 8))}
+                    placeholder="12345678"
+                    className="rounded-lg border border-hairline/50 bg-inset px-3 py-2 font-mono text-[15px] tracking-[0.18em] text-ink outline-none placeholder:tracking-normal placeholder:text-ink-secondary/60 focus:border-accent disabled:opacity-50"
+                  />
+                </label>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  disabled={accountBusy || !email.trim() || (codeSent && code.length !== 8)}
+                  onClick={() => {
+                    if (!codeSent) {
+                      void accountAct(async (remote) => {
+                        const next = await remote.requestCode(email);
+                        setCodeSent(true);
+                        return next;
+                      });
+                      return;
+                    }
+                    void accountAct(async (remote) => {
+                      const next = await remote.verifyCode(email, code);
+                      setCode("");
+                      setCodeSent(false);
+                      return next;
+                    });
+                  }}
+                  className="rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+                >
+                  {accountBusy ? "Working…" : codeSent ? "Connect this computer" : "Email me a code"}
+                </button>
+                {codeSent && (
+                  <button
+                    disabled={accountBusy}
+                    onClick={() => {
+                      setCode("");
+                      setCodeSent(false);
+                    }}
+                    className="rounded-lg border border-hairline/40 px-3 py-2 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+                  >
+                    Use another email
+                  </button>
+                )}
+              </div>
+              {codeSent && !accountError && (
+                <div className="text-[12px] text-ink-secondary">
+                  We sent a code if that address can receive mail. It expires in 10 minutes.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex min-w-0 items-start gap-3">
+                <Cloud size={17} className="mt-0.5 shrink-0 text-accent" />
+                <div className="min-w-0">
+                  <div className="truncate text-[14px] text-ink">{account.email}</div>
+                  <div className="mt-0.5 text-[13px] text-ink-secondary">
+                    {account.status === "ready" && account.endpoint
+                      ? state.enabled
+                        ? `Secure connection ready at ${endpointHost(account.endpoint)}.`
+                        : `Secure address configured at ${endpointHost(account.endpoint)}. Turn Companion on to make it reachable.`
+                      : account.status === "connecting"
+                        ? "Setting up this computer's secure connection…"
+                        : account.message ?? "The secure connection needs attention; local pairing still works."}
+                  </div>
+                  {account.status === "error" && (
+                    <button
+                      disabled={accountBusy}
+                      onClick={() => void accountAct((remote) => remote.retry())}
+                      className="mt-2 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-40"
+                    >
+                      {accountBusy ? "Retrying…" : "Retry secure connection"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <button
+                disabled={accountBusy}
+                onClick={() => void accountAct((remote) => remote.signOut())}
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-40"
+              >
+                <LogOut size={13} />
+                Sign out
+              </button>
+            </div>
+          )}
+          {accountActionError && (
+            <div className="mt-3 text-[13px] text-danger">{accountActionError}</div>
+          )}
+        </Card>
+      )}
 
       <Card
         title="Connect a phone"

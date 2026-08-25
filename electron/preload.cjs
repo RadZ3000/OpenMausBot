@@ -2,6 +2,14 @@
 // this narrow surface (window.ogb), never Node or ipcRenderer itself.
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
+let pendingPackageInstallUrl = null;
+const packageInstallListeners = new Set();
+ipcRenderer.on("package:install", (_event, url) => {
+  if (typeof url !== "string") return;
+  pendingPackageInstallUrl = url;
+  for (const listener of packageInstallListeners) listener(url);
+});
+
 contextBridge.exposeInMainWorld("ogb", {
   /** Host platform ("darwin" | "win32" | "linux") — for platform-aware UI. */
   platform: process.platform,
@@ -19,9 +27,19 @@ contextBridge.exposeInMainWorld("ogb", {
     state: () => ipcRenderer.invoke("companion:state"),
     start: () => ipcRenderer.invoke("companion:start"),
     stop: () => ipcRenderer.invoke("companion:stop"),
+    keepAwake: (enabled) => ipcRenderer.invoke("companion:keep-awake", enabled),
     pairing: (open) => ipcRenderer.invoke("companion:pairing", open),
     cloudDesktop: (deviceId, allowed) => ipcRenderer.invoke("companion:cloud-desktop", deviceId, allowed),
     revoke: (deviceId) => ipcRenderer.invoke("companion:revoke", deviceId),
+  },
+  /** Optional account-backed HTTPS access for Companion. Secrets stay in the
+   * main process; the renderer sees only status and narrow user actions. */
+  companionAccount: {
+    state: () => ipcRenderer.invoke("companion-account:state"),
+    requestCode: (email) => ipcRenderer.invoke("companion-account:request-code", email),
+    verifyCode: (email, code) => ipcRenderer.invoke("companion-account:verify-code", email, code),
+    retry: () => ipcRenderer.invoke("companion-account:retry"),
+    signOut: () => ipcRenderer.invoke("companion-account:sign-out"),
   },
   localControl: {
     status: () => ipcRenderer.invoke("cua:linux-status"),
@@ -100,6 +118,12 @@ contextBridge.exposeInMainWorld("ogb", {
   /** Open a web link in the default browser. Unlike renderer window.open,
    * this remains reliable after an asynchronous API request. */
   openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
+  /** A reviewed BotMRR package opened through openmausbot://install. */
+  onPackageInstall: (cb) => {
+    packageInstallListeners.add(cb);
+    if (pendingPackageInstallUrl) cb(pendingPackageInstallUrl);
+    return () => packageInstallListeners.delete(cb);
+  },
   /** Mirrors durable unread state into the native Dock/taskbar badge. */
   setUnreadCount: (count) => ipcRenderer.send("desktop:unread-count", count),
   /** Live VNC/noVNC in a sandboxed window owned by the app window. */
