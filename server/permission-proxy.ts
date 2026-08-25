@@ -14,6 +14,8 @@
 import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
 
+const PRODUCT_NAME = process.env.OMB_PRODUCT_NAME?.trim() || "FlowDesk";
+
 const socketPath = process.argv[2] ?? "";
 
 const waiting = new Map<string, (msg: any) => void>();
@@ -26,7 +28,7 @@ interface AllowPermissionResult {
 }
 const dead = () => {
   for (const resolve of waiting.values()) {
-    resolve({ behavior: "deny", message: "OpenMausBot: permission broker unavailable — skip this action" });
+    resolve({ behavior: "deny", message: `${PRODUCT_NAME}: permission broker unavailable — skip this action` });
   }
   waiting.clear();
 };
@@ -58,7 +60,7 @@ const send = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 const TOOLS = [
   {
     name: "approve",
-    description: "Ask the OpenMausBot user whether a tool use is allowed",
+    description: `Ask the ${PRODUCT_NAME} user whether a tool use is allowed`,
     inputSchema: {
       type: "object",
       properties: {
@@ -133,7 +135,7 @@ async function handle(msg: any) {
         if (answer.always && suggestions) result.updatedPermissions = suggestions;
         text = JSON.stringify(result);
       } else {
-        text = JSON.stringify({ behavior: "deny", message: answer.message || "Denied from OpenMausBot" });
+        text = JSON.stringify({ behavior: "deny", message: answer.message || `Denied from ${PRODUCT_NAME}` });
       }
     }
     return send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text }] } });

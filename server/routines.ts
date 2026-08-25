@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
+import { PRODUCT_NAME } from "./distribution.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 export type RoutineSchedule =
@@ -190,7 +191,7 @@ export class RoutineManager {
     for (const run of this.runs) {
       if (run.status === "running" || run.status === "waiting") {
         run.status = "failed";
-        run.error = "OpenMausBot restarted while this routine was running";
+        run.error = `${PRODUCT_NAME} restarted while this routine was running`;
         run.finishedAt = this.now();
         recovered.push({ ...run });
       }

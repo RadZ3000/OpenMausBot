@@ -28,6 +28,7 @@ import { usePushToTalk } from "@/lib/push-to-talk";
 import { MausAvatar } from "./Avatar";
 import { pendingApprovals } from "./PendingApproval";
 import { cn } from "@/lib/cn";
+import { distribution } from "@/lib/distribution";
 import { track } from "@/lib/analytics";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 
@@ -99,9 +100,9 @@ export function CallTargetButton({
   const reason = !capabilitiesReady
     ? "Checking whether this device can make calls."
     : !capabilities.dictation.available
-      ? "Calls require OpenMausBot for macOS because speech recognition runs on-device."
+      ? `Calls require ${distribution.productName} for macOS because speech recognition runs on-device.`
       : !window.ogb?.speechStart
-        ? "The speech service is unavailable in this app build. Restart or update OpenMausBot."
+        ? `The speech service is unavailable in this app build. Restart or update ${distribution.productName}.`
         : !configured
           ? "Add an ElevenLabs API key so the bot can speak during calls."
           : !voiceReady

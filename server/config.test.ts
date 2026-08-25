@@ -12,6 +12,7 @@ import {
   localVmMode,
   parseConfigPatch,
   parseStoredConfig,
+  resolveDataDir,
   roomTurnTimeoutMinutes,
   skillRecorderEnabled,
   stripWorkspaceCredentialEnv,
@@ -346,5 +347,24 @@ describe("workspace credential env strip", () => {
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_TTS_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_OPENAI_IMAGE_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_IMAGE_API_KEY");
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_INFERENCE_BROKER_TOKEN");
+  });
+});
+
+describe("data directory default", () => {
+  const home = join("/tmp", "omb-brand-home-does-not-exist");
+
+  it("keeps the historical folder while the brand slot is unset", () => {
+    expect(resolveDataDir({}, home)).toBe(join(home, ".openmausbot"));
+  });
+
+  it("uses the brand slot when the pack plugs a directory name", () => {
+    expect(resolveDataDir({ OMB_DATA_DIR_NAME: "flowdesk" }, home)).toBe(join(home, ".flowdesk"));
+  });
+
+  it("lets an explicit OMB_DATA_DIR win, including the empty string", () => {
+    expect(resolveDataDir({ OMB_DATA_DIR: "/isolated", OMB_DATA_DIR_NAME: "flowdesk" }, home)).toBe(
+      "/isolated",
+    );
   });
 });

@@ -6,6 +6,8 @@ import { createInterface } from "node:readline";
 import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
 
+const PRODUCT_NAME = process.env.OMB_PRODUCT_NAME?.trim() || "FlowDesk";
+
 type Json = Record<string, unknown>;
 type Device = { serial: string; state: string; model: string; connection: "usb" | "network" | "emulator" };
 type UiNode = { text: string; description: string; id: string; className: string; bounds: [number, number, number, number] };
@@ -61,7 +63,7 @@ export function resolveAdbPath(env: NodeJS.ProcessEnv = process.env, platform = 
 
 async function runAdb(args: string[], options: { binary?: boolean; timeoutMs?: number } = {}): Promise<Buffer> {
   const adb = resolveAdbPath();
-  if (!adb) throw new Error("Android platform tools are unavailable. Reopen OpenMausBot or install adb.");
+  if (!adb) throw new Error(`Android platform tools are unavailable. Reopen ${PRODUCT_NAME} or install adb.`);
   return new Promise((resolve, reject) => {
     const child = spawn(adb, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const stdout: Buffer[] = [];

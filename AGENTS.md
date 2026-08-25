@@ -71,6 +71,7 @@ pnpm lint               # CI does not run this — run it yourself
 pnpm check:electron     # desktop-shell changes
 pnpm check:licenses     # any dependency change
 pnpm check:distribution # anything that ships a URL, endpoint, or key
+pnpm check:brand        # product name, overlay, leftover OpenMausBot. `--release` before a customer artifact
 ```
 
 `pnpm lint` carries the `anti-slop` rules in `tools/oxlint/`, which reject
@@ -78,12 +79,21 @@ type-system escape hatches (`as unknown as`, `unknown` parameters and returns,
 `Reflect.get`, runtime `typeof`, module mocking). If the type checker is fighting
 you, that is a signal about the design, not an invitation to cast.
 
+If the change moved state, goals, or known defects, overwrite
+`docs/agent-status.md` (and the matching plan / bug entry) in the same turn —
+`keep-docs-current`. Archive or delete docs that are no longer current. A
+passing test suite with a stale or scattered snapshot is an incomplete change.
+
 ## Current state and goals
 
-[`docs/agent-status.md`](docs/agent-status.md) is the standing snapshot (git,
-Path A, computer loop, what to do next, what not to do). **Overwrite it** when
-facts change; do not add another dated handoff. Plan catalog:
-[`docs/plans/README.md`](docs/plans/README.md).
+Hop-on map: [`docs/README.md`](docs/README.md). Snapshot:
+[`docs/agent-status.md`](docs/agent-status.md) (git, Path A, computer loop,
+what to do next, what not to do). Read both before writing code; **overwrite
+the snapshot** in the same turn when facts change; archive or delete docs that
+are no longer current. The process is `keep-docs-current`. Plan catalog:
+[`docs/plans/README.md`](docs/plans/README.md). Identity map:
+[`docs/identity-surface.md`](docs/identity-surface.md) (brand pack A–C in
+tree; Phase D unset).
 
 ## The skills, and when to read them
 
@@ -93,7 +103,8 @@ match the folder.
 | Skill (folder under `.claude/skills/`) | Read it when |
 |---|---|
 | `check-upstream-first` | Before any non-trivial feature or new file under `server/` or `src/`. |
-| `commercial-fork` | Adding a dependency, touching branding, telemetry, release config, or any outbound call. |
+| `keep-docs-current` | Before writing code, after facts change, and whenever choosing to add, overwrite, archive, or delete a doc. |
+| `commercial-fork` | Adding a dependency, touching branding (`brand/`, `pnpm check:brand`), telemetry, release config, or any outbound call. |
 | `module-design` | Shaping a module's interface, placing a seam, judging whether an abstraction earns its keep. |
 | `diagnosing-bugs` | Something is broken, hanging, throwing, or silently doing nothing. |
 | `review-changes` | Reviewing a branch, a merge, or the work just done. |

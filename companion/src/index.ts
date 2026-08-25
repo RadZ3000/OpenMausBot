@@ -35,6 +35,7 @@ import {
   type ServiceInfo,
 } from "./mdns.ts";
 import { createProxyHandler } from "./proxy.ts";
+import { PRODUCT_NAME } from "./product.ts";
 import { companionOriginSocket, listenCompanionOrigin } from "./origin.ts";
 
 /** A port from the environment, or the default. Anything that is not a whole
@@ -83,7 +84,7 @@ const conflict = (name: string, port: number): string | null => {
 let cachedName = process.env.OMB_COMPANION_NAME?.trim() || "";
 
 /** What this computer is called on the phone. Never empty. */
-const machineName = (): string => cachedName || "OpenMausBot";
+const machineName = (): string => cachedName || PRODUCT_NAME;
 
 /** Ask the harness whose computer this is, once, at startup. Every failure
  * is survivable: the name is a label, and no part of pairing depends on it. */
@@ -98,7 +99,7 @@ async function refreshMachineName(): Promise<void> {
     const owner = config.profile?.name?.trim();
     if (owner) cachedName = `${owner}'s computer`;
   } catch {
-    /* not up, or no profile — "OpenMausBot" is a fine thing to be called */
+    /* not up, or no profile — PRODUCT_NAME is a fine thing to be called */
   }
 }
 

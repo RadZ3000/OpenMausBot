@@ -9,6 +9,8 @@
 // requested (v1 imports are markdown-only by policy).
 import { z } from "zod";
 
+import { HTTP_USER_AGENT } from "./distribution.ts";
+
 const MAX_FILES = 30;
 const MAX_FILE_BYTES = 256 * 1024;
 const API = "https://api.github.com";
@@ -65,14 +67,14 @@ function asEntries(listing: z.infer<typeof CONTENT_LISTING>): ContentEntry[] {
 
 async function fetchListing(url: string, fetcher: typeof fetch): Promise<ContentEntry[]> {
   const response = await fetcher(url, {
-    headers: { accept: "application/vnd.github+json", "user-agent": "OpenMausBot-skills" },
+    headers: { accept: "application/vnd.github+json", "user-agent": HTTP_USER_AGENT },
   });
   if (!response.ok) throw new Error(`GitHub API ${response.status} for ${url}`);
   return asEntries(CONTENT_LISTING.parse(await response.json()));
 }
 
 async function fetchText(url: string, fetcher: typeof fetch): Promise<string> {
-  const response = await fetcher(url, { headers: { "user-agent": "OpenMausBot-skills" } });
+  const response = await fetcher(url, { headers: { "user-agent": HTTP_USER_AGENT } });
   if (!response.ok) throw new Error(`download failed (${response.status})`);
   const text = await response.text();
   if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) throw new Error("file is larger than the 256KB import cap");

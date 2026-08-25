@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import { resolveCuaDesktopStatus } from "./cua-desktop-status.ts";
 import { augmentedPath } from "./env-path.ts";
 import { DATA_DIR } from "./config.ts";
+import { PRODUCT_NAME } from "./distribution.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { localVmCanResume } from "../shared/local-vm-lifecycle.ts";
 
@@ -361,7 +362,7 @@ function statusProblem(status: ContainerComputerStatus): string | null {
   }
   if (status.container === "missing") return "Create the Local VM";
   if (!status.imageMatches) return "The existing Local VM uses an older desktop or Cua Driver; recreate it";
-  if (!status.managed) return "The existing container was not created by OpenMausBot; recreate it";
+  if (!status.managed) return `The existing container was not created by ${PRODUCT_NAME}; recreate it`;
   if (status.network === "unsafe") return "The existing Local VM exposes its viewer publicly; recreate it";
   if (status.security === "unsafe") return "The existing Local VM is missing safety limits; recreate it";
   if (status.persistence === "unsafe") return "The existing Local VM is missing its durable workspace; recreate it";

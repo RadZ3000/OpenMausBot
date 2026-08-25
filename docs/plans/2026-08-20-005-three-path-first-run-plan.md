@@ -1,6 +1,7 @@
 # The three-path first run
 
-Status: proposed, with Phase 1a shipped in the same change. This is Phase 1 of
+Status: proposed; Path A still building, Path C in tree per
+[2026-08-25-001](2026-08-25-001-path-c-hosted-trial-plan.md). This is Phase 1 of
 [the product foundation plan](2026-08-20-003-product-foundation-plan.md), which
 defines the wedge as **one installer that produces a working bot without the
 customer doing sysadmin work**.
@@ -353,15 +354,17 @@ not treat the bundling recommendation above as settled until that is resolved.
 - **A persisted `modelSelection.model` is never validated** against the live
   catalog, so a bot can hold an id for a model that has since been removed.
 
-## Phase 1c — Path C, capped trial
+## Phase 1c — Path C, hosted capability then credits
 
-Model it on `cloudflare/composio-broker/`, do not invent one: per-install token
-stored only as a SHA-256 hash in D1, bearer auth on every usage route, separate
-rate limiters for registration and the hot path, and a `REGISTRATION_MODE` kill
-switch. The packaged app already auto-registers against that broker on boot and
-stores the token in `credentials.bin`, so the client half has a reference too.
-The cap has to exist in the first build; retrofitting it means paying for
-everyone who already downloaded.
+Living spec:
+[2026-08-25-001](2026-08-25-001-path-c-hosted-trial-plan.md). Not a hard-capped
+trial. Same *shape* as `cloudflare/composio-broker/` (hashed install token, bearer
+on every usage route, registration + hot-path limiters, `REGISTRATION_MODE`).
+The Worker is the router: capability first, frontier credits as a ceiling.
+Easy tasks stay on the cheap model even with a full ledger; hard tasks stay on
+that model once credits are gone. Monthly top-ups restore frontier. Rate limits
+are for heavy users, not a brick wall. Chooser arm is live; packaged builds
+need `OMB_INFERENCE_BROKER_URL` (no default).
 
 ## Open decisions
 
@@ -380,7 +383,8 @@ everyone who already downloaded.
 - **Upstream reworks onboarding again.** Likely, given the 17 August burst. The
   mitigation is structural: our files, one line of theirs. If that line moves, a
   merge conflict is one line long.
-- **The arms convert badly.** A trial that expires into a dead app is worse than
-  no trial. Each arm must be able to hand off to another without a reinstall.
+- **The arms convert badly.** Each arm must still be able to hand off to another
+  without a reinstall (local ↔ BYOK ↔ hosted). Hosted itself no longer expires
+  into a dead app — see [2026-08-25-001](2026-08-25-001-path-c-hosted-trial-plan.md).
 - **Three arms is three support surfaces**, as 003 notes. The chooser only earns
   its place if each failure explains itself.

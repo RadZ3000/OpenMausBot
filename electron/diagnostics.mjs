@@ -17,6 +17,7 @@ export const CREDENTIAL_ENV_NAMES = [
   "OMB_OPENAI_IMAGE_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
+  "OMB_INFERENCE_BROKER_TOKEN",
   "OMB_IMAGE_API_KEY",
 ];
 
@@ -106,13 +107,14 @@ function flattenSummary(input, prefix = "", depth = 0, out = {}) {
 }
 
 export function buildDiagnosticsReport({
+  productName = "FlowDesk",
   appInfo = {},
   configSummary = {},
   logTail,
   now = new Date().toISOString(),
 } = {}) {
   const lines = [];
-  lines.push("OpenMausBot diagnostics");
+  lines.push(`${productName} diagnostics`);
   lines.push(`Generated: ${now}`);
   lines.push("");
   lines.push("## App");

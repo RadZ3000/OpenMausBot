@@ -19,6 +19,7 @@ import { createSocket } from "node:dgram";
 import { hostname, networkInterfaces } from "node:os";
 
 import { lanAddresses } from "./listener.ts";
+import { PRODUCT_NAME } from "./product.ts";
 
 const MDNS_ADDRESS = "224.0.0.251";
 const MDNS_PORT = 5353;
@@ -367,7 +368,7 @@ export function answersFor(
 
 /** One DNS label: no dots (they would split it into two labels), no control
  * characters, and inside the 63-byte limit even in UTF-8. */
-export function dnsLabel(text: string, fallback = "OpenMausBot"): string {
+export function dnsLabel(text: string, fallback = PRODUCT_NAME): string {
   let label = text
     .replace(/[\u0000-\u001f\u007f]/g, "")
     .replace(/\./g, " ")

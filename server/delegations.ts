@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { writeFileAtomic } from "./atomic.ts";
 import { getOrCreateChannel, mirrorExchange, type CommsBus } from "./comms-visibility.ts";
 import { DATA_DIR } from "./config.ts";
+import { PRODUCT_NAME } from "./distribution.ts";
 import { newId } from "./contracts.ts";
 import { requestPeerApproval, type ApprovalBus } from "./peer-approval.ts";
 import type { BotRecord, GroupRecord } from "./store.ts";
@@ -296,7 +297,7 @@ async function processOne(
   const channel = getOrCreateChannel(bus.store, sender, target);
   mirrorExchange(bus, sender, target, item.message, channel, sourceThreadId);
   const reasonLine = item.reason ? `\n\n[Reason: ${item.reason}]` : "";
-  const prefixed = `[Delegated by @${sender.name}, another bot in this OpenMausBot workspace. Do the work and reply directly.]\n\n${item.message}${reasonLine}`;
+  const prefixed = `[Delegated by @${sender.name}, another bot in this ${PRODUCT_NAME} workspace. Do the work and reply directly.]\n\n${item.message}${reasonLine}`;
   await runTarget(item.toBotId, prefixed, item.depth + 1, sourceThreadId, channel);
 }
 

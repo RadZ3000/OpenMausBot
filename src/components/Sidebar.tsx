@@ -1,4 +1,5 @@
 import { track } from "@/lib/analytics";
+import { distribution, teamLibraryEnabled } from "@/lib/distribution";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -1387,6 +1388,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   {exportingTeam ? <Loader2 size={16} className="animate-spin text-ink-secondary" /> : <ArrowDownToLine size={16} className="text-ink-secondary" />}
                   {exportingTeam ? "Exporting…" : "Export all bots"}
                 </button>
+                {teamLibraryEnabled(distribution) && (
                 <button
                   onClick={() => {
                     setPlusOpen(false);
@@ -1397,6 +1399,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   <Library size={16} className="text-ink-secondary" />
                   Teams
                 </button>
+                )}
                 {archivedBots.length > 0 && (
                   <button
                     onClick={() => {

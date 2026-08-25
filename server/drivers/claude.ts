@@ -15,6 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
+import { PRODUCT_NAME } from "../distribution.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 
@@ -202,17 +203,17 @@ type AskBehavior = "allow" | "deny" | "answer";
 type AskResolutionSource = "user" | "timeout" | "system";
 
 const DENY_TIMEOUT_NOTE =
-  "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
-const QUESTION_TIMEOUT_NOTE = "OpenMausBot: nobody answered in time. Use your best judgment and continue.";
-const DUPLICATE_ASK_ID_NOTE = "OpenMausBot: duplicate ask id — skipping this request.";
+  `${PRODUCT_NAME}: nobody answered this permission request in time. Skip this action and finish what you can without it.`;
+const QUESTION_TIMEOUT_NOTE = `${PRODUCT_NAME}: nobody answered in time. Use your best judgment and continue.`;
+const DUPLICATE_ASK_ID_NOTE = `${PRODUCT_NAME}: duplicate ask id — skipping this request.`;
 
 /** The system-source reply for an ask that outlives the turn — used both to
  * drain in-flight `pending` asks on close() and to answer one that arrives
  * on an already-closed broker (see the `closed` branch below). */
 function systemEndedReply(kind: Ask["kind"]): { behavior: AskBehavior; message: string } {
   return kind === "question"
-    ? { behavior: "answer", message: "OpenMausBot: the turn is ending — wrap up." }
-    : { behavior: "deny", message: "OpenMausBot: the turn ended" };
+    ? { behavior: "answer", message: `${PRODUCT_NAME}: the turn is ending — wrap up.` }
+    : { behavior: "deny", message: `${PRODUCT_NAME}: the turn ended` };
 }
 
 /** One human-readable line for an ask — what the card subtitle shows. */

@@ -21,7 +21,7 @@
 // available?) and belongs to the caller.
 
 /** `local` runs open weights on this machine, `byok` bills the customer's own
- * API key, `hosted` is the capped trial we pay for. */
+ * API key, `hosted` is models we pay for (frontier credits, then a basic model). */
 export type InstallPath = "local" | "byok" | "hosted";
 
 /** Every path, in the order a chooser should present them. */
@@ -67,8 +67,8 @@ export function choosePath(storage: InstallPathStorage, path: InstallPath): void
 }
 
 /** Forget the choice so first run can be walked again. The arms convert into
- * one another — a trial ends, a key is bought — so a decision that can never be
- * revisited is a dead end rather than a default. */
+ * one another — a key is pasted, a hosted install is registered — so a
+ * decision that can never be revisited is a dead end rather than a default. */
 export function forgetPath(storage: InstallPathStorage): void {
   storage.removeItem(CHOICE_KEY);
 }

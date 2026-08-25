@@ -33,8 +33,9 @@ const ARMS = {
   },
   hosted: {
     icon: Cloud,
-    title: "Just let me try it",
-    blurb: "No account, no key. A capped trial so you can see it work before deciding.",
+    title: "Just let me run it",
+    blurb:
+      "No account, no key. Hard tasks use a stronger model while frontier credits last; easy tasks stay cheap. Exhausting credits keeps chat on the lighter model.",
   },
 } satisfies Record<InstallPath, { icon: typeof Cpu; title: string; blurb: string }>;
 
@@ -44,7 +45,7 @@ const ARMS = {
 const NOT_YET = {
   local: undefined,
   byok: undefined,
-  hosted: "Coming soon",
+  hosted: undefined,
 } satisfies Record<InstallPath, string | undefined>;
 
 function ArmCard({ path, onPick }: { path: InstallPath; onPick: () => void }) {
@@ -153,6 +154,61 @@ function ApiKeyArm({ onConnected }: { onConnected: () => void }) {
   );
 }
 
+/** Path C. The Worker is the router; this arm only registers the install and
+ * turns on the hosted instance. Chat-only: openai-compat has no computer. */
+function HostedArm({ onConnected }: { onConnected: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const connect = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (window.ogb?.ensureHostedInference) {
+        const registered = await window.ogb.ensureHostedInference();
+        if (!registered.ok) throw new Error(registered.error ?? "Hosted models could not be registered.");
+      }
+      const enabled = await fetch("/api/engines/hosted-inference", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      if (!enabled.ok) {
+        const body: { error?: string } = await enabled.json().catch(() => ({}));
+        throw new Error(body.error ?? "Hosted models could not be turned on.");
+      }
+      track("install_path_completed", { path: "hosted" });
+      onConnected();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
+        Hard tasks use a stronger model while this month&rsquo;s frontier credits last;
+        easy tasks stay cheap. If those credits run out, chat keeps going on the
+        lighter model &mdash; it does not hang up. You can add more frontier credits
+        later. This path is chat only; a Linux computer for desktop work is not
+        included yet.
+      </p>
+      {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
+      <button
+        type="button"
+        onClick={() => void connect()}
+        disabled={busy}
+        className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white disabled:opacity-40"
+      >
+        {busy && <Loader2 size={15} className="animate-spin" />}
+        {busy ? "Setting up…" : "Start chatting"}
+      </button>
+    </>
+  );
+}
+
 export function InstallPathChooser() {
   const [step, setStep] = useState(() => firstRunStep(localStorage, distribution.installPaths));
   // Deferring closes the overlay without recording a path, so an install with
@@ -190,11 +246,7 @@ export function InstallPathChooser() {
             <h1 className="mt-4 text-center text-[20px] font-semibold text-ink">{ARMS[step.path].title}</h1>
             {step.path === "byok" && <ApiKeyArm onConnected={() => finish("byok")} />}
             {step.path === "local" && <LocalModelArm onReady={() => finish("local")} />}
-            {step.path === "hosted" && (
-              <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
-                This one isn&rsquo;t built yet.
-              </p>
-            )}
+            {step.path === "hosted" && <HostedArm onConnected={() => finish("hosted")} />}
           </>
         )}
         <button

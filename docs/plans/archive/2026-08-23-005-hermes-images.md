@@ -5,7 +5,7 @@ Hermes stays. Granite 3B first-run unchanged.
 
 2026-08-23 later: Path A candidate through Hermes is
 **`qwen3-vl:4b-instruct`**
-([006](2026-08-23-006-qwen3vl-replace-granite-plan.md)). Unsuffixed
+([006](../2026-08-23-006-qwen3vl-replace-granite-plan.md)). Unsuffixed
 `qwen3-vl:4b` (Thinking) **fills 8k and never calls tools**. Ollama dummy
 tools **and** a PNG together returned **200** on the Thinking tag (unlike
 `qwen2.5vl:3b`). **007 is in tree:** paste = ACP image blocks; VM shot =

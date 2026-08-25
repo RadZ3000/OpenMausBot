@@ -12,6 +12,15 @@
 import type { ModelCatalog } from "./contracts.ts";
 import { RECOMMENDED_MODEL } from "./local-model.ts";
 
+/** Name shown to the user and to models. Packaged builds get this from
+ * extraMetadata via OMB_PRODUCT_NAME; unpackaged `pnpm dev:server` matches
+ * brand/profile.ts so the two stamps cannot drift in development. */
+export const PRODUCT_NAME = process.env.OMB_PRODUCT_NAME?.trim() || "FlowDesk";
+
+/** HTTP User-Agent for outbound fetches this process makes. While the brand
+ * slot is unset the historical value stays; check:brand lists it. */
+export const HTTP_USER_AGENT = process.env.OMB_HTTP_USER_AGENT?.trim() || "OpenMausBot-skills";
+
 /** driverKind a new bot prefers, e.g. "hermesAgent". */
 export const PREFERRED_ENGINE = process.env.OMB_DEFAULT_ENGINE?.trim() || "claudeAgent";
 

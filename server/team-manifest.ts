@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { schemaIssue, type JsonValue } from "./schema.ts";
+import { PRODUCT_NAME } from "./distribution.ts";
 import type { MausColor } from "./store.ts";
 
 export const TEAM_MANIFEST_FORMAT = "openmaus.team" as const;
@@ -57,7 +58,7 @@ const membersSchema = z
 
 const manifestSchema = z.discriminatedUnion("version", [
   z.object({
-    format: z.literal(TEAM_MANIFEST_FORMAT, { error: "This is not an OpenMaus team file" }),
+    format: z.literal(TEAM_MANIFEST_FORMAT, { error: `This is not a ${PRODUCT_NAME} team file` }),
     version: z.literal(LEGACY_TEAM_MANIFEST_VERSION),
     team: z.object({
       name: requiredText(100),
@@ -71,7 +72,7 @@ const manifestSchema = z.discriminatedUnion("version", [
     }),
   }),
   z.object({
-    format: z.literal(TEAM_MANIFEST_FORMAT, { error: "This is not an OpenMaus team file" }),
+    format: z.literal(TEAM_MANIFEST_FORMAT, { error: `This is not a ${PRODUCT_NAME} team file` }),
     version: z.literal(TEAM_MANIFEST_VERSION),
     team: z.object({
       name: requiredText(100),

@@ -1,9 +1,9 @@
 # Path A drive-sites bake-off, 2026-08-23
 
 **Walk log (measurements), not the snapshot.** Current state:
-[`../agent-status.md`](../agent-status.md). Tensions:
-[`../local-model-path.md`](../local-model-path.md). P8:
-[`2026-08-22-008-computer-safety-eval-plan.md`](2026-08-22-008-computer-safety-eval-plan.md).
+[`../agent-status.md`](../../agent-status.md). Tensions:
+[`../local-model-path.md`](../../local-model-path.md). P8:
+[`2026-08-22-008-computer-safety-eval-plan.md`](../2026-08-22-008-computer-safety-eval-plan.md).
 
 Scored **native tees** (`tool_call` / `tool_call_update`), not chat prose.
 Same prompts on the same Local VM. Did **not** change `RECOMMENDED_MODEL`

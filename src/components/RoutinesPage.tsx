@@ -21,6 +21,7 @@ import {
 import { BotAvatar } from "@/components/Avatar";
 import { WebhooksPanel } from "@/components/WebhooksPanel";
 import { cn } from "@/lib/cn";
+import { distribution } from "@/lib/distribution";
 import { MAUS_COLORS, type MausState } from "@/lib/mascot";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunOn, RoutineRunStatus } from "@/lib/routines";
 import { api, useStore, type Bot } from "@/state/store";
@@ -407,7 +408,7 @@ export function RoutineEditor({
             {runOn === "cloud" && (
               <div className={cn("mt-2 rounded-lg px-3 py-2 text-[11.5px] leading-relaxed", cloudReady ? "bg-accent/10 text-ink-secondary" : "border border-warning/25 bg-warning/10 text-warning")}>
                 {cloudReady
-                  ? "The VM wakes automatically for each run. Keep OpenMausBot running so its scheduler can launch the job."
+                  ? `The VM wakes automatically for each run. Keep ${distribution.productName} running so its scheduler can launch the job.`
                   : "Cloud VM needs a working Box API key in App Settings before this routine can run."}
               </div>
             )}

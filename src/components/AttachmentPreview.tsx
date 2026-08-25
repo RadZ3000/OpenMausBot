@@ -7,6 +7,7 @@ import { Download, ImageOff, Maximize2, X } from "lucide-react";
 
 import { attachmentBasename, attachmentImageUrl } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
+import { distribution } from "@/lib/distribution";
 
 export interface PreviewImage {
   src: string;
@@ -81,7 +82,7 @@ export function AttachmentPreviewDialog({ image, onClose }: { image: PreviewImag
         <header className="flex shrink-0 items-center justify-between gap-4 border-b border-white/10 bg-black/45 px-4 py-3">
           <div className="min-w-0">
             <div className="truncate text-[13px] font-medium text-white">{image.name}</div>
-            <div className="text-[10.5px] text-white/50">Saved locally by OpenMausBot</div>
+            <div className="text-[10.5px] text-white/50">Saved locally by {distribution.productName}</div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <a

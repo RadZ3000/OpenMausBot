@@ -3,7 +3,7 @@
 Status: **WSL probe and virt skip in tree (B-25, B-27).** Chooser stickiness
 is still [B-26](../known-bugs.md). Rebuild NSIS to walk it. Decisions:
 [`docs/local-model-path.md`](../local-model-path.md).
-Dev-server walk (not NSIS): [`2026-08-21-005-path-a-live-walk.md`](2026-08-21-005-path-a-live-walk.md).
+Dev-server walk (not NSIS): [`2026-08-21-005-path-a-live-walk.md`](archive/2026-08-21-005-path-a-live-walk.md).
 
 ## check-upstream-first
 

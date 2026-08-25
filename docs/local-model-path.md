@@ -144,7 +144,7 @@ guest **started in ~10 s** on **WSL 2.7.12 / kernel 6.18**, and
 `podman run --rm quay.io/podman/hello` worked. Details in
 [plan 2026-08-21-002](plans/2026-08-21-002-local-path-vm-considerations.md)
 and the live walk
-[plan 2026-08-21-005](plans/2026-08-21-005-path-a-live-walk.md).
+[plan 2026-08-21-005](plans/archive/2026-08-21-005-path-a-live-walk.md).
 
 **NSIS first-run, 2026-08-22 — work still open.** The packaged wizard
 installs Ollama (pinned zip), Granite, and Hermes. WSL UAC ran and the
@@ -422,7 +422,7 @@ no 4B SKU, thinking on by default. Not Path A. Write-up:
 
 Neither Granite arm met the pass bar (error-page click **and** example.com).
 First-run **in code** is `qwen3-vl:8b`. Path A stays “open and read.”
-Details: [`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md).
+Details: [`plans/archive/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/archive/2026-08-23-002-path-a-drive-sites-bakeoff.md).
 
 Frontier engines on the same Local VM or a VPS get a **fused screenshot**
 after mutating Cua tools (`observe-computer-mcp`, Cua names kept). Path A
@@ -443,7 +443,7 @@ start a first-party Ollama driver unless asked; Path A is Hermes.
 See
 [`docs/plans/2026-08-22-005-computer-frontier-observe-plan.md`](plans/2026-08-22-005-computer-frontier-observe-plan.md)
 and the bake-off
-[`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md).
+[`plans/archive/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/archive/2026-08-23-002-path-a-drive-sites-bakeoff.md).
 
 The shared Local VM is one desktop: leftover Chromium is expected **while
 the VM is running** (harness quit does not kill it). Cookies and files in

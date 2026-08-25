@@ -1,7 +1,7 @@
 # Path A first-run: Qwen3-VL Thinking 8B at 32k
 
 Status: **in tree 2026-08-24; NVIDIA Hermes ACP 8B@32k gold pass** (~7.5 min, three `tool_call`s); **Admin CPU gold fail** (20 min `TURN_STALL_MS`, `session/cancel`, no `tool_call`; not truncated). This **supersedes**
-[2026-08-24-003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md)
+[2026-08-24-003](archive/2026-08-24-003-path-a-qwen3vl-first-run-plan.md)
 (Instruct 4B, 8k). Parent tees stay
 [2026-08-23-006](2026-08-23-006-qwen3vl-replace-granite-plan.md)
 (4B Instruct / 4B Thinking measurements) and
@@ -81,7 +81,7 @@ Ollama ≥ 0.12.7; we already pin **0.32.15**.
    8B weights (~6.1 GB) + 32k KV + Local VM (~6 GB) + Windows + this app
    **do not** fit a 16 GB machine in VRAM or in RAM with headroom.
    Granite 8B on the NVIDIA 16 GB box already left **0.6 GB RAM** free
-   with the VM up ([002](2026-08-23-002-path-a-drive-sites-bakeoff.md)).
+   with the VM up ([002](archive/2026-08-23-002-path-a-drive-sites-bakeoff.md)).
    **Comfortable = 24 GB installed** (`24 * GB` totalMemory). 16 GB
    machines stay Path A as **tight** (same tag, same 32k, “slow” copy).
    Unsupported remains **&lt; 8 GB**.
@@ -168,7 +168,7 @@ blocked on local-inject).
 | [`src/components/LocalModelArm.tsx`](../../src/components/LocalModelArm.tsx) | “about 6.1 GB”; comment names Thinking 8B. Tight copy today says “only a small one” — rewrite to **speed** (“answers will take minutes”), not a smaller download. |
 | [`docs/identity-surface.md`](../identity-surface.md) | Packaged `defaultModel` examples |
 | [`docs/local-model-path.md`](../local-model-path.md) | First-run sentence + size + 24 GB comfortable |
-| This file + [003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md) superseded + [006](2026-08-23-006-qwen3vl-replace-granite-plan.md) pointer + catalog + [`docs/agent-status.md`](../agent-status.md) | After code lands, overwrite the snapshot |
+| This file + [003](archive/2026-08-24-003-path-a-qwen3vl-first-run-plan.md) superseded + [006](2026-08-23-006-qwen3vl-replace-granite-plan.md) pointer + catalog + [`docs/agent-status.md`](../agent-status.md) | After code lands, overwrite the snapshot |
 
 Tests that **assert the recommended tag** (not fixtures):
 

@@ -160,7 +160,16 @@ export function skillRecorderEnabled(cfg: AppConfig): boolean {
 }
 
 // OMB_DATA_DIR isolates test/soak rigs from the user's real fleet.
-export const DATA_DIR = process.env.OMB_DATA_DIR ?? join(homedir(), ".openmausbot");
+// OMB_DATA_DIR_NAME is the brand-pack slot: when set, the default is ~/.<name>.
+// While that slot is unset the historical ~/.openmausbot default stays.
+export function resolveDataDir(env: NodeJS.ProcessEnv, home: string): string {
+  if (env.OMB_DATA_DIR != null) return env.OMB_DATA_DIR;
+  const name = env.OMB_DATA_DIR_NAME?.trim();
+  if (name) return join(home, `.${name}`);
+  return join(home, ".openmausbot");
+}
+
+export const DATA_DIR = resolveDataDir(process.env, homedir());
 const LEGACY_DATA_DIR = join(homedir(), ".opengrokbot");
 export const EVENTS_DIR = join(DATA_DIR, "events");
 export const NATIVE_DIR = join(DATA_DIR, "native");
@@ -251,6 +260,7 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_OPENAI_IMAGE_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
+  "OMB_INFERENCE_BROKER_TOKEN",
   "OMB_IMAGE_API_KEY",
 ] as const;
 

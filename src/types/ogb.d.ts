@@ -163,7 +163,7 @@ type SkillRecordingPayload = {
       onPackageInstall?(cb: (url: string) => void): () => void;
       /** Updates the native Dock/taskbar unread indicator. */
       setUnreadCount?(count: number): void;
-      /** Opens a live desktop as a sandboxed window owned by OpenMausBot. */
+      /** Opens a live desktop as a sandboxed window owned by this app. */
       desktopViewer?: {
         open(url: string, title: string, contextId: string): Promise<boolean>;
         /** Closes the live-desktop window, but only when it belongs to this bot. */
@@ -182,6 +182,10 @@ type SkillRecordingPayload = {
         name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "openaiImageApiKey" | "imageGenApiKey",
         value: string,
       ): Promise<ConfigStatus>;
+      /** Whether this packaged build has a hosted-inference Worker URL. */
+      hostedInferenceStatus?(): Promise<{ configured: boolean }>;
+      /** Register this install with the hosted-inference Worker. */
+      ensureHostedInference?(): Promise<{ ok: boolean; error?: string }>;
       /** In-app auto-update (packaged app only; dormant in dev). onState
        * fires immediately with the current state, then on transitions. */
       updater?: {

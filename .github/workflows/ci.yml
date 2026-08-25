@@ -41,6 +41,8 @@ jobs:
       # a text scan of tracked files, identical on every runner — once is enough
       - run: pnpm check:distribution
         if: matrix.os == 'ubuntu-latest'
+      - run: pnpm check:brand
+        if: matrix.os == 'ubuntu-latest'
       - name: production UI build
         if: matrix.os == 'ubuntu-latest'
         run: pnpm exec vite build

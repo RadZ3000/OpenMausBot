@@ -18,6 +18,7 @@ import type { DeviceRegistry } from "./devices.ts";
 import { companionEndpointCandidates, hostedCompanionUrl } from "./endpoints.ts";
 import { lanAddresses, tailnetName, tailscaleAddress } from "./listener.ts";
 import { defaultHostName } from "./mdns.ts";
+import { PRODUCT_NAME } from "./product.ts";
 
 /** What the pairing page needs to render itself and act on what you click. */
 export interface ControlOptions {
@@ -310,7 +311,7 @@ function page(): string {
   return `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OpenMausBot Companion</title>
+<title>${PRODUCT_NAME} Companion</title>
 <style>
   :root { color-scheme: light dark; --fg: #111; --dim: #666; --line: #0002; --bg: #fff; --card: #fafafa; }
   @media (prefers-color-scheme: dark) {
@@ -336,7 +337,7 @@ function page(): string {
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 <main>
-  <h1>OpenMausBot Companion</h1>
+  <h1>${PRODUCT_NAME} Companion</h1>
   <p class="sub">Your phone reaches this computer through here. Only pair a device you trust.</p>
   <section id="where"></section>
   <section id="pair"></section>

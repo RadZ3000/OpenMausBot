@@ -18,6 +18,8 @@
 // calls. Adding a feature to the phone means adding its route here, on
 // purpose, in a diff someone can read. That cost is the feature.
 
+import { PRODUCT_NAME } from "./product.ts";
+
 /** A refusal to send back, or null to let the request through. */
 export interface Denial {
   status: number;
@@ -167,7 +169,7 @@ export function denyReason({ path, method, authenticated }: RouteRequest): Denia
   if (method === "GET" && path === "/api/health") return null;
 
   if (!authenticated) {
-    return { status: 401, error: "pair this device from the OpenMausBot companion on your computer" };
+    return { status: 401, error: `pair this device from the ${PRODUCT_NAME} companion on your computer` };
   }
 
   if (ALLOWED.some((route) => route.method === method && route.path.test(path))) return null;

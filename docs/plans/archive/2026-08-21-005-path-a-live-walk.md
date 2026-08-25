@@ -1,11 +1,11 @@
 # Handoff: Path A live walk, 2026-08-21 (later)
 
 **Walk log (measurements), not the snapshot.** Current state:
-[`../agent-status.md`](../agent-status.md).
-Design decisions: [`docs/local-model-path.md`](../local-model-path.md).
-Defects: [`docs/known-bugs.md`](../known-bugs.md).
+[`../agent-status.md`](../../agent-status.md).
+Design decisions: [`docs/local-model-path.md`](../../local-model-path.md).
+Defects: [`docs/known-bugs.md`](../../known-bugs.md).
 B-24 diary: [`2026-08-21-004-b24-investigation.md`](2026-08-21-004-b24-investigation.md).
-Local VM: [`2026-08-21-002-local-path-vm-considerations.md`](2026-08-21-002-local-path-vm-considerations.md).
+Local VM: [`2026-08-21-002-local-path-vm-considerations.md`](../2026-08-21-002-local-path-vm-considerations.md).
 
 ## 0. What this commit holds
 
@@ -27,7 +27,7 @@ Do not commit it; `git checkout --` it.
 `release/OpenMausBot-0.1.27-setup.exe` on this box (GitHub timeouts fetching
 electron-builder NSIS/winCodeSign). Dist (`dist/`, `dist-server/`) was already
 built. Retry on a machine that can reach GitHub or
-`ELECTRON_BUILDER_BINARIES_MIRROR`. Unsigned NSIS still hits [B-15](../known-bugs.md).
+`ELECTRON_BUILDER_BINARIES_MIRROR`. Unsigned NSIS still hits [B-15](../../known-bugs.md).
 
 ## 1. How the walk was run (not the packaged app)
 

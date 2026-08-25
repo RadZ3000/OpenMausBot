@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 import { useUpdaterState } from "@/lib/updater";
+import { distribution } from "@/lib/distribution";
 import { cn } from "@/lib/cn";
 
 // The one action button in the card. Disabled drops the accent fill for the
@@ -39,6 +40,7 @@ export function UpdateBanner() {
   useEffect(() => setPending(null), [status]);
 
   if (!s || s.status === "idle" || s.status === "checking") return null;
+  if (!distribution.showUpdateDownload && s.status === "available") return null;
   const key = `${s.status}:${s.version ?? ""}`;
   if (dismissed === key) return null;
   const updater = window.ogb!.updater!;
@@ -49,7 +51,7 @@ export function UpdateBanner() {
 
   const title =
     s.status === "available"
-      ? `OpenMausBot ${s.version} is available`
+      ? `${distribution.productName} ${s.version} is available`
       : s.status === "downloading"
         ? `Downloading ${s.version ?? "update"}…`
         : s.status === "downloaded"
@@ -68,7 +70,7 @@ export function UpdateBanner() {
         : s.status === "downloaded"
           ? "Restart to finish updating."
           : installing
-            ? "OpenMausBot will reopen in a moment."
+            ? `${distribution.productName} will reopen in a moment.`
             : friendlyError(s.message);
 
   return (
@@ -121,7 +123,7 @@ export function UpdateBanner() {
 
       {!busy && (
         <div className="mt-2.5 flex gap-2">
-          {s.status === "available" && (
+          {s.status === "available" && distribution.showUpdateDownload && (
             <button
               onClick={() => {
                 setPending("download");

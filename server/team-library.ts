@@ -2,12 +2,28 @@ import { parseJson, type JsonValue } from "./schema.ts";
 import { isBotPackage, parseBotPackage, type ParsedBotPackage } from "./bot-package.ts";
 import { parseTeamManifest, type ParsedTeamManifest } from "./team-manifest.ts";
 
-export const TEAM_LIBRARY_REPOSITORY = "https://github.com/milind-soni/openmausbot-teams";
-export const TEAM_LIBRARY_RAW_ROOT = "https://raw.githubusercontent.com/milind-soni/openmausbot-teams/main";
-export const TEAM_LIBRARY_CATALOG_URL = `${TEAM_LIBRARY_RAW_ROOT}/catalog.json`;
-
 const MAX_CATALOG_BYTES = 256_000;
 const MAX_MANIFEST_BYTES = 1_000_000;
+
+/** Community catalog origin. `"off"` or empty means this build does not fetch one. */
+export function teamLibraryRepository(env: NodeJS.ProcessEnv = process.env): string | null {
+  const value = env.OMB_TEAM_LIBRARY?.trim();
+  if (!value || value === "off") return null;
+  return value;
+}
+
+export function teamLibraryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return teamLibraryRepository(env) !== null;
+}
+
+export function teamLibraryRawRoot(repository: string): string {
+  const url = new URL(repository);
+  const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
+  if ((url.hostname !== "github.com" && url.hostname !== "www.github.com") || parts.length < 2) {
+    throw new Error("Team library repository is invalid");
+  }
+  return `https://raw.githubusercontent.com/${parts[0]}/${parts[1]}/main`;
+}
 
 export interface TeamCatalogEntry {
   slug: string;
@@ -28,7 +44,7 @@ export interface TeamCatalogEntry {
 export interface TeamCatalog {
   format: "openmaus.catalog";
   version: 1;
-  repositoryUrl: typeof TEAM_LIBRARY_REPOSITORY;
+  repositoryUrl: string;
   teams: TeamCatalogEntry[];
 }
 
@@ -64,7 +80,7 @@ function stringList(value: unknown, field: string, maxItems: number): string[] {
 }
 
 /** Validate the remotely maintained index before any of it reaches the renderer. */
-export function parseTeamCatalog(value: unknown): TeamCatalog {
+export function parseTeamCatalog(value: unknown, repositoryUrl = teamLibraryRepository() ?? ""): TeamCatalog {
   if (!isRecord(value) || value.format !== "openmaus.catalog" || value.version !== 1) {
     throw new Error("The team library catalog is not supported");
   }
@@ -112,7 +128,7 @@ export function parseTeamCatalog(value: unknown): TeamCatalog {
   return {
     format: "openmaus.catalog",
     version: 1,
-    repositoryUrl: TEAM_LIBRARY_REPOSITORY,
+    repositoryUrl,
     teams,
   };
 }
@@ -152,8 +168,14 @@ async function fetchText(url: string, maxBytes: number, fetcher: Fetcher): Promi
   return raw;
 }
 
-export async function fetchTeamCatalog(fetcher: Fetcher = fetch): Promise<TeamCatalog> {
-  return parseTeamCatalog(await fetchJson(TEAM_LIBRARY_CATALOG_URL, MAX_CATALOG_BYTES, fetcher));
+export async function fetchTeamCatalog(
+  fetcher: Fetcher = fetch,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<TeamCatalog> {
+  const repository = teamLibraryRepository(env);
+  if (!repository) throw new Error("Team library is off in this build");
+  const root = teamLibraryRawRoot(repository);
+  return parseTeamCatalog(await fetchJson(`${root}/catalog.json`, MAX_CATALOG_BYTES, fetcher), repository);
 }
 
 export type ParsedShareableTeam = ParsedTeamManifest | ParsedBotPackage;
@@ -169,12 +191,18 @@ async function fetchShareable(url: string, fetcher: Fetcher): Promise<ParsedShar
     : parseShareable(await fetchJson(url, MAX_MANIFEST_BYTES, fetcher));
 }
 
-export async function fetchLibraryTeam(slug: string, fetcher: Fetcher = fetch): Promise<ParsedShareableTeam> {
+export async function fetchLibraryTeam(
+  slug: string,
+  fetcher: Fetcher = fetch,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ParsedShareableTeam> {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) throw new Error("That team name is invalid");
-  const catalog = await fetchTeamCatalog(fetcher);
+  const catalog = await fetchTeamCatalog(fetcher, env);
   const entry = catalog.teams.find((team) => team.slug === slug);
   if (!entry) throw Object.assign(new Error("That library team was not found"), { status: 404 });
-  return fetchShareable(`${TEAM_LIBRARY_RAW_ROOT}/${entry.package ?? entry.manifest}`, fetcher);
+  const repository = teamLibraryRepository(env);
+  if (!repository) throw new Error("Team library is off in this build");
+  return fetchShareable(`${teamLibraryRawRoot(repository)}/${entry.package ?? entry.manifest}`, fetcher);
 }
 
 function safeSegment(value: string): boolean {

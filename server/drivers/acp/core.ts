@@ -29,6 +29,7 @@ import {
 } from "../../acp-session.ts";
 import { acpPromptAcceptsImage, buildAcpPrompt } from "../../acp-prompt-blocks.ts";
 import { PROVIDER_CREDENTIAL_ENV, WORKSPACE_CREDENTIAL_ENV } from "../../config.ts";
+import { PRODUCT_NAME } from "../../distribution.ts";
 import { decodeInjectId } from "../local-inject.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.ts";
 import { replayAfterFailedResume } from "../../turn-context.ts";
@@ -218,7 +219,7 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
   const SOURCE = support.nativeSource;
   const decodeConfig = decodeAcpConfig(support.defaultCli);
   const DENY_TIMEOUT_NOTE =
-    "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+    `${PRODUCT_NAME}: nobody answered this permission request in time. Skip this action and finish what you can without it.`;
 
   return {
     driverKind: DRIVER_KIND,

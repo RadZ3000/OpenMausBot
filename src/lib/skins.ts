@@ -46,12 +46,12 @@ function getStore(): Storage | undefined {
   }
 }
 
-export function readSkin(): SkinId {
+export function readSkin(fallback: SkinId = DEFAULT_SKIN): SkinId {
   try {
     const stored = getStore()?.getItem(KEY);
-    return isSkinId(stored) ? stored : DEFAULT_SKIN;
+    return isSkinId(stored) ? stored : fallback;
   } catch {
-    return DEFAULT_SKIN;
+    return fallback;
   }
 }
 

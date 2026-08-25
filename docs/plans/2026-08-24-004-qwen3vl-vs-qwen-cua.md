@@ -5,7 +5,7 @@ The Qwen3-VL **Instruct 4B** first-run pick in this file is
 **overridden** by
 [2026-08-24-005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md)
 (Thinking 8B @ 32k). Do not retarget first-run to Qwen-CUA. Do not
-execute [003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md).
+execute [003](archive/2026-08-24-003-path-a-qwen3vl-first-run-plan.md).
 
 check-upstream-first: fetched `upstream/main` (`df32587` in the gap).
 No Qwen-CUA, no `qwen3-vl` first-run, no compact-observe. Catch-up stays
@@ -29,7 +29,7 @@ These are **not** two Ollama tags of the same job.
 Sources: Instruct live tee
 [006](2026-08-23-006-qwen3vl-replace-granite-plan.md);
 eyes [007](2026-08-23-007-hermes-eyes-plan.md);
-open CUA pick [003](2026-08-23-003-open-computer-use-brain.md);
+open CUA pick [003](archive/2026-08-23-003-open-computer-use-brain.md);
 Qwen-CUA README (weights note, 20-image history, 86.2);
 demo README (Playwright, XML `computer_use`, Chromium-first, not a full desktop).
 
@@ -68,7 +68,7 @@ Do not:
 
 **GPU-box coworker goal is still EvoCUA**, not Qwen-CUA, until CUA
 weights are actually downloadable and licensed for this fork.
-[004](2026-08-23-004-evocua-path-a-goal.md) / [003](2026-08-23-003-open-computer-use-brain.md):
+[004](2026-08-23-004-evocua-path-a-goal.md) / [003](archive/2026-08-23-003-open-computer-use-brain.md):
 EvoCUA-32B is Apache-2.0 on the HF card we cited, vLLM, one
 `computer_use` tool — same *shape* as Qwen-CUA, size we can name.
 
@@ -82,7 +82,7 @@ got worse when OSWorld-MCP tools were piled on).
 Asked 2026-08-24 as a Qwen-CUA workaround; answered **no, Qwen-CUA has
 no 8B SKU.** The **RAM** measurement still holds: Granite 8B on this
 15.7 GB / 6 GB VRAM box left **0.6 GB RAM** with the VM up
-([002](2026-08-23-002-path-a-drive-sites-bakeoff.md)). That is why 005
+([002](archive/2026-08-23-002-path-a-drive-sites-bakeoff.md)). That is why 005
 puts 16 GB in **tight** and raises comfortable to **24 GB**, not why we
 keep Granite.
 
@@ -103,7 +103,7 @@ Quantizing 397B does not produce an 8B Qwen3-VL. Different architecture;
 The actual downloadable “small CUA on Qwen3-VL” is already named:
 **`meituan/EvoCUA-8B-20260105`** (Apache-2.0, OSWorld **46.1%**, vLLM,
 one `computer_use` tool) —
-[003](2026-08-23-003-open-computer-use-brain.md). That is the GPU-box
+[003](archive/2026-08-23-003-open-computer-use-brain.md). That is the GPU-box
 step-down from EvoCUA-32B. It is still **not** Path A: not Ollama, not
 Hermes `vm_*`, and 8B already failed the 16 GB + VM RAM bar.
 

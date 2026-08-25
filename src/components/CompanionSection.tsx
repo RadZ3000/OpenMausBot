@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Cloud, Loader2, LogOut, Smartphone, Trash2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { companionPairingLink, type CompanionEndpoint } from "../lib/companion-pairing";
+import { distribution } from "../lib/distribution";
 import type { CompanionAccountState } from "../types/ogb";
 import { Card } from "./SettingsPrimitives";
 
@@ -210,7 +211,7 @@ export function CompanionSection() {
     return (
       <Card
         title="Companion"
-        subtitle="The companion runs as its own process, which only the desktop app can start. Open OpenMausBot on this computer to turn it on."
+        subtitle={`The companion runs as its own process, which only the desktop app can start. Open ${distribution.productName} on this computer to turn it on.`}
       >
         <div />
       </Card>
@@ -312,8 +313,8 @@ export function CompanionSection() {
           <div className="mt-3 text-[13px] text-ink-secondary">
             You're on a tailnet, but this computer's MagicDNS name couldn't be read from the
             Tailscale app — either MagicDNS is off, or the Tailscale command line tool isn't
-            where we looked. iPhones can't connect to a bare tailnet address, so check the
-            OpenMausBot log for which paths were tried.
+            where we looked. iPhones can't connect to a bare tailnet address, so check the{" "}
+            {distribution.productName} log for which paths were tried.
           </div>
         )}
         {state.enabled && !hosted && !state.tailscale && (
@@ -470,8 +471,8 @@ export function CompanionSection() {
         subtitle={
           state.pairing
             ? pairingLink
-              ? "Scan with your phone's Camera, then confirm in OpenMausMobile. You can also use the code manually."
-              : "Open OpenMausMobile, choose this computer, and enter the code."
+              ? `Scan with your phone's Camera, then confirm in ${distribution.companionName}. You can also use the code manually.`
+              : `Open ${distribution.companionName}, choose this computer, and enter the code.`
             : state.enabled
               ? "Open a short, single-use pairing window for a trusted phone."
               : "This turns on Companion and opens a short, single-use pairing window in one step."

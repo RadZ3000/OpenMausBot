@@ -1,0 +1,34 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "openmausbot-inference",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "REGISTRATION_MODE": "open",
+    "UPSTREAM_URL": "https://openrouter.ai/api/v1",
+    "FRONTIER_UPSTREAM_MODEL": "openai/gpt-4o-mini",
+    "BASIC_UPSTREAM_MODEL": "meta-llama/llama-3.3-70b-instruct",
+    "CLASSIFY_UPSTREAM_MODEL": "meta-llama/llama-3.2-3b-instruct",
+    "INCLUDED_FRONTIER_TOKENS": "250000"
+  },
+  "secrets": { "required": ["UPSTREAM_API_KEY"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "openmausbot-inference",
+      "database_id": "00000000-0000-4000-8000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "ratelimits": [
+    { "name": "REGISTRATION_LIMITER", "namespace_id": "9101701", "simple": { "limit": 30, "period": 60 } },
+    { "name": "SESSION_LIMITER", "namespace_id": "9101702", "simple": { "limit": 60, "period": 60 } }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  }
+}

@@ -3,34 +3,35 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-24 (merged `upstream/main` through `1602f97` / 0.1.32+. Path A first-run is Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-08-25 (docs hop-on is [`README.md`](README.md); historical plans live in [`plans/archive/`](plans/archive/README.md). Merged `upstream/main` through `dae7631` / 0.1.33 as `f574f0d`. Path C in tree, uncommitted: capability-then-credits Worker, `hostedInference` instance, chooser live. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
 1. [`AGENTS.md`](../AGENTS.md) — always-on rules.
-2. This file — where we are, what we want, what not to do.
-3. Then only the plan for the job in front of you. Catalog: [`plans/README.md`](plans/README.md).
+2. [`README.md`](README.md) — where to look (architecture, living vs upstream
+   docs, archive).
+3. This file — where we are, what we want, what not to do.
+4. Then only the plan for the job in front of you. Catalog:
+   [`plans/README.md`](plans/README.md).
 
-Do not start from dated handoffs. Path A walk logs:
-[`plans/2026-08-21-005-path-a-live-walk.md`](plans/2026-08-21-005-path-a-live-walk.md)
-(first-run),
-[`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md)
-(same-turn site drive). The 2026-08-21 morning handoff and the 2026-08-23
-cold-start were deleted as duplicates of this file; git still has them.
+Do not start from dated handoffs, walk logs, or `docs/superpowers/`. Historical
+plans: [`plans/archive/README.md`](plans/archive/README.md). The 2026-08-21
+morning handoff and the 2026-08-23 cold-start were deleted as duplicates of
+this file; git still has them.
 
-## Git (this machine, 2026-08-24)
+## Git (this machine, 2026-08-25)
 
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` |
-| HEAD | merge `490e6b8` of `upstream/main`; this commit fixes duplicate room POST. Path A 8B@32k is `033f1ab`. |
+| HEAD | `f574f0d` merge of `upstream/main` through `dae7631` (0.1.33). Path A 8B@32k is `033f1ab`. |
 | Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
-| Merge base | this merge — 0.1.32, pi hands/images, find-in-chat, credential cards, skill import, live team map, window-state/unread |
+| Merge base | this merge — 0.1.33 (companion/control-plane, live desktop, autoStartVps, playbooks). Path A 8B@32k and the fork layers sit on top. |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `origin/main` | `d037f40` — this branch is **not** merged to our `main` |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Caught up to `upstream/main` `1602f97` on 2026-08-24. We kept consent-gated analytics (not their default-on settings row), compact `vm_*` wrap, ACP keep-alive, Chromium VM status, and Path A 8B@32k. Joined `imageGenApiKey` onto their `request_credential` allowlist. Their ACP core still `stop()`s on settle; ours still parks the child via `server/acp-session.ts`.
+Caught up to `upstream/main` `dae7631` on 2026-08-25 (hosted companion, control-plane, live-desktop-from-preview, autoStartVps, BotMRR playbooks). Previous catch-up was `1602f97` on 2026-08-24. We kept consent-gated analytics, compact `vm_*` wrap, ACP keep-alive, Chromium VM status, Path A 8B@32k, and image-gen. Their ACP core still `stop()`s on settle; ours still parks the child via `server/acp-session.ts`.
 
 Hermes ACP gold **passed on this NVIDIA box** and **failed on Admin CPU**. Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
@@ -65,10 +66,31 @@ Keep-alive does **not** make that a coworker.
 
 ## In the tree (do not redo)
 
+**Brand pack** (uncommitted until asked). Phases A–C of
+[`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md)
+are in the tree: `brand/profile.ts` + overlay `brand/electron-builder.yml`,
+copy through `distribution.productName` / `PRODUCT_NAME`, Team Library off,
+update Download hidden. Working names FlowDesk / Flow Enterprises / Foundry.
+`pnpm check:brand` is in CI. **Phase D is not done** — `appId`, data dir,
+protocol, helpers, icons, mascot, iOS, homepage/author, and 004’s
+publish/broker URLs stay `unset`. `pnpm check:brand --release` is red and
+must stay red. Do not invent those values to go green. Map:
+[`identity-surface.md`](identity-surface.md). Read `commercial-fork`; do not
+add a second profile.
+
 Path A first-run **in code**: pinned Ollama zip, `qwen3-vl:8b` Thinking pull (~6.1 GB), in-app Hermes, Local VM
 (WSL/Podman/Cua). Checklist is serial CTAs, not one pass
 ([B-11](known-bugs.md) leftover). Chooser can stick in Electron userData
 ([B-26](known-bugs.md)).
+
+**Path C** (uncommitted until asked): capability-then-credits Worker at
+[`cloudflare/inference-broker/`](../cloudflare/inference-broker/), instance
+enable in [`server/hosted-inference.ts`](../server/hosted-inference.ts),
+desktop registration in [`electron/managed-inference.mjs`](../electron/managed-inference.mjs).
+Hard tasks want frontier while credits last; easy tasks stay cheap; empty
+credits skip classify and stay on basic. Chooser arm live. No packaged
+Worker URL. Chat-only. Polar and tools-on-hosted are later. Spec:
+[`plans/2026-08-25-001-path-c-hosted-trial-plan.md`](plans/2026-08-25-001-path-c-hosted-trial-plan.md).
 
 Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
 
@@ -172,15 +194,20 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Catch upstream** — done through `1602f97` (`490e6b8`). Next catch-up is a new fetch, not this gap.
-5. **Publish this branch** → point our `main` at it; user must ask.
-6. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
+4. **Catch upstream** — done through `dae7631` (`f574f0d`). Next catch-up is a new fetch, not this gap.
+5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
+6. **Publish this branch** → point our `main` at it; user must ask.
+7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
+8. **Brand pack Phase D** → only when ingredients exist (`appId`, data dir, icons, mascot, helper names, 004 URLs). Do not invent them. Plan: [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md).
 
 ## Do not
 
 - Add Granite-specific computer tools, Beehiiv recipes, or hostname matchers (P8).
 - Restore native Hermes `web` / `extract` on Path A.
 - Redefine Path A as hosted Hermes.
+- Classify Path C turns in Electron, or honour a client “this is hard” flag.
+- Point `OMB_INFERENCE_BROKER_URL` at a default Worker (fail closed).
+- Use OpenRouter `auto` as the Path C capability picker.
 - Drive the host Windows desktop from Path A.
 - Send JPEGs to Granite (`IMAGE_LAYER_VERSION` stays `"7"` for that).
 - Change `RECOMMENDED_MODEL` / `modelForTier` off `qwen3-vl:8b` except by a new plan (rollback is in 005).
@@ -190,33 +217,31 @@ tools at 8k and 32k; do not hunt more `vm_*`.
 - Push to `upstream`. Force-push `main` / `master`.
 - Follow `CONTRIBUTING.md` remotes or release steps (upstream’s guide).
 - Add another `docs/plans/YYYY-MM-DD-*-handoff.md`. Edit **this** file.
+- Start a job from `docs/plans/archive/` or `docs/superpowers/`.
+- Leave a finished plan in the Open table — archive it.
+- Invent an `appId`, data-dir name, icons, or 004 URLs to make `pnpm check:brand --release` green. Phase D waits on real ingredients.
 
 ## Map (one job, one file)
 
-| File | What it is |
+Hop-on index: [`README.md`](README.md). Full catalog:
+[`plans/README.md`](plans/README.md). Do not copy those tables here.
+
+| File | Owns |
 |---|---|
 | [`AGENTS.md`](../AGENTS.md) | Rules. Keep short. |
+| [`README.md`](README.md) | Where to look. |
 | **This file** | State + goals. Overwrite. |
-| [`plans/README.md`](plans/README.md) | Index of *our* plans. |
-| [`local-model-path.md`](local-model-path.md) | Tensions and decisions for Path A. |
+| [`plans/README.md`](plans/README.md) | Open / in tree / archive. |
+| [`local-model-path.md`](local-model-path.md) | Path A tensions and decisions. |
 | [`known-bugs.md`](known-bugs.md) | Defects. Delete the entry when fixed. |
-| [`plans/2026-08-22-002-computer-use-coworker-loop-plan.md`](plans/2026-08-22-002-computer-use-coworker-loop-plan.md) | Computer-use loop. P8 stop is binding. |
-| [`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md) | 3B vs 8B vs VL plumbing. |
-| [`plans/2026-08-23-003-open-computer-use-brain.md`](plans/2026-08-23-003-open-computer-use-brain.md) | EvoCUA pick; tool-calling research. |
-| [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md) | Goal = EvoCUA local stack; research holes. |
-| [`plans/2026-08-23-005-hermes-images.md`](plans/2026-08-23-005-hermes-images.md) | Keep Hermes; pictures. Qwen3-VL 4B may retire Granite+aux. |
-| [`plans/2026-08-23-006-qwen3vl-replace-granite-plan.md`](plans/2026-08-23-006-qwen3vl-replace-granite-plan.md) | Hermes stays; 4B Instruct tee; Hermes Thinking truncates at 8k; Vulkan crash isolated on Admin; CPU skip-Hermes tools at 8k/32k. |
-| [`plans/2026-08-24-001-acp-session-keepalive.md`](plans/2026-08-24-001-acp-session-keepalive.md) | ACP child stays across turns. |
-| [`plans/2026-08-24-002-local-vm-chromium-status.md`](plans/2026-08-24-002-local-vm-chromium-status.md) | Chromium stderr ≠ desktop failed to start. Pid cap 2048. |
-| [`plans/2026-08-24-003-path-a-qwen3vl-first-run-plan.md`](plans/2026-08-24-003-path-a-qwen3vl-first-run-plan.md) | **Tombstone.** Instruct 4B @ 8k. Do not implement. |
-| [`plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md`](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md) | Qwen-CUA is not first-run. 4B Instruct pick overridden by 005. |
-| [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | In tree; NVIDIA Hermes gold **pass**; Admin CPU gold **fail**. |
-| [`plans/2026-08-24-006-skip-hermes-cpu-tee.md`](plans/2026-08-24-006-skip-hermes-cpu-tee.md) | Skip-Hermes CPU 4B 166 s / 8B 240 s tools; Admin Hermes 20 min / 0 tools; NVIDIA Hermes ~7.5 min / 3 tools. |
-| [`server/cua-desktop-status.ts`](../server/cua-desktop-status.ts) | Classifier used by Local VM and VPS. |
+| [`identity-surface.md`](identity-surface.md) | Names that may change vs names that strand installs. |
+| [`plans/2026-08-22-002-computer-use-coworker-loop-plan.md`](plans/2026-08-22-002-computer-use-coworker-loop-plan.md) | Computer-use loop. P8 stop is [008](plans/2026-08-22-008-computer-safety-eval-plan.md). |
+| [`plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md`](plans/2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | Path A first-run: Thinking 8B @ 32k. |
+| [`plans/2026-08-25-001-path-c-hosted-trial-plan.md`](plans/2026-08-25-001-path-c-hosted-trial-plan.md) | Path C hosted router. |
+| [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md) | Brand pack. A–C in tree; Phase D unset. |
+| [`../cloudflare/inference-broker/`](../cloudflare/inference-broker/) | Path C Worker. |
+| [`../server/hosted-inference.ts`](../server/hosted-inference.ts) | Distinct `hostedInference` instance. |
 | `.claude/skills/<folder>/SKILL.md` | Folders = table in `AGENTS.md`. |
 
-The dated Path A **walks** still in tree are
-[`plans/2026-08-21-005-path-a-live-walk.md`](plans/2026-08-21-005-path-a-live-walk.md)
-and
-[`plans/2026-08-23-002-path-a-drive-sites-bakeoff.md`](plans/2026-08-23-002-path-a-drive-sites-bakeoff.md).
+Walks and superseded sketches are in [`plans/archive/`](plans/archive/README.md).
 Use them for measurements, not as the snapshot.

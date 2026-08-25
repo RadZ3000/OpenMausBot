@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { distribution, docsUrl } from "@/lib/distribution";
 
 export type ConfigSection = "composio" | "box" | "opencodeGo" | "imageGen";
 
@@ -235,6 +236,7 @@ export function VpsConnection() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const configured = Boolean(state.config?.vps?.configured);
+  const vpsGuide = docsUrl("docs/byo-vps.md");
 
   useEffect(() => {
     setAlias(state.config?.vps?.sshAlias ?? "");
@@ -267,17 +269,22 @@ export function VpsConnection() {
         {configured && <span className="text-[11px] text-success">Connected</span>}
       </div>
       <div className="mb-1.5 text-[12px] leading-relaxed text-ink-secondary">
-        SSH config alias for the Linux VPS. OpenMausBot uses your normal SSH config and agent; it does not store keys or passwords.{" "}
-        See the{" "}
-        <a
-          href="https://github.com/milind-soni/OpenMausBot/blob/main/docs/byo-vps.md"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-accent hover:underline"
-        >
-          setup guide
-        </a>{" "}
-        for the required SSH alias shape.
+        SSH config alias for the Linux VPS. {distribution.productName} uses your normal SSH config and agent; it does not store keys or passwords.
+        {vpsGuide && (
+          <>
+            {" "}
+            See the{" "}
+            <a
+              href={vpsGuide}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent hover:underline"
+            >
+              setup guide
+            </a>{" "}
+            for the required SSH alias shape.
+          </>
+        )}
       </div>
       <div className="flex gap-2">
         <input

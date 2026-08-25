@@ -12,6 +12,7 @@
 import { homedir } from "node:os";
 
 import { stripWorkspaceCredentialEnv } from "../config.ts";
+import { PRODUCT_NAME } from "../distribution.ts";
 import { computerProxyEnv } from "../container-computer.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
@@ -51,7 +52,7 @@ function decodeConfig(raw: unknown): CodexConfig {
 
 const QUESTION_TIMEOUT_NOTE = "No answer was given — use your best judgment.";
 const DENY_TIMEOUT_NOTE =
-  "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+  `${PRODUCT_NAME}: nobody answered this permission request in time. Skip this action and finish what you can without it.`;
 
 type StdioMcpServer = { command: string; args: string[]; env: Record<string, string> };
 
@@ -251,7 +252,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const settle = (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
         state.settled = true;
-        for (const finish of [...asks.values()]) finish("deny", "OpenMausBot: the turn ended", "system");
+        for (const finish of [...asks.values()]) finish("deny", `${PRODUCT_NAME}: the turn ended`, "system");
         for (const p of rpcPending.values()) p.reject(new Error("turn settled"));
         rpcPending.clear();
         active.delete(threadId);

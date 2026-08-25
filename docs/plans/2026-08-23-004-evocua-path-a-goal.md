@@ -4,8 +4,8 @@
 Granite 3B first-run stays until a live tee wins **and** a ship ask.  
 Fork-owned rework is in bounds. Do not push `upstream`.
 
-Weights research: [`2026-08-23-003-open-computer-use-brain.md`](2026-08-23-003-open-computer-use-brain.md).  
-Granite bake-off (dead end for this goal): [`2026-08-23-002-path-a-drive-sites-bakeoff.md`](2026-08-23-002-path-a-drive-sites-bakeoff.md).
+Weights research: [`2026-08-23-003-open-computer-use-brain.md`](archive/2026-08-23-003-open-computer-use-brain.md).  
+Granite bake-off (dead end for this goal): [`2026-08-23-002-path-a-drive-sites-bakeoff.md`](archive/2026-08-23-002-path-a-drive-sites-bakeoff.md).
 
 ---
 
@@ -23,7 +23,7 @@ Eyes
 
 Computer use needs real screenshots in the model.
 
-Hermes today does not do that (it sends a file-path note). **Paused:** keep Hermes and make images work through it — [`2026-08-23-005-hermes-images.md`](2026-08-23-005-hermes-images.md). Do not start a replacement driver until that is tried.
+Hermes today does not do that (it sends a file-path note). **Paused:** keep Hermes and make images work through it — [`2026-08-23-005-hermes-images.md`](archive/2026-08-23-005-hermes-images.md). Do not start a replacement driver until that is tried.
 
 Hands
 

@@ -14,6 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { MAUS_COLORS, type MausColor, type MausMotion, type MausState } from "@/lib/mascot";
+import { brandSilhouette } from "../../brand/mascot";
 import {
   CursorAvatar,
   DEFAULT_SILHOUETTE,
@@ -202,7 +203,7 @@ function MausAvatarComponent(
         state={motionState ?? state}
         expression={expression}
         size={size}
-        silhouette={GRADIENT_SILHOUETTE}
+        silhouette={brandSilhouette ?? GRADIENT_SILHOUETTE}
         gradient={gradientFor(color)}
         title={label ?? null}
         lookAround={forward ? 0 : 1}

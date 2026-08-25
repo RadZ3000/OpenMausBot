@@ -11,6 +11,7 @@ import { EngineGroupLabel } from "@/components/EngineGroupLabel";
 import { EngineSetup, installCommandFor } from "@/components/EngineSetup";
 import { ProviderMark } from "@/components/ProviderIcons";
 import { splitEngineRail } from "@/lib/engine-rail";
+import { distribution } from "@/lib/distribution";
 
 export function NoEngines() {
   const { state, refreshInstances } = useStore();
@@ -45,7 +46,7 @@ export function NoEngines() {
       <div className="mx-auto w-full max-w-[560px] px-6 py-12">
         <h1 className="text-[20px] font-semibold text-ink">Install an AI engine to get started</h1>
         <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-secondary">
-          OpenMausBot doesn&rsquo;t ship a model of its own — your bots run on an AI CLI installed on
+          {distribution.productName} doesn&rsquo;t ship a model of its own — your bots run on an AI CLI installed on
           this computer, using your existing login. Set up any one of these and your bots come alive.
         </p>
 

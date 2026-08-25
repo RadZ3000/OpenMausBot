@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SKINS, SKIN_IDS, DEFAULT_SKIN } from "./skins";
+import { SKINS, SKIN_IDS, DEFAULT_SKIN, readSkin } from "./skins";
 
 const css = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../styles.css"),
@@ -45,5 +45,11 @@ describe("skins", () => {
       expect(skin.name.length).toBeGreaterThan(0);
       expect(skin.tagline.length).toBeGreaterThan(0);
     }
+  });
+
+  it("uses the supplied fallback when nothing is stored", () => {
+    expect(DEFAULT_SKIN).toBe("midnight");
+    expect(readSkin()).toBe("midnight");
+    expect(readSkin("foundry")).toBe("foundry");
   });
 });

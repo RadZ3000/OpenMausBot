@@ -397,7 +397,7 @@ const fields = execFileSync(
 for (const expected of [
   "Package: openmausbot",
   "Architecture: amd64",
-  "Maintainer: Milind Soni",
+  "Maintainer: Flow Enterprises",
   "Section: utils",
   "Priority: optional",
 ]) {
@@ -407,7 +407,7 @@ for (const expected of [
 const extracted = mkdtempSync(path.join(tmpdir(), "omb-deb-verify-"));
 try {
   execFileSync("dpkg-deb", ["--extract", deb, extracted]);
-  const debAppRoot = path.join(extracted, "opt", "OpenMausBot");
+  const debAppRoot = path.join(extracted, "opt", "FlowDesk");
   requireDirectoryMode(debAppRoot, 0o755);
   const debResources = path.join(debAppRoot, "resources");
   const debHashes = verifyCuaResources(debResources, "DEB");
@@ -440,8 +440,8 @@ try {
   requireFile(scalableIcon);
   const desktop = readFileSync(desktopFile, "utf8");
   for (const expected of [
-    "Name=OpenMausBot",
-    "Exec=/opt/OpenMausBot/openmausbot %U",
+    "Name=FlowDesk",
+    "Exec=/opt/FlowDesk/openmausbot %U",
     "Icon=openmausbot",
     "StartupWMClass=com.openmausbot.app",
     "Categories=Utility;",

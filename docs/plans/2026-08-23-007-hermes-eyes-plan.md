@@ -1,7 +1,7 @@
 # Hermes eyes (paste + VM screenshots)
 
 Status: **in tree.** Parent: Path A seeing. Research:
-[005](2026-08-23-005-hermes-images.md). Weight tee:
+[005](archive/2026-08-23-005-hermes-images.md). Weight tee:
 [006](2026-08-23-006-qwen3vl-replace-granite-plan.md).
 P8: [008](2026-08-22-008-computer-safety-eval-plan.md).
 
@@ -36,7 +36,7 @@ in.
 | `src/lib/composer-attachments.ts` | Same contract. |
 | `server/drivers/acp/core.ts` | **Theirs.** `session/prompt` is still `prompt: [{ type: "text", text }]`. No image blocks. |
 | `server/compact-computer-observe.ts` | **Ours.** Not on `upstream/main`. |
-| `SendTurnInput.images` / per-driver image SPI | **Absent** on both sides. The abandoned stack in [002](2026-08-20-002-user-image-attachments-and-lightbox-plan.md) must not come back. |
+| `SendTurnInput.images` / per-driver image SPI | **Absent** on both sides. The abandoned stack in [002](archive/2026-08-20-002-user-image-attachments-and-lightbox-plan.md) must not come back. |
 
 Upstream’s attachment design is correct for Codex: given a path, Codex
 opens it with `imageView`. Path A Hermes has no `vision_analyze` in

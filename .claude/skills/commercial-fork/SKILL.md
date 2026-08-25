@@ -1,6 +1,6 @@
 ---
 name: commercial-fork
-description: How this fork stays sellable — what we own versus what we inherit, where proprietary code goes, the Apache-2.0 notices that must survive into a build, and the defaults that must never point at upstream. Use before adding a dependency, before editing a file upstream owns, when adding telemetry or any outbound network call, when touching branding or release configuration, and whenever asked what we may legally ship.
+description: How this fork stays sellable — what we own versus what we inherit, where proprietary code goes, the Apache-2.0 notices that must survive into a build, and the defaults that must never point at upstream. Use before adding a dependency, before editing a file upstream owns, when adding telemetry or any outbound network call, when touching branding (`brand/profile.ts`, `pnpm check:brand`) or release configuration, and whenever asked what we may legally ship.
 ---
 
 
@@ -143,9 +143,10 @@ and vice versa.
 (`VITE_ANALYTICS_KEY`) and is unset by default; sending additionally waits on
 explicit consent. Never reintroduce a hardcoded key. Never add an outbound
 call that is on by default.
-- **Update feed** — `electron-builder.yml` still publishes to and updates from
-`milind-soni/openmausbot-releases`. **A build handed to anyone must not carry
-this**, or it will update itself onto upstream's product.
+- **Update feed** — root `electron-builder.yml` still publishes to
+`milind-soni/openmausbot-releases`. Our overlay (`brand/electron-builder.yml`)
+sets `publish: null` until 004 plugs our repo. **A build handed to anyone
+must not carry their feed**, or it will update itself onto upstream's product.
 - **Connected-apps broker** — `electron/main.mjs` falls back to
 `openmausbot-composio.milindsoni201.workers.dev` whenever `app.isPackaged`.
 So a packaged build routes a customer's Gmail, Slack, Calendar and Notion
@@ -156,21 +157,34 @@ deploy their own Worker and set `OMB_COMPOSIO_BROKER_URL`; do that before any
 build leaves. `cloudflare/composio-broker/` is also the right model for any
 proxy of our own — per-install tokens hashed in D1, rate-limit namespaces, and
 a `REGISTRATION_MODE` switch.
-- **Documentation links** — `src/components/ApiKeys.tsx:273` and
-`src/components/LinuxLocalControl.tsx:16` open upstream's GitHub repo. A
-customer clicking "docs" and landing on the project we forked from undoes a
-lot of the impression the rest of the build works for.
-- **Team library** — `server/team-library.ts:4-5` fetches starter teams from
-`milind-soni/openmausbot-teams` over `raw.githubusercontent.com` at runtime,
-and `src/components/TeamLibraryPanel.tsx:20` links the same repo. Content we
-ship, served from a repository upstream can change or delete. Either host our
-own or turn the feature off in our builds.
+- **Hosted inference (Path C)** — `electron/main.mjs` has **no** packaged
+fallback URL. Unset `OMB_INFERENCE_BROKER_URL` keeps the hosted arm
+unavailable. Do not copy the Composio workers.dev default onto this path.
+The Worker at `cloudflare/inference-broker/` is ours; capability routing and
+the credit ceiling live there, not on the desktop.
+- **Documentation links** — in-app docs render only when `docsBaseUrl` is set
+in `brand/profile.ts`. Do not hardcode `github.com/milind-soni/OpenMausBot`.
+- **Team library** — `brand/profile.ts` ships `teamLibrary: "off"`. Do not
+reintroduce a fetch of `milind-soni/openmausbot-teams`. Host our own catalog
+or keep it off.
 - **Package metadata** — `package.json`'s `homepage`, `repository` and `author`
-are upstream's URLs and upstream's email, and they travel into installer
-metadata and the About surface. So does the Linux `maintainer` in
-`electron-builder.yml`.
-- **Brand** — `appId`, `productName`, the mascot, and the maintainer field are
-upstream's marks, and Apache §6 does not license them.
+are still upstream's URLs and email (`INCOMPLETE` in `check:brand`). Overlay
+already sets Linux vendor/maintainer from the pack.
+- **Brand** — Phases A–C of `docs/plans/2026-08-25-002-brand-pack-plan.md` are
+in the tree. Working names live in `brand/profile.ts` (today FlowDesk / Flow
+Enterprises). Window code still imports `@/lib/distribution`. Root
+`electron-builder.yml` stays theirs; we extend it. **Phase D is not done:**
+`appId`, data dir, icons, mascot, helper names, iOS, homepage/author, and
+004’s publish/broker URLs stay `unset`. Apache §6 does not license their marks.
+Do not invent those values to make `--release` green. Map:
+`docs/identity-surface.md`.
+
+`pnpm check:brand` is the runnable half of the brand pack, the same shape as
+`check:distribution`: CI mode requires every leftover `OpenMausBot` / milind
+hit to be named in `INCOMPLETE`; `--release` requires that list empty. Do not
+invent a second profile, a YAML generator, or a feature-flag map. New copy
+uses `distribution.productName` / `PRODUCT_NAME`. A new hardcoded
+`OpenMausBot` in a shipped file fails the gate.
 
 `docs/identity-surface.md` maps the whole naming surface, including which names
 are *not* branding and must survive a rebrand untouched — data directories,
@@ -187,6 +201,9 @@ rebranding anything.
 modifying many.
 - `pnpm check:distribution --release` passes — no default points at an upstream
 endpoint, feed, or key.
+- `pnpm check:brand --release` passes — no leftover OpenMausBot, no empty
+lock-once slot, no inherited milind feed or broker. Stays red until those
+slots are plugged; do not invent an `appId` or fake icons to go green.
 - Our own copyright header goes on files we wholly wrote — not on files we
 edited, which keep theirs and gain a "modified by" line.
 

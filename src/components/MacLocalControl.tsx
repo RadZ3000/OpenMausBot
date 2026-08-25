@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2, Shield } from "lucide-react";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
+import { distribution } from "@/lib/distribution";
 
 export function MacLocalControl() {
   const { capabilities } = useDesktopCapabilities();
@@ -60,7 +61,7 @@ export function MacLocalControl() {
         <div className="min-w-0 flex-1">
           <div className="text-[14px] font-medium text-ink">Allow control of this computer</div>
           <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">
-            OpenMausBot needs Accessibility and Screen Recording in System Settings before a bot can
+            {distribution.productName} needs Accessibility and Screen Recording in System Settings before a bot can
             use this Mac. After you grant both, click Retry — macOS may still ask you to relaunch the app.
           </p>
           {error && (

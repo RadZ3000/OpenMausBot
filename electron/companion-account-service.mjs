@@ -124,13 +124,16 @@ function withAuthenticatedAccount(
   return next;
 }
 
+function productName() {
+  return String(process.env.OMB_PRODUCT_NAME ?? "").trim() || "FlowDesk";
+}
+
 const FRIENDLY_MESSAGES = Object.freeze({
   invalid_email: "Enter a valid email address.",
   invalid_otp: "That code is not valid. Check the email and try again.",
   otp_expired: "That code expired. Email yourself a new one.",
   unauthorized: "Your sign-in expired. Email yourself a new code to reconnect.",
   signed_out: "Your sign-in expired. Email yourself a new code to reconnect.",
-  network_unavailable: "OpenMausBot could not reach its secure connection service. Check your internet and try again.",
   rate_limited: "Too many attempts were made. Wait a little, then try again.",
   credential_rotation_rate_limited: "This computer was reconnected too often. Wait a little, then try again.",
   installation_limit_reached: "This account has reached its computer limit. Remove an old computer and try again.",
@@ -144,6 +147,9 @@ const FRIENDLY_MESSAGES = Object.freeze({
 
 export function friendlyCompanionAccountError(error) {
   const code = error instanceof ControlPlaneError ? error.code : "";
+  if (code === "network_unavailable") {
+    return `${productName()} could not reach its secure connection service. Check your internet and try again.`;
+  }
   return FRIENDLY_MESSAGES[code] ?? "Secure access could not be updated. Local pairing still works; try again.";
 }
 

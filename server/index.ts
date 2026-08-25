@@ -68,6 +68,13 @@ import {
   NATIVE_DIR,
 } from "./config.ts";
 import { apiKeyConfigured, withApiKeyEngine } from "./byok.ts";
+import {
+  applyManagedInferenceMessage,
+  hostedInferenceConfigured,
+  hostedInferenceSelection,
+  hostedInferenceStatus,
+  withHostedInferenceEngine,
+} from "./hosted-inference.ts";
 import { deleteModel, hasModel, pullModel, RECOMMENDED_MODEL, runtimeUp } from "./local-model.ts";
 import { APPROX_MODEL_BYTES, hasRoomOnDisk, modelForTier, readMachine, tierFor } from "./machine.ts";
 import { hermesInstalled, runHermesInstall } from "./hermes-install.ts";
@@ -100,7 +107,7 @@ import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts"
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import { isEffortLevel, type RequestOutcome, type RuntimeEvent } from "./contracts.ts";
-import { PREFERRED_ENGINE, startingModel } from "./distribution.ts";
+import { PREFERRED_ENGINE, PRODUCT_NAME, startingModel } from "./distribution.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -228,9 +235,10 @@ const utilityParentPort = (process as NodeJS.Process & { parentPort?: UtilityPar
 utilityParentPort?.on("message", (event) => {
   const message = event?.data;
   try {
-    composio.applyManagedBrokerMessage(message);
+    if (composio.applyManagedBrokerMessage(message)) return;
+    if (applyManagedInferenceMessage(message)) return;
   } catch (error) {
-    console.error(`[connected-apps] rejected desktop credential sync: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[desktop-credential] rejected desktop credential sync: ${error instanceof Error ? error.message : String(error)}`);
   }
 });
 
@@ -1567,7 +1575,7 @@ async function startTurn(
   });
 
   const persona = [
-    `You are ${bot.name}, a personal bot in OpenMausBot.`,
+    `You are ${bot.name}, a personal bot in ${PRODUCT_NAME}.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
   ]
@@ -1695,7 +1703,7 @@ async function startTurn(
           throw new Error("this model engine cannot control this computer — choose Claude or an ACP engine, or select another destination");
         }
         const cua = readCuaConnection();
-        if (!cua) throw new Error("CUA Driver is not ready for this computer — check permissions and restart OpenMausBot");
+        if (!cua) throw new Error(`CUA Driver is not ready for this computer — check permissions and restart ${PRODUCT_NAME}`);
         integrations.localComputer = cua;
         computerKind = "local";
       }
@@ -2179,7 +2187,7 @@ async function runGroupMemberTurn(
     .map((b) => `@${b.name}${b.title ? ` (${b.title})` : ""}`)
     .join(", ");
   const system = [
-    `You are ${bot.name}, a bot in the room "${group.name}" in OpenMausBot.`,
+    `You are ${bot.name}, a bot in the room "${group.name}" in ${PRODUCT_NAME}.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
     `Room members: ${roster}, and ${userName} (the human).`,
@@ -2458,7 +2466,7 @@ function dispatchConnectorResume(entry: { botId: string; threadId: string; resum
   const owner = connectorThread(entry.botId, entry.threadId);
   if (!owner) return;
   const names = entry.labels.join(", ");
-  const prompt = `OpenMausBot connection update: the user securely connected ${names}. Continue the task that paused for this connection. Do not ask them to connect it again.`;
+  const prompt = `${PRODUCT_NAME} connection update: the user securely connected ${names}. Continue the task that paused for this connection. Do not ask them to connect it again.`;
   if (owner.bot.busy) {
     pendingConnectorResumes.set(`${entry.threadId}:${entry.resumeKey}`, entry);
     return;
@@ -2538,8 +2546,8 @@ function dispatchSecretResume(entry: SecretResumeEntry) {
   if (!owner) return;
   const prompt =
     entry.outcome === "provided"
-      ? `OpenMausBot credential update: the user securely provided ${entry.label}. Continue the task that paused for it. You do not receive the secret and must not ask them to paste it into chat.`
-      : `OpenMausBot credential update: the user declined to provide ${entry.label}. Continue without it if possible, or briefly explain the limitation. Do not ask them to paste it into chat.`;
+      ? `${PRODUCT_NAME} credential update: the user securely provided ${entry.label}. Continue the task that paused for it. You do not receive the secret and must not ask them to paste it into chat.`
+      : `${PRODUCT_NAME} credential update: the user declined to provide ${entry.label}. Continue without it if possible, or briefly explain the limitation. Do not ask them to paste it into chat.`;
   if (owner.bot.busy) {
     pendingSecretResumes.set(`${entry.threadId}:${entry.messageId}`, entry);
     return;
@@ -2677,6 +2685,7 @@ function cliProbeEnvironment(): NodeJS.ProcessEnv {
     "OPENCODE_API_KEY",
     "COMPOSIO_API_KEY",
     "OMB_COMPOSIO_BROKER_TOKEN",
+    "OMB_INFERENCE_BROKER_TOKEN",
     "OMB_TTS_KEY",
     "OMB_OPENAI_IMAGE_KEY",
     "OMB_IMAGE_API_KEY",
@@ -3028,7 +3037,7 @@ const server = createServer(async (req, res) => {
         }
         const channel = getOrCreateChannel(store, currentFrom, currentTarget);
         mirrorExchange(commsBus, currentFrom, currentTarget, message, channel, fromThreadId);
-        const prefixed = `[Message from @${currentFrom.name}, another bot in this OpenMausBot workspace. Reply to them.]\n\n${message}`;
+        const prefixed = `[Message from @${currentFrom.name}, another bot in this ${PRODUCT_NAME} workspace. Reply to them.]\n\n${message}`;
         const reply = await askBotAndWait(toBotId, prefixed, depth, fromBotId);
         mirrorReply(commsBus, currentTarget, reply, channel);
         return json(res, 200, { botName: currentTarget.name, text: reply });
@@ -3686,7 +3695,7 @@ const server = createServer(async (req, res) => {
           ? body.name.trim()
           : profileName
             ? `${profileName}'s Team`
-            : "My OpenMaus Team";
+            : `My ${PRODUCT_NAME} Team`;
       const memberIds = store.bots.filter((bot) => !bot.hidden).map((bot) => bot.id);
       if (memberIds.length === 0) return json(res, 400, { error: "Create a bot before exporting your team" });
       try {
@@ -3723,7 +3732,8 @@ const server = createServer(async (req, res) => {
       try {
         return json(res, 200, await fetchTeamCatalog());
       } catch (error) {
-        return json(res, 502, { error: error instanceof Error ? error.message : "The team library is unavailable" });
+        const message = error instanceof Error ? error.message : "The team library is unavailable";
+        return json(res, message.includes("off") ? 404 : 502, { error: message });
       }
     }
     m = path.match(/^\/api\/team-library\/teams\/([a-z0-9][a-z0-9-]*)$/);
@@ -5068,6 +5078,42 @@ const server = createServer(async (req, res) => {
         Object.assign(cfg, loadConfig());
         await reloadProviders();
         resetPathCache();
+        return json(res, 200, { instances: await registry.describe() });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── enable the hosted engine (first run, path C) ──
+    // GET reports whether this process has a Worker URL / install token and
+    // whether the instance is already in the fleet. POST is the only instance
+    // write for this arm: same whole-fleet rule as /api/engines/api-key.
+    if (method === "GET" && path === "/api/engines/hosted-inference") {
+      return json(res, 200, hostedInferenceStatus(cfg));
+    }
+    if (method === "POST" && path === "/api/engines/hosted-inference") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      if (!hostedInferenceConfigured()) {
+        return json(res, 400, {
+          error: hostedInferenceStatus(cfg).available
+            ? "hosted inference is not registered on this install"
+            : "this build does not include hosted models",
+        });
+      }
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        saveConfig({ instances: withHostedInferenceEngine(cfg) });
+        Object.assign(cfg, loadConfig());
+        await reloadProviders();
+        resetPathCache();
+        const selection = hostedInferenceSelection();
+        for (const bot of store.bots) {
+          if (bot.modelSelection.instanceId) continue;
+          store.patchBot(bot.id, { modelSelection: selection });
+        }
         return json(res, 200, { instances: await registry.describe() });
       } finally {
         providerConfigBusy = false;

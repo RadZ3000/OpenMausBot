@@ -1,6 +1,8 @@
 # Turning the fork into a product: what to build first
 
-Status: proposed. Written after auditing our tree, upstream's recent history,
+Status: proposed. Phase 0 shipped. Phase 2 implementation is
+[002](2026-08-25-002-brand-pack-plan.md) (A–C in tree, Phase D unset).
+Written after auditing our tree, upstream's recent history,
 and the three areas a commercial version would touch (first run, computer
 control, theming).
 
@@ -126,13 +128,14 @@ Two deviations from this plan as originally written, both deliberate:
   speculative generality is this repo's characteristic failure mode. It is one
   line to add alongside its first consumer. The same reasoning dropped a
   general feature-flag map.
-- **Only two brand strings wired, not all of them.** Onboarding proves the seam;
-  the remaining fourteen are mechanical Phase 2 work, itemised in the identity
-  surface doc with a divergence forecast.
+- **Only two brand strings wired, not all of them.** That was true at Phase 0.
+  Phase 2 implementation is
+  [002](2026-08-25-002-brand-pack-plan.md): A–C (architecture, copy, hides)
+  are in the tree; lock-once slots and assets (Phase D) are still `unset`.
 
-Icon and packaging identity are untouched — they are applied by
-`electron-builder.yml` at packaging time, not to a running window, so they do
-not belong behind a module the renderer imports.
+Icon and packaging identity are applied by electron-builder at packaging time.
+Root `electron-builder.yml` stays theirs; our overlay is `brand/electron-builder.yml`.
+Icons and `appId` stay unset until 002 Phase D.
 
 ## Phase 1 — the three-path first run
 
@@ -190,34 +193,38 @@ The cheapest arm to build and the highest quality per unit of effort: one key
 pasted into a clean UI, replacing a global npm install and a terminal OAuth. The
 credential storage already exists. This is mostly a UI and copy problem.
 
-### Path C — Just run (capped trial)
+### Path C — Just run (hosted, capability then credits)
 
-A desktop app cannot hold a secret, so this is a proxy we operate, offered as a
-capped trial that converts to Path B or to a paid plan.
+A desktop app cannot hold a secret, so this is a proxy we operate. It is **not**
+a trial that expires into a dead app. The Worker picks the SKU from the prompt
+(hard tasks want frontier, easy tasks stay cheap). Frontier credits are a
+ceiling: when they run out, hard turns stay on the cheaper model and the bot
+still answers. Rate limits bound heavy users. Extra frontier credits can be
+added per month. Living spec:
+[2026-08-25-001](2026-08-25-001-path-c-hosted-trial-plan.md).
 
 **Prior art exists in this repo.** `cloudflare/composio-broker/` already solves
-the identical problem for Composio: a Worker holds the shared key, each install
-gets a random bearer token stored only as a SHA-256 hash in D1, the Worker
-proxies traffic and rate-limits per installation, and `REGISTRATION_MODE=closed`
-stops issuing new tokens without affecting existing users. That is a trial
-system in all but name. Model the inference proxy on it rather than inventing
-one — same shape, same deployment story, same seam.
+the install-token half: a Worker holds the shared key, each install gets a
+random bearer stored only as a SHA-256 hash in D1, and `REGISTRATION_MODE`
+stops issuing new tokens without affecting existing users. Model the inference
+proxy on that shape — not a hard cap that hangs up.
 
 ## Phase 2 — brand configuration, cheap half only
 
-With Phase 0 in place: product name, window title, icon, installer identity, and
-one additional skin built from the customer's palette and validated by the
-existing contrast script.
+Implementation shape is
+[002](2026-08-25-002-brand-pack-plan.md). **A–C in tree** (profile, overlay,
+copy, Team Library off, Download hidden, `pnpm check:brand`). **Phase D not
+done** (`appId`, data dir, icons, mascot, helpers, iOS, 004 URLs). Standing
+map: [`docs/identity-surface.md`](../identity-surface.md).
 
-Work from [`docs/identity-surface.md`](../identity-surface.md) rather than from a
-fresh grep. A grep cannot distinguish the fourteen copy strings that should be
-rebranded from the storage keys, wire formats and service names that must not be
-— and `src/lib/team-import.ts:14` carries one of each on the same line.
+A grep cannot distinguish copy that should be rebranded from the storage keys,
+wire formats and service names that must not be — and `src/lib/team-import.ts`
+still carries one of each on the same line (`openmaus.team` is the wire
+format).
 
-**Explicitly out of scope:** replacing the mascot, extracting a primitives
-library, separating logic from the view components, or making layout swappable.
-That work is a rewrite wearing a re-skin's clothing, and the audit above is the
-evidence. Revisit only if a specific deal requires it.
+**Explicitly out of scope for 003:** extracting a primitives library,
+separating logic from the view components, or making layout swappable. Mascot
+and icons are 002 Phase D when artwork exists, not a rewrite.
 
 ## Deferred decisions
 
@@ -232,9 +239,10 @@ customer, independently of this plan.
 
 ## Risks
 
-- **Trial abuse.** Path C spends our money on anyone who downloads the app. The
-  broker's per-installation tokens and rate-limit namespaces are the mitigation,
-  and the cap has to exist from the first build rather than being retrofitted.
+- **Hosted spend.** Path C spends our money on anyone who downloads the app.
+  Per-install tokens, hashed storage, rate limits, frontier-credit debit, and
+  automatic downgrade to a basic model have to exist from the first build —
+  a hard stop is the thing we are not building.
 - **Upstream collision.** Onboarding is plausible territory for upstream. Run
   `check-upstream-first` before Phase 1, and keep the work in files they do not
   own.

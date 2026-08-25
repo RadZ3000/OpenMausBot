@@ -9,7 +9,7 @@ import { startCua, stopCua, registerCuaIpc, setCuaStateListener } from "./cua.mj
 import { createAndroidDeviceController } from "./android-device.mjs";
 import { assemblyAICredential, mintAssemblyAIStreamingToken } from "./assemblyai.mjs";
 import { finishSpeech, startSpeech, stopSpeech } from "./speech.mjs";
-import { distributionEnv, readDistributionMetadata } from "./distribution.mjs";
+import { distributionEnv, readDistributionMetadata, resolveProductName } from "./distribution.mjs";
 import {
   recorderPermissionStatus,
   saveSkillRecording,
@@ -28,6 +28,12 @@ import {
   managedComposioChildEnvironment,
   normalizeManagedComposioBrokerUrl,
 } from "./managed-composio.mjs";
+import {
+  ensureManagedInferenceCredentials,
+  managedInferenceAccess,
+  managedInferenceChildEnvironment,
+  normalizeManagedInferenceBrokerUrl,
+} from "./managed-inference.mjs";
 import {
   createManagedCompanionTunnel,
   managedCompanionTunnelAccess,
@@ -148,8 +154,12 @@ if (process.platform === "linux") {
 // One instance per user: without this lock a second launch forks a second
 // harness server on a fallback port and splits data dirs in two. The loser
 // exits before any child or window exists; the winner surfaces itself.
+function productName() {
+  return resolveProductName(readDistributionMetadata(app.getAppPath()), process.env);
+}
+
 if (!app.requestSingleInstanceLock()) {
-  console.log("[desktop] OpenMausBot is already running — focusing that window");
+  console.log(`[desktop] ${productName()} is already running — focusing that window`);
   process.exit(0);
 }
 function deliverPackageInstall(win) {
@@ -291,6 +301,13 @@ function composioBrokerUrl() {
   return normalizeManagedComposioBrokerUrl(
     configured || (app.isPackaged ? DEFAULT_COMPOSIO_BROKER_URL : ""),
   );
+}
+
+function inferenceBrokerUrl() {
+  // Fail closed: there is no packaged fallback. A build without
+  // OMB_INFERENCE_BROKER_URL keeps Path C unavailable rather than routing
+  // through someone else's Worker.
+  return normalizeManagedInferenceBrokerUrl(process.env.OMB_INFERENCE_BROKER_URL?.trim() ?? "");
 }
 
 // The packaged app has no terminal: everything about the server child's life
@@ -621,6 +638,7 @@ async function gatherDiagnostics() {
   const logPath = path.join(LOG_DIR, "server.log");
   const log = readLogTail(logPath);
   return buildDiagnosticsReport({
+    productName: productName(),
     appInfo: {
       version: app.getVersion(),
       platform: process.platform,
@@ -637,24 +655,28 @@ async function gatherDiagnostics() {
 
 async function startServerOn(port) {
   const entry = path.join(process.resourcesPath, "server", "index.js");
-  const childEnv = managedComposioChildEnvironment(composioBrokerUrl(), secureCredentials, {
-    ...process.env,
-    OMB_STATIC_DIR: path.join(process.resourcesPath, "ui"),
-    OMB_RESOURCES_PATH: process.resourcesPath,
-    OMB_SKILLS_DIR: path.join(process.resourcesPath, "skills"),
-    OMB_PORT: String(port),
-    OMB_USER_DATA: app.getPath("userData"),
-    // what this build prefers a new bot to run on, baked in at packaging
-    // time; absent in an unconfigured build, and the real environment wins
-    ...distributionEnv(readDistributionMetadata(app.getAppPath()), process.env),
-    ...(secureCredentials.composioApiKey
-      ? { COMPOSIO_API_KEY: secureCredentials.composioApiKey }
-      : {}),
-    // one env var per stored workspace secret (xai/box/voice/OpenCode Go);
-    // the server prefers these over config.json, whose plaintext fields
-    // the boot migration has deleted
-    ...workspaceCredentialEnv(secureCredentials),
-  });
+  const childEnv = managedInferenceChildEnvironment(
+    inferenceBrokerUrl(),
+    secureCredentials,
+    managedComposioChildEnvironment(composioBrokerUrl(), secureCredentials, {
+      ...process.env,
+      OMB_STATIC_DIR: path.join(process.resourcesPath, "ui"),
+      OMB_RESOURCES_PATH: process.resourcesPath,
+      OMB_SKILLS_DIR: path.join(process.resourcesPath, "skills"),
+      OMB_PORT: String(port),
+      OMB_USER_DATA: app.getPath("userData"),
+      // what this build prefers a new bot to run on, baked in at packaging
+      // time; absent in an unconfigured build, and the real environment wins
+      ...distributionEnv(readDistributionMetadata(app.getAppPath()), process.env),
+      ...(secureCredentials.composioApiKey
+        ? { COMPOSIO_API_KEY: secureCredentials.composioApiKey }
+        : {}),
+      // one env var per stored workspace secret (xai/box/voice/OpenCode Go);
+      // the server prefers these over config.json, whose plaintext fields
+      // the boot migration has deleted
+      ...workspaceCredentialEnv(secureCredentials),
+    }),
+  );
   slog(`fork ${entry} port=${port}`);
   const proc = utilityProcess.fork(entry, [], {
     env: childEnv,
@@ -721,11 +743,45 @@ function syncManagedComposioCredentials() {
   }
 }
 
-const ERROR_PAGE =
-  "data:text/html;charset=utf-8," +
-  encodeURIComponent(
-    `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">Something else is using its ports. Quit and reopen OpenMausBot — if it keeps happening, restart your computer.</p></div></body>`,
+function syncManagedInferenceCredentials() {
+  if (!serverProc) return;
+  try {
+    serverProc.postMessage({
+      type: "openmausbot:managed-inference",
+      access: managedInferenceAccess(inferenceBrokerUrl(), secureCredentials),
+    });
+  } catch (error) {
+    slog(`hosted-inference credential sync failed: ${error?.message ?? error}`);
+  }
+}
+
+async function waitForHostedInferenceRegistration(timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${SERVER_PORT}/api/engines/hosted-inference`);
+      const body = await response.json().catch(() => null);
+      if (body?.registered) return true;
+    } catch {
+      /* server still catching up */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+
+function errorPage() {
+  const name = productName()
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+  return (
+    "data:text/html;charset=utf-8," +
+    encodeURIComponent(
+      `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">Something else is using its ports. Quit and reopen ${name} — if it keeps happening, restart your computer.</p></div></body>`,
+    )
   );
+}
 
 let cuaReady = Promise.resolve({ mode: "unavailable", reason: "not-started" });
 const androidDevice = createAndroidDeviceController({ resourcesPath: process.resourcesPath });
@@ -774,7 +830,7 @@ function desktopViewerErrorPage(message, retryUrl) {
 }
 
 function openDesktopViewer(owner, rawUrl, rawTitle, contextId) {
-  if (!owner || owner.isDestroyed()) throw new Error("The OpenMausBot window is unavailable");
+  if (!owner || owner.isDestroyed()) throw new Error(`The ${productName()} window is unavailable`);
   const url = desktopViewerUrl(rawUrl);
   const titleCandidate = Object.prototype.toString.call(rawTitle) === "[object String]" ? rawTitle.trim() : "";
   const title = titleCandidate ? titleCandidate.slice(0, 80) : "Live desktop";
@@ -1071,7 +1127,7 @@ function createWindow() {
   }
 
   if (app.isPackaged) {
-    win.loadURL(serverReady ? `http://127.0.0.1:${SERVER_PORT}` : ERROR_PAGE);
+    win.loadURL(serverReady ? `http://127.0.0.1:${SERVER_PORT}` : errorPage());
   } else {
     win.loadURL(DEV_URL);
   }
@@ -1362,6 +1418,43 @@ ipcMain.handle("credential:set", async (_event, name, value) => {
   );
 });
 
+ipcMain.handle("hosted-inference:status", () => ({
+  configured: Boolean(inferenceBrokerUrl()),
+}));
+
+ipcMain.handle("hosted-inference:ensure", async () => {
+  const url = inferenceBrokerUrl();
+  if (!url) {
+    return {
+      ok: false,
+      error: "This build does not include hosted models. Use a local model or an API key.",
+    };
+  }
+  if (!app.isPackaged) {
+    // Unpackaged `pnpm dev` runs the server as a separate process. Registration
+    // here cannot inject its token into that process; the enable route uses
+    // that process's own OMB_INFERENCE_BROKER_* env instead.
+    return { ok: true };
+  }
+  await updateSecureCredentialDocument(async (credentials) => {
+    await ensureManagedInferenceCredentials({
+      brokerUrl: url,
+      credentials,
+      saveCredentials: async () => {},
+      log: slog,
+    });
+    return credentials;
+  });
+  syncManagedInferenceCredentials();
+  if (managedInferenceAccess(url, secureCredentials) && (await waitForHostedInferenceRegistration())) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: "Could not register this install with hosted models. Try again in a moment.",
+  };
+});
+
 async function broadcastDesktopCapabilities() {
   const capabilities = desktopCapabilities({
     platform: process.platform,
@@ -1382,7 +1475,8 @@ setCuaStateListener((connection) => {
 });
 
 app.whenReady().then(async () => {
-  if (app.isPackaged) app.setAsDefaultProtocolClient("openmausbot");
+  Object.assign(process.env, distributionEnv(readDistributionMetadata(app.getAppPath()), process.env));
+  if (app.isPackaged) app.setAsDefaultProtocolClient(process.env.OMB_PROTOCOL_SCHEME?.trim() || "openmausbot");
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
   secureCredentials = await loadSecureCredentials();
   if (app.isPackaged) {
@@ -1474,19 +1568,33 @@ app.whenReady().then(async () => {
   void hostedAccount.restore().catch(() => {});
   // Registration is optional network work. Start it only after the local
   // server and first window are usable, then update the server child over its
-  // private parent port so Connected Apps becomes available without restart.
-  if (app.isPackaged && composioBrokerUrl()) {
+  // private parent port so Connected Apps / hosted inference become available
+  // without restart.
+  if (app.isPackaged && (composioBrokerUrl() || inferenceBrokerUrl())) {
     void updateSecureCredentialDocument(async (credentials) => {
-      await ensureManagedComposioCredentials({
-        brokerUrl: composioBrokerUrl(),
-        credentials,
-        // The shared credential state performs the one atomic encrypted
-        // write after this registration has derived its complete document.
-        saveCredentials: async () => {},
-        log: slog,
-      });
+      if (composioBrokerUrl()) {
+        await ensureManagedComposioCredentials({
+          brokerUrl: composioBrokerUrl(),
+          credentials,
+          // The shared credential state performs the one atomic encrypted
+          // write after this registration has derived its complete document.
+          saveCredentials: async () => {},
+          log: slog,
+        });
+      }
+      if (inferenceBrokerUrl()) {
+        await ensureManagedInferenceCredentials({
+          brokerUrl: inferenceBrokerUrl(),
+          credentials,
+          saveCredentials: async () => {},
+          log: slog,
+        });
+      }
       return credentials;
-    }).finally(syncManagedComposioCredentials);
+    }).finally(() => {
+      syncManagedComposioCredentials();
+      syncManagedInferenceCredentials();
+    });
   }
   // in-app auto-update (packaged only) — checks GitHub releases, downloads on
   // the user's click, installs on "Restart to update"

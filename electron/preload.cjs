@@ -144,6 +144,10 @@ contextBridge.exposeInMainWorld("ogb", {
   exportDiagnostics: () => ipcRenderer.invoke("desktop:export-diagnostics"),
   /** Store a provider credential with OS-backed encryption. */
   setCredential: (name, value) => ipcRenderer.invoke("credential:set", name, value),
+  /** Path C: whether this build has a hosted-inference Worker URL. */
+  hostedInferenceStatus: () => ipcRenderer.invoke("hosted-inference:status"),
+  /** Path C: register this install with the inference Worker (packaged). */
+  ensureHostedInference: () => ipcRenderer.invoke("hosted-inference:ensure"),
 
   /** In-app auto-update. State object:
    *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",

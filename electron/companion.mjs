@@ -226,15 +226,20 @@ async function start({ resourcesPath, harnessPort, hostedUrl = null, log }) {
   if (hostedUrl) childEnvironment.OMB_COMPANION_HOSTED_URL = hostedUrl;
   childEnvironment.OMB_COMPANION_INTERNAL_ORIGIN = allocatedOrigin.socketPath;
 
+  const spawnEnv = {
+    ...childEnvironment,
+    OMB_PORT: String(harnessPort),
+    OMB_COMPANION_PORT: String(COMPANION_PORT),
+    OMB_CONTROL_PORT: String(CONTROL_PORT),
+  };
+  if (process.env.OMB_PRODUCT_NAME) spawnEnv.OMB_PRODUCT_NAME = process.env.OMB_PRODUCT_NAME;
+  if (process.env.OMB_PHONE_NAME) spawnEnv.OMB_PHONE_NAME = process.env.OMB_PHONE_NAME;
+  if (process.env.OMB_COMPANION_NAME) spawnEnv.OMB_COMPANION_NAME = process.env.OMB_COMPANION_NAME;
+
   let child;
   try {
     child = utilityProcess.fork(resolved.entry, [], {
-      env: {
-        ...childEnvironment,
-        OMB_PORT: String(harnessPort),
-        OMB_COMPANION_PORT: String(COMPANION_PORT),
-        OMB_CONTROL_PORT: String(CONTROL_PORT),
-      },
+      env: spawnEnv,
       // how the TS-source fallback gets --experimental-strip-types; empty for
       // compiled entries
       execArgv: resolved.execArgv,

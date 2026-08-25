@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { PRODUCT_NAME } from "./distribution.ts";
+
 import {
   BASE_IMAGE,
   BASE_IMAGE_DIGEST,
@@ -288,7 +290,7 @@ describe("containerComputerStatus", () => {
 
     expect(status.managed).toBe(false);
     expect(status.ready).toBe(false);
-    expect(status.problem).toContain("not created by OpenMausBot");
+    expect(status.problem).toContain(`not created by ${PRODUCT_NAME}`);
   });
 
   it("prefers a running runtime over an earlier installed but stopped one", async () => {

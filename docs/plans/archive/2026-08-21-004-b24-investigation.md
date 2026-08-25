@@ -1,8 +1,8 @@
 # B-24 investigation
 
 Status: **(b) fixed; (a) Granite issues `vm_open`; compact-computer-mcp binds Cua's existing Chromium (image layer 7: Chromium + `--grant existing-profile`).** Written 2026-08-21.
-Defect: [`docs/known-bugs.md`](../known-bugs.md) B-24.
-Current snapshot: [`../agent-status.md`](../agent-status.md).
+Defect: [`docs/known-bugs.md`](../../known-bugs.md) B-24.
+Current snapshot: [`docs/agent-status.md`](../../agent-status.md).
 Walk log: [`2026-08-21-005-path-a-live-walk.md`](2026-08-21-005-path-a-live-walk.md).
 
 ## check-upstream-first

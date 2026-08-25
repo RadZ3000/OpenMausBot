@@ -32,7 +32,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE = path.join(__dirname, "resources", "recorder-helper.swift");
 const INFO = path.join(__dirname, "resources", "recorder-helper-Info.plist");
 const BUNDLE = app.isPackaged
-  ? path.join(process.resourcesPath, "OpenMausBot Recorder.app")
+  ? path.join(process.resourcesPath, process.env.OMB_RECORDER_HELPER_NAME?.trim() || "OpenMausBot Recorder.app")
   : recorderHelperBundle;
 const BINARY = app.isPackaged
   ? path.join(BUNDLE, "Contents", "MacOS", "recorder-helper")
@@ -336,7 +336,11 @@ export function saveSkillRecording(payload, options = {}) {
   const name = cleanText(payload.name, 100);
   if (!name) throw new Error("Name the skill before creating it");
   const description = cleanText(payload.description, 300);
-  const dataRoot = options.dataRoot ?? process.env.OMB_DATA_DIR ?? path.join(os.homedir(), ".openmausbot");
+  const dataRoot = options.dataRoot ?? process.env.OMB_DATA_DIR ?? (() => {
+    const name = process.env.OMB_DATA_DIR_NAME?.trim();
+    if (name) return path.join(os.homedir(), `.${name}`);
+    return path.join(os.homedir(), ".openmausbot");
+  })();
   const skillsRoot = path.join(dataRoot, "skills");
   mkdirSync(skillsRoot, { recursive: true });
   const target = uniqueSkillDirectory(skillsRoot, name);

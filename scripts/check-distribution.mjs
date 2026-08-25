@@ -56,42 +56,12 @@ const ACCEPTED = [
     reason: "homepage, repository and author carry upstream's URLs into installer metadata",
     blocks: "decision 2 (product name) and decision 3",
   },
-  {
-    file: "electron/main.mjs",
-    count: 1,
-    reason: "packaged builds fall back to upstream's Composio Worker, on upstream's key",
-    blocks: "deploying our own Worker from cloudflare/composio-broker/",
-  },
-  {
-    file: "server/team-library.ts",
-    count: 2,
-    reason: "the Team Library fetches from a repo upstream controls, at runtime",
-    blocks: "our own team repo, or the feature off in our builds",
-  },
-  {
-    file: "server/team-library.test.ts",
-    count: 1,
-    reason: "asserts the constant above; moves with it",
-    blocks: "the same decision as server/team-library.ts",
-  },
-  {
-    file: "src/components/TeamLibraryPanel.tsx",
-    count: 1,
-    reason: '"Browse community teams" opens upstream\'s repository',
-    blocks: "the same decision as server/team-library.ts",
-  },
-  {
-    file: "src/components/ApiKeys.tsx",
-    count: 1,
-    reason: "the BYO-VPS docs link opens the project we forked from",
-    blocks: "somewhere of our own for documentation links to point",
-  },
-  {
-    file: "src/components/LinuxLocalControl.tsx",
-    count: 1,
-    reason: "the local-control docs link opens the project we forked from",
-    blocks: "the same decision as src/components/ApiKeys.tsx",
-  },
+    {
+      file: "electron/main.mjs",
+      count: 1,
+      reason: "packaged builds fall back to upstream's Composio Worker, on upstream's key",
+      blocks: "deploying our own Worker from cloudflare/composio-broker/",
+    },
 ];
 
 /** Lines naming upstream. One finding per line — the first marker describes it well enough. */

@@ -375,11 +375,11 @@ Composio key, and no VM sends `mcpServers: []` — `agents` only mounts when
 another bot exists, host Cua Auto is darwin-only. So (1) is the multi-bot /
 VM / connected-apps path; the empty first-run path is (2). Hermes logs (2) in
 `tools/file_tools.py` immediately before `_create_environment`. Ranked probes:
-[`docs/plans/2026-08-21-004-b24-investigation.md`](plans/2026-08-21-004-b24-investigation.md).
+[`docs/plans/archive/2026-08-21-004-b24-investigation.md`](plans/archive/2026-08-21-004-b24-investigation.md).
 
 Path A on this box later **did** install Hermes + Granite in a throwaway
 data dir; the B-24 prompt was not sent. Walk:
-[`docs/plans/2026-08-21-005-path-a-live-walk.md`](plans/2026-08-21-005-path-a-live-walk.md).
+[`docs/plans/archive/2026-08-21-005-path-a-live-walk.md`](plans/archive/2026-08-21-005-path-a-live-walk.md).
 
 **2026-08-22 NSIS + Local computer.** Same machine, VM on. Homepage prompt:
 zero tool calls. **Probes the same afternoon:** empty MCP and computer-only
@@ -441,7 +441,7 @@ branch into `session/new` instead of prompting a blank session.
 The managed image layer is **7**
 (Chromium, nested-container flags, `--grant existing-profile`). Rebuild
 the Local VM image for that layer. Notes:
-[`docs/plans/2026-08-21-004-b24-investigation.md`](plans/2026-08-21-004-b24-investigation.md).
+[`docs/plans/archive/2026-08-21-004-b24-investigation.md`](plans/archive/2026-08-21-004-b24-investigation.md).
 General computer-use loop (not more Granite recipes):
 [`docs/plans/2026-08-22-002-computer-use-coworker-loop-plan.md`](plans/2026-08-22-002-computer-use-coworker-loop-plan.md).
 **P8 (2026-08-22):** honesty + last-look are in; stop adding Granite-specific

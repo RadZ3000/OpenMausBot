@@ -69,9 +69,13 @@ async function validateCloudflared(resources, platform, required) {
 // repair and revalidate the exact tree after resources are copied and before
 // either artifact target is assembled.
 export default async function afterPack(context) {
+  const productFilename =
+    context.packager?.appInfo?.productFilename ||
+    context.packager?.appInfo?.productName ||
+    "FlowDesk";
   const resources = context.packager?.getResourcesDir?.(context.appOutDir) ?? (
     context.electronPlatformName === "darwin"
-      ? path.join(context.appOutDir, "OpenMausBot.app", "Contents", "Resources")
+      ? path.join(context.appOutDir, `${productFilename}.app`, "Contents", "Resources")
       : path.join(context.appOutDir, "resources")
   );
   await validateCloudflared(resources, context.electronPlatformName, Boolean(context.packager));

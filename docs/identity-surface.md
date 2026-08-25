@@ -1,9 +1,9 @@
 # The app's identity surface
 
 Every place this app says what it is called, split by whether the name may
-change. Written while building the distribution profile
-(`src/lib/distribution.ts`); the counts were taken from the tree rather than
-from memory, so re-run the greps before trusting them after heavy churn.
+change. The brand pack is `brand/profile.ts` plus `brand/electron-builder.yml`;
+window code still imports `@/lib/distribution`. The leak gate is
+`pnpm check:brand` (CI) and `pnpm check:brand --release` (customer artifact).
 
 Read this if you are rebranding a build, merging upstream into a rebranded
 tree, or about to rename something that merely looks like branding.
@@ -13,44 +13,51 @@ the app uses to find its own data is not.** They look identical in a grep and
 behave nothing alike. Renaming the second kind does not rebrand anything, it
 strands existing installs.
 
+## Where we are (2026-08-25)
+
+Phases A–C of
+[`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md)
+are in the tree. **Phase D is not.** Readers for lock-once slots already honor
+`unset`; the values are not filled. Do not invent an `appId`, data-dir name,
+icons, or 004 URLs to make `--release` green.
+
+Working names: product **FlowDesk**, company **Flow Enterprises**, default
+skin **foundry**. Those are not locked until `--release` is green.
+
+| | |
+|---|---|
+| **Set** | `productName`, `companyName`, `defaultSkin`, `teamLibrary: "off"`, `showUpdateDownload: false`, overlay `publish: null`, overlay Linux vendor / extraMetadata `productName` |
+| **Unset (Phase D)** | `appId`, `dataDirectoryName`, protocol display/scheme, `executableName`, helper `.app` names, `httpUserAgent`, homepage/author, `docsBaseUrl`, `composioBrokerUrl`, `companionName`, icons, mascot, iOS strings |
+| **Inherited until D** | Parent `appId` `com.openmausbot.app`, `~/.openmausbot`, `openmausbot://`, Linux binary `openmausbot`, packaged Composio milind fallback, `package.json` homepage/author, license extraResource filenames, taskbar icons in `build/` |
+
 ## 1. Brand — may change per distribution
 
-### Already wired to the profile
+### Wired to the pack
 
 | Where | How |
 |---|---|
 | Window title | `src/main.tsx` sets `document.title` from `distribution.productName` before first paint |
-| `index.html` `<title>` | Static default only; the line above overrides it at boot |
+| `index.html` `<title>` | Static default matches the pack; `main.tsx` overrides it at boot |
+| Default skin | `readSkin(distribution.defaultSkin)` — Foundry unless the user already picked one. `DEFAULT_SKIN` in `skins.ts` stays `midnight` for the stylesheet contract test |
 | Onboarding heading and CTA | `distribution.productName` |
+| User- and model-visible copy in `src/`, `electron/`, `server/`, `companion/` | `distribution.productName` / `PRODUCT_NAME` / `OMB_PRODUCT_NAME` |
+| Phone copy in the desktop Settings panel | `distribution.companionName` (falls back to productName while that slot is unset) |
+| Crash HTML | `electron/main.mjs` `errorPage()` — no mouse emoji |
+| Installer / dock / Start menu | `brand/electron-builder.yml` overlay (`productName`, Linux `Name` / vendor, NSIS shortcut) |
+| Harness prompts | `server/distribution.ts` `PRODUCT_NAME` from `OMB_PRODUCT_NAME` |
 | Analytics destination | `distribution.analyticsKey` / `analyticsHost` |
+| Team Library | `teamLibrary: "off"` hides the Teams menu and skips the upstream fetch |
+| Update Download | `showUpdateDownload: false` until `publish` is ours |
+| Docs links | hidden while `docsBaseUrl` is unset |
+| Mascot | `brand/mascot/` when a drawing exists; otherwise the bundled cursor |
 
-### Not yet wired — the Phase 2 work list
-
-Fourteen strings across ten files, each a one-token change:
-
-| File | Lines | What the user sees |
-|---|---|---|
-| `src/components/CompanionSection.tsx` | 137, 229 | "Open OpenMausBot on this computer…" |
-| `src/components/CallView.tsx` | 93, 95 | "Calls require OpenMausBot for macOS…" |
-| `src/components/LocalComputerSection.tsx` | 238, 303 | Container-runtime setup copy |
-| `src/components/UpdateBanner.tsx` | 52, 71 | "OpenMausBot 1.2.3 is available" |
-| `src/components/NoEngines.tsx` | 48 | "OpenMausBot doesn't ship a model of its own…" |
-| `src/components/RoutinesPage.tsx` | 410 | "Keep OpenMausBot running…" |
-| `src/components/WebhooksPanel.tsx` | 329 | "Keep OpenMausBot open…" |
-| `src/components/ComputerPanel.tsx` | 453 | Thrown error text |
-| `src/components/ApiKeys.tsx` | 270 | SSH config explanation |
-| `src/lib/team-import.ts` | 14 | "This is not an OpenMaus team file." |
-
-Two more name the **phone companion** rather than this app —
-`CompanionSection.tsx:248,249` say "OpenMausMobile". That is a second product
-name and needs its own field if the companion is ever rebranded too.
+iOS display strings still live in `ios/` until `brand/ios/` is filled.
+`--release` scans them.
 
 ### Brand that is not text
 
-`MausAvatar` is the identity of every bot, imported by twelve production
-components, with a parallel Swift implementation at `ios/App/MausAvatar.swift`.
-Replacing the mascot is explicitly out of scope for Phase 2 — it is structural,
-not decorative, and swapping it is a rewrite wearing a re-skin's clothing.
+`MausAvatar` loads `brand/mascot` when plugged. Empty, it keeps the Cursor
+drawing. A parallel Swift implementation remains at `ios/App/MausAvatar.swift`.
 
 Skins are already a real theming system: CSS custom properties keyed on
 `[data-skin]`, switchable at runtime, contrast-checked by
@@ -62,8 +69,10 @@ components.
 Each of these identifies the app to itself, to the OS, or to another process.
 Renaming one costs an install, a pairing, or a file that no longer opens.
 
-**On disk.** `~/.openmausbot` (overridable via `OMB_DATA_DIR`),
-`~/.openmausbot-companion`, `bots.json`, `groups.json`,
+**On disk.** `~/.openmausbot` is the **current** default while
+`dataDirectoryName` is unset. It is a lock-once brand-pack slot, not a forever
+upstream name — change it before the first customer, never after. Overridable
+via `OMB_DATA_DIR`. Also `~/.openmausbot-companion`, `bots.json`, `groups.json`,
 `messages-<threadId>.json`, `config.json`, `webhooks.json`, `credentials.bin`.
 
 **In the browser.** `omb-drafts`, `omb-draft-attachments`, `omb-skin`,
@@ -74,8 +83,9 @@ Renaming one costs an install, a pairing, or a file that no longer opens.
 **Environment variables.** The whole `OMB_*` and `OPENMAUSBOT_*` set, plus the
 legacy `OGB_*` aliases the server still accepts.
 
-**Identity to the OS and to peers.** `com.openmausbot.app` and its derivatives,
-the `openmausbot://pair` scheme, the `_openmausbot._tcp` Bonjour service, the
+**Identity to the OS and to peers.** `com.openmausbot.app` and its derivatives
+stay until `appId` is plugged (same lock-once as the data dir). The
+`openmausbot://pair` scheme, the `_openmausbot._tcp` Bonjour service, the
 `com.openmausbot.companion.token` keychain service, and `window.ogb` — the
 preload bridge, whose legacy name is referenced throughout `src/`.
 
@@ -91,78 +101,81 @@ alone, noting they are migration paths rather than branding.
 
 ### The worked example
 
-`src/lib/team-import.ts:14` carries both kinds on one line:
+`src/lib/team-import.ts` still carries both kinds on one line:
 
 ```ts
-if (root.format !== "openmaus.team") throw new Error("This is not an OpenMaus team file.");
+if (root.format !== "openmaus.team") throw new Error("This is not a BotMRR playbook or legacy team file.");
 ```
 
 The comparison is a wire format shared with every previously exported team file
-and must never change. The message beside it is copy and should be rebranded.
-Grep cannot tell them apart; you have to look.
+and must never change. The message beside it is copy.
 
 ## 3. Packaging identity — changes once, deliberately
 
-`electron-builder.yml` carries the name the operating system shows:
-`productName`, `artifactName`, `shortcutName` (Windows Start menu), `vendor` and
-the Linux `.desktop` `Name`, plus four macOS permission strings that name the app
-in system dialogs. `electron/resources/speech-helper-Info.plist` names the speech
-helper the same way.
+Root `electron-builder.yml` stays upstream's. Our overlay
+`brand/electron-builder.yml` extends it and sets the names that are plugged.
+`publish: null` until the release-channel plan plugs our repo. `appId` is not
+set in the overlay while the slot is `unset`.
 
-**`appId` is the one to think hardest about.** It is not a label — it is what the
-OS uses to decide whether an installer is upgrading an app or installing a new
-one. Change it and the build gets a fresh `userData` directory, loses update
-continuity with anything already deployed, and orphans the previous install's
-credentials. So it is a decision to make *once, before the first customer build*,
-not something to iterate on.
+**`appId` and `dataDirectoryName` are the ones to think hardest about.** They
+are lock-once slots in this pack, chosen together before the first customer
+build. Change `appId` after that and the build gets a fresh `userData`
+directory. Change the data dir after that and you strand `~/.whatever` installs.
 
-Icons live in `build/` (`icon.svg` is the source; `.icns`, `.ico` and the PNGs
-are generated) plus `public/app-icon.svg` for the window and
-`electron/resources/app-icon.png` for the Electron shell.
+Icons still live in `build/` until `brand/icons/` is plugged.
+`--release` fails while that folder is empty.
 
 ## 4. Links and defaults pointing at upstream
 
-Two documentation links in the UI send users to upstream's repository:
+In-app docs links no longer hardcode `github.com/milind-soni/OpenMausBot`; they
+render only when `docsBaseUrl` is set. Packaged Composio still falls back to
+upstream's Worker while `composioBrokerUrl` is unset — `check:brand --release`
+refuses that. The update feed is off (`publish: null`); Windows CI now fails if
+`app-update.yml` still names `openmausbot-releases`.
 
-- `src/components/ApiKeys.tsx:273` → `github.com/milind-soni/OpenMausBot/blob/main/docs/byo-vps.md`
-- `src/components/LinuxLocalControl.tsx:16` → `.../docs/linux-desktop.md#enable-local-control`
-
-A customer clicking "docs" and landing on the project we forked from is a small
-leak with an outsized effect on how bought-and-paid-for the product feels.
-
-These are the visible members of a larger family. The rest — the analytics
-destination, the update feed, and the Composio broker that a **packaged** build
-falls back to — are recorded in `.claude/skills/commercial-fork/SKILL.md`, which
-is the authority on them. Do not duplicate that list here; check both before a
-build ships.
+The rest of the upstream-endpoint family is `pnpm check:distribution`. Do not
+duplicate that list here.
 
 ## 5. Permanent divergence forecast
 
-Rebranding means editing files upstream owns, which is divergence we keep
-forever. Worth forecasting, because the number is small and the alternative is
-worse.
-
-Ten component and lib files gain a one-token change each, plus two more if the
-upstream documentation links in §4 are repointed. A conflict only occurs if
-upstream edits the same line, and these are stable copy strings — so the
-expected cost is close to zero and the worst case is re-applying a substitution.
-`electron-builder.yml` diverges wholesale, but it is configuration we were
-always going to own.
-
-The alternative — a runtime string-catalog indirection so no upstream file is
-touched — would add a module, a lookup at every call site, and a layer of
-indirection over fourteen constants. That fails the deletion test in
-`module-design`: remove it and almost no complexity disappears, because there is
-nothing varying behind it but a name.
+The pack is additive: `brand/` is ours, overlay extends their YAML, window code
+keeps importing `@/lib/distribution`. Copy call sites in upstream files are
+cheap unless they edit the same line. `git diff --stat upstream/main` remains
+the ownership record.
 
 Check the true cost at any time with:
 
 ```sh
 git diff --stat upstream/main
+pnpm check:brand
 ```
 
-Every file listed is one we maintain. If rebranding ever pushes that list past
-what a merge can absorb, revisit the catalog idea — but measure first.
+## How to change a name or plug a slot
+
+Do not add a second profile, a YAML generator, or a string catalog. One folder,
+two stamps, the existing window import.
+
+1. Set the field in `brand/profile.ts`. `UNSET` is a distinct sentinel, not the
+   string `"OpenMausBot"`. Lock-once slots (`appId`, `dataDirectoryName`,
+   `protocolScheme`) are chosen together before the first customer build.
+2. Packager fields also go in `brand/electron-builder.yml`. Do not edit root
+   `electron-builder.yml`. Do not set `appId` or `directories.buildResources`
+   while those slots are unset. `extraResources` in the overlay replaces the
+   parent list — leave it alone unless you are ready to repeat every entry.
+3. Window copy uses `distribution.productName` / `companionName`. Harness and
+   companion copy uses `PRODUCT_NAME` (from `OMB_PRODUCT_NAME`). Phone product
+   name is `OMB_PHONE_NAME`; `OMB_COMPANION_NAME` is this computer's label on
+   the phone, not the app name.
+4. Drop the matching row from `INCOMPLETE` in `scripts/check-brand.mjs` only
+   when that file no longer matches. `pnpm check:brand` must stay green.
+   `pnpm check:brand --release` stays red until every slot is plugged —
+   including artwork in `brand/icons/` and `brand/mascot/`.
+5. Publish repo and Composio URL are 004's *values*, plugged into this same
+   profile. Do not retarget the feed in root YAML.
+
+Read [`commercial-fork`](../.claude/skills/commercial-fork/SKILL.md) before
+shipping; the plan that defined the slots is
+[`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md).
 
 ## Configuring a build
 
@@ -172,7 +185,7 @@ they are built differently.
 **The window** — set at `pnpm build`, inlined by Vite:
 
 ```sh
-VITE_PRODUCT_NAME="Acme Agents"      # window title, onboarding, (Phase 2) all UI copy
+VITE_PRODUCT_NAME="Acme Agents"      # window title, onboarding, UI copy
 VITE_ANALYTICS_KEY="phc_..."         # unset = analytics off entirely
 VITE_ANALYTICS_HOST="https://..."    # defaults to PostHog US
 ```
@@ -199,11 +212,13 @@ extraMetadata:
   distribution:
     defaultEngine: hermesAgent
     defaultModel: "ollama::qwen3-vl:8b"
+    # overlay also bakes productName and teamLibrary from the pack
 ```
 
 `electron/distribution.mjs` reads that back and forwards it to the server as
-`OMB_DEFAULT_ENGINE` / `OMB_DEFAULT_MODEL`. The real environment still wins over
-a baked value, so a packaged build can be redirected in the field for debugging.
+`OMB_DEFAULT_ENGINE` / `OMB_DEFAULT_MODEL` / `OMB_PRODUCT_NAME` (and the other
+plugged brand slots). The real environment still wins over a baked value, so a
+packaged build can be redirected in the field for debugging.
 
 Both are preferences and neither can produce a bot that cannot answer: an engine
 that is not installed loses to one that is, and a model the chosen engine does

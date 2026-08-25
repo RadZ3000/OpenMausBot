@@ -9,6 +9,8 @@
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
 
+const PRODUCT_NAME = process.env.OMB_PRODUCT_NAME?.trim() || "FlowDesk";
+
 type Json = Record<string, unknown>;
 
 const UPSTREAM = process.env.OMB_CONNECTOR_UPSTREAM_URL ?? "";
@@ -135,12 +137,12 @@ async function handle(message: Json): Promise<void> {
       await showConnectorCards(slugs);
       send(textResult(
         id,
-        `OpenMausBot showed the user a secure connection card for ${slugs.join(", ")}. End this turn now. The app will continue the task automatically after the connection finishes.`,
+        `${PRODUCT_NAME} showed the user a secure connection card for ${slugs.join(", ")}. End this turn now. The app will continue the task automatically after the connection finishes.`,
       ));
       return;
     }
     if (/WAIT_FOR_CONNECTIONS$/i.test(name)) {
-      send(textResult(id, "OpenMausBot is handling connection completion and will continue the task automatically."));
+      send(textResult(id, `${PRODUCT_NAME} is handling connection completion and will continue the task automatically.`));
       return;
     }
   }

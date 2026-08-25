@@ -226,7 +226,7 @@ Do not encode Docker-kill, guest `systemd=true`, or `wsl --update` into the
 installer. Old in-box WSL 2.2.x still skip with Podman's `Error:` line;
 Continue is never gated on the VM. Current Store WSL is enough for start.
 
-Walk log: [`2026-08-21-005-path-a-live-walk.md`](2026-08-21-005-path-a-live-walk.md).
+Walk log: [`2026-08-21-005-path-a-live-walk.md`](archive/2026-08-21-005-path-a-live-walk.md).
 
 Settings today only copies `winget install -e --id Podman.CLI`. That is not
 enough: WSL, silent MSI + provider, `machine init --memory`, `machine start`,

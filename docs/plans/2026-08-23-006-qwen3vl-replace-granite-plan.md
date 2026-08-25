@@ -4,7 +4,7 @@
 Ship/install flip is
 [2026-08-24-005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md)
 (in tree: Thinking **8B @ 32k**; Admin CPU Hermes ACP gold **fail**).
-[003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md) (Instruct 4B @ 8k)
+[003](archive/2026-08-24-003-path-a-qwen3vl-first-run-plan.md) (Instruct 4B @ 8k)
 is superseded. This file stays the **4B** tee record. It does not tee
 Hermes ACP on 8B. Hermes ACP stays. No first-party Ollama driver.
 Official 4B family is ~3.3 GB Q4_K_M. Apache-2.0.
@@ -141,7 +141,7 @@ surprise.
 [005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) constants are in
 tree. Admin CPU Hermes ACP gold on 8B @ 32k **failed** (20 min stall,
 no `tool_call`). Do not execute
-[003](2026-08-24-003-path-a-qwen3vl-first-run-plan.md). **Do not ship 4B
+[003](archive/2026-08-24-003-path-a-qwen3vl-first-run-plan.md). **Do not ship 4B
 Thinking at 8k.**
 
 Rollback of 005: Granite (or leftover 4B) stays on disk; flip the
@@ -152,7 +152,7 @@ constants back as 005 says.
 Instruct Ollama tools+user-image, tools+tool-role-image, and Hermes ACP
 `{type:image}` all quoted `OMB-EYES-7F3A` on 2026-08-23. Product paste
 and MCP screenshots still send a path. Implementation:
-[007](2026-08-23-007-hermes-eyes-plan.md). [005](2026-08-23-005-hermes-images.md)
+[007](2026-08-23-007-hermes-eyes-plan.md). [005](archive/2026-08-23-005-hermes-images.md)
 is the fallback if that gold turn fails. Click format stays
 `vm_click {index}` unless a later tee shows indexes are the bottleneck.
 Do not drive the host desktop. JPEG-on-the-tool-role for `qwen3-vl`

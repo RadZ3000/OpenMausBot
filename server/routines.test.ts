@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { PRODUCT_NAME } from "./distribution.ts";
 import { nextOccurrence, RoutineManager, type RoutineManagerOptions } from "./routines.ts";
 
 const dirs: string[] = [];
@@ -107,7 +108,7 @@ describe("RoutineManager", () => {
         routineName: "Morning brief",
         status: "failed",
         threadId: "thread-1",
-        error: "OpenMausBot restarted while this routine was running",
+        error: `${PRODUCT_NAME} restarted while this routine was running`,
       },
     ]);
   });

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  TEAM_LIBRARY_CATALOG_URL,
-  TEAM_LIBRARY_RAW_ROOT,
   fetchGithubTeam,
   fetchLibraryTeam,
+  fetchTeamCatalog,
   githubManifestUrls,
   parseTeamCatalog,
+  teamLibraryEnabled,
 } from "./team-library.ts";
 
 const manifest = {
@@ -52,25 +52,43 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("team library", () => {
-  it("validates catalog paths and adds the trusted repository URL", () => {
-    const parsed = parseTeamCatalog(catalog);
-    expect(parsed.repositoryUrl).toBe("https://github.com/milind-soni/openmausbot-teams");
+  const libraryEnv = { OMB_TEAM_LIBRARY: "https://github.com/acme/teams" };
+  const catalogUrl = "https://raw.githubusercontent.com/acme/teams/main/catalog.json";
+  const manifestUrl = "https://raw.githubusercontent.com/acme/teams/main/teams/engineering/team.mausteam.json";
+
+  it("is off unless a repository is configured", () => {
+    expect(teamLibraryEnabled({ OMB_TEAM_LIBRARY: "off" })).toBe(false);
+    expect(teamLibraryEnabled({})).toBe(false);
+    expect(teamLibraryEnabled(libraryEnv)).toBe(true);
+  });
+
+  it("validates catalog paths and records the configured repository URL", () => {
+    const parsed = parseTeamCatalog(catalog, libraryEnv.OMB_TEAM_LIBRARY);
+    expect(parsed.repositoryUrl).toBe("https://github.com/acme/teams");
     expect(parsed.teams[0]).toMatchObject({ slug: "engineering", members: 1 });
 
     const unsafe = structuredClone(catalog);
     unsafe.teams[0]!.manifest = "../private.json";
-    expect(() => parseTeamCatalog(unsafe)).toThrow("safe catalog path");
+    expect(() => parseTeamCatalog(unsafe, libraryEnv.OMB_TEAM_LIBRARY)).toThrow("safe catalog path");
+  });
+
+  it("does not fetch a catalog when the library is off", async () => {
+    const fetcher = vi.fn(async () => response({})) as unknown as typeof fetch;
+    await expect(fetchTeamCatalog(fetcher, { OMB_TEAM_LIBRARY: "off" })).rejects.toThrow(
+      "Team library is off in this build",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("loads only the manifest selected by the trusted catalog", async () => {
     const fetcher = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
-      if (target === TEAM_LIBRARY_CATALOG_URL) return response(catalog);
-      if (target === `${TEAM_LIBRARY_RAW_ROOT}/teams/engineering/team.mausteam.json`) return response(manifest);
+      if (target === catalogUrl) return response(catalog);
+      if (target === manifestUrl) return response(manifest);
       return response({}, 404);
     }) as unknown as typeof fetch;
 
-    const loaded = await fetchLibraryTeam("engineering", fetcher);
+    const loaded = await fetchLibraryTeam("engineering", fetcher, libraryEnv);
     if (loaded.format !== "openmaus.team") throw new Error("expected a legacy team");
     expect(loaded.team.name).toBe("Engineering");
     expect(fetcher).toHaveBeenCalledTimes(2);

@@ -1,6 +1,7 @@
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/cn";
 import { teamImportPreview, type PendingTeamImport } from "@/lib/team-import";
+import { distribution, teamLibraryEnabled } from "@/lib/distribution";
 import type { Routine } from "@/lib/routines";
 import { api, useStore, type Bot, type Group } from "@/state/store";
 import {
@@ -25,7 +26,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 const MAX_TEAM_FILE_BYTES = 1_000_000;
-const COMMUNITY_TEAMS_REPOSITORY = "https://github.com/milind-soni/openmausbot-teams";
 
 interface TeamCatalogEntry {
   slug: string;
@@ -130,7 +130,7 @@ export function TeamLibraryPanel({
   const { state, dispatch } = useStore();
   const dialogRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [tab, setTab] = useState<TeamTab>("explore");
+  const [tab, setTab] = useState<TeamTab>(teamLibraryEnabled(distribution) ? "explore" : "import");
   const [catalog, setCatalog] = useState<TeamCatalog | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
@@ -176,6 +176,10 @@ export function TeamLibraryPanel({
   }, []);
 
   useEffect(() => {
+    if (!teamLibraryEnabled(distribution)) {
+      setCatalogLoading(false);
+      return;
+    }
     void loadCatalog();
   }, [loadCatalog]);
 
@@ -462,9 +466,9 @@ export function TeamLibraryPanel({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            {!pending && (
+            {!pending && teamLibraryEnabled(distribution) && catalog?.repositoryUrl && (
               <button
-                onClick={() => void openExternal(catalog?.repositoryUrl ?? COMMUNITY_TEAMS_REPOSITORY)}
+                onClick={() => void openExternal(catalog.repositoryUrl)}
                 className="flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
                 title="Open the community teams repository"
               >
@@ -564,6 +568,7 @@ export function TeamLibraryPanel({
           <>
             <div className="flex flex-col gap-3 px-6 pb-4 pt-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
               <div className="flex w-fit rounded-xl bg-raised/70 p-1" role="tablist" aria-label="Team source">
+                {teamLibraryEnabled(distribution) && (
                 <button
                   role="tab"
                   aria-selected={tab === "explore"}
@@ -578,6 +583,7 @@ export function TeamLibraryPanel({
                 >
                   Explore
                 </button>
+                )}
                 <button
                   role="tab"
                   aria-selected={tab === "import"}

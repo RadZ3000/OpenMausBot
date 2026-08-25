@@ -49,6 +49,13 @@ Audited, not assumed — `pnpm check:distribution` re-derives this list.
 The first three are recorded in `commercial-fork`. **The last six were not** —
 they are added to that skill by this change.
 
+**After 002 A–C (2026-08-25):** overlay `publish: null`; Team Library off (no
+milind fetch); in-app docs links hidden while `docsBaseUrl` is unset; Linux
+vendor/maintainer come from the overlay. Still open for 004 / 002 Phase D:
+Composio packaged fallback, `package.json` homepage/author/repository,
+`release.yml`, and the lock-once `appId` / data dir. Do not retarget `publish:`
+here — plug 004’s values into `brand/` when decided.
+
 The broker fallback deserves the emphasis the skill already gives it: it fires
 only when `app.isPackaged`, so it is invisible in every development run and
 active in every build we hand to anyone.
@@ -58,16 +65,19 @@ active in every build we hand to anyone.
 None of these are engineering questions, and no code can be written past the
 gate below until they are answered.
 
-1. **`appId`.** Currently `com.openmausbot.app`. It is upstream's mark, and
-   Apache-2.0 §6 grants no trademark rights. It is also, per
-   [`identity-surface.md` §3](../identity-surface.md#3-packaging-identity--changes-once-deliberately),
-   the one string that must be decided *once, before the first customer build* —
-   changing it later gives the build a fresh `userData` directory and no update
-   continuity with anything already installed. **This is the decision that is
-   expensive to defer, and it is currently defaulted rather than made.**
-2. **Product name.** `distribution.productName` already exists and is wired at
-   two seams, so this is cheap — but it gates the fourteen Phase 2 strings and
-   the packaging identity in §3 of the identity surface.
+1. **`appId` (and data directory).** Currently `com.openmausbot.app` and
+   `~/.openmausbot`. Apache-2.0 §6 grants no trademark rights. Both must be
+   chosen **once, before the first customer build**. Changing `appId` later
+   gives a fresh `userData` directory; changing the data dir later strands
+   `bots.json`. **These fields live in the brand pack**
+   ([002](2026-08-25-002-brand-pack-plan.md)); this plan does not keep a
+   second copy. 002’s `pnpm check:brand --release` refuses a customer
+   artifact while they are still upstream’s values or unset. **This is the
+   decision that is expensive to defer, and it is currently defaulted
+   rather than made.**
+2. **Product name.** Working title is FlowDesk in `brand/profile.ts`. Copy in
+   `src/` / `electron/` / `server/` / `companion/` is wired (002 Phase B).
+   Packaging identity (`appId`, icons, helpers) is still 002 Phase D.
 3. **Where releases live.** A GitHub releases repo of ours (public, so no token
    ships on customer machines — the reason upstream split theirs), or something
    else entirely. This sets the `publish:` block, `app-update.yml`, and whether
@@ -141,18 +151,21 @@ Also in this change, because neither needs a decision:
 
 Once decisions 3 and 4 land, in this order:
 
-1. Repoint `electron-builder.yml` `publish:` and re-verify that `app-update.yml`
-   in the packaged tree carries the new owner — that file is generated, and it
-   is what the installed app actually reads.
+1. Plug our `publish:` into **`brand/electron-builder.yml`** (not root YAML)
+   and re-verify that `app-update.yml` in the packaged tree carries the new
+   owner — that file is generated, and it is what the installed app actually
+   reads. Overlay currently has `publish: null`.
 2. Fork `release.yml` into ours. Six hardcoded `--repo` sites plus `RELEASES_PAT`,
    `MAC_CERT_P12_BASE64` and the Apple API key secrets. Keep every verification
    gate: each one maps to a real incident upstream had, listed in the comment at
    the top of that file, and we inherit the incidents along with the pipeline.
 3. Deploy our own Composio Worker from `cloudflare/composio-broker/` and set
-   `OMB_COMPOSIO_BROKER_URL`. Upstream's own README tells forks to do this.
-4. Decide the Team Library: our repo, or the feature off in our builds.
-5. Repoint the two documentation links, which needs somewhere for them to go —
-   the smallest version of "we need a docs site".
+   `OMB_COMPOSIO_BROKER_URL` (brand-pack slot `composioBrokerUrl`). Upstream's
+   own README tells forks to do this.
+4. Team Library is already **off** in the brand pack. Host our own catalog
+   later if we want it; do not re-enable milind’s repo.
+5. Docs links stay hidden until `docsBaseUrl` is set — still needs somewhere
+   for them to go, the smallest version of "we need a docs site".
 
 Then `pnpm check:distribution --release` goes green, and it going green is the
 definition of done for this phase.
@@ -163,9 +176,10 @@ A packaged Electron on this tree showed **OpenMausBot 0.1.32 is available /
 Download**. That toast is the auto-updater hitting upstream's GitHub releases
 feed (`milind-soni/openmausbot-releases` in `electron-builder.yml` `publish:`).
 This tree was 0.1.29; 0.1.32 is **their** latest. Download installs their
-product. The banner only appears when `app.isPackaged`. Until Phase B lands,
-a packaged build of this fork must not go to customers, and **Download must
-not be clicked**.
+product. The banner only appears when `app.isPackaged`. Until Phase B of *this* plan lands, a packaged build of this fork must not go
+to customers, and **Download must not be clicked**. Brand-pack Phase C already
+hides the Download action (`showUpdateDownload: false`); that is not a
+substitute for retargeting the feed.
 
 When we do ship, the production path is:
 

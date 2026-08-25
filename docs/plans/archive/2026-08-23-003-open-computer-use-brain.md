@@ -2,7 +2,7 @@
 
 **Not a ship decision.** Preference: computer use first, tools second.
 Compute unconstrained. Apache-2.0 required for this fork’s weight gate
-([`local-model-path.md`](../local-model-path.md) licensing).
+([`local-model-path.md`](../../local-model-path.md) licensing).
 
 We did **not** run these weights. Numbers are vendor/leaderboard claims.
 Path A still cannot feed screenshots through Hermes (`MEDIA:path`).
@@ -55,7 +55,7 @@ backbone experiment, not the Qwen3-VL-Thinking weights we would take.
 Hermes `file` / `terminal` / OpenAI `tools`: **not in that table.**
 Native loop is one XML `computer_use`. Extra MCP tools **hurt**
 EvoCUA-32B on ToolCUA (below). Path A talk+files is still hole 3 in
-[004](2026-08-23-004-evocua-path-a-goal.md).
+[004](../2026-08-23-004-evocua-path-a-goal.md).
 
 ## Do not pick as “the best open brain”
 

@@ -1,4 +1,5 @@
 import { parseBotPackage, type BotPackageDefinition, type BotPackagePlaybook, type ParsedBotPackage } from "./bot-package.ts";
+import { PRODUCT_NAME } from "./distribution.ts";
 import type { Routine } from "./routines.ts";
 import type { BotRecord, GroupRecord, InstalledPlaybook } from "./store.ts";
 
@@ -124,10 +125,10 @@ export function createBotPackageExport(input: {
     id,
     release: "1.0.0",
     name: input.name,
-    tagline: `A portable OpenMausBot setup with ${bots.length} ${bots.length === 1 ? "bot" : "bots"}.`,
-    summary: "Exported from OpenMausBot. Review the roles, rooms, playbooks, connector requirements, and paused routines before sharing or publishing.",
+    tagline: `A portable ${PRODUCT_NAME} setup with ${bots.length} ${bots.length === 1 ? "bot" : "bots"}.`,
+    summary: `Exported from ${PRODUCT_NAME}. Review the roles, rooms, playbooks, connector requirements, and paused routines before sharing or publishing.`,
     category: "Community",
-    author: { name: input.authorName?.trim() || "OpenMausBot user" },
+    author: { name: input.authorName?.trim() || `${PRODUCT_NAME} user` },
     license: "Unspecified",
     outcomes: ["Recreate this bot setup without copying private runtime state."],
     setupMinutes: Math.min(240, Math.max(2, bots.length + requirements.size * 2)),

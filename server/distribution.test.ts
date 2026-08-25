@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { PREFERRED_MODEL, startingModel } from "./distribution.ts";
+import { HTTP_USER_AGENT, PREFERRED_MODEL, PRODUCT_NAME, startingModel } from "./distribution.ts";
 import type { ModelCatalog } from "./contracts.ts";
 import { RECOMMENDED_MODEL } from "./local-model.ts";
 
 const catalog = (defaultId: string, ...ids: string[]): ModelCatalog => ({
   default: defaultId,
   options: ids.map((id) => ({ id, label: id })),
+});
+
+describe("product name", () => {
+  it("matches the brand pack when the environment does not override it", () => {
+    expect(PRODUCT_NAME).toBe("FlowDesk");
+  });
+
+  it("keeps the historical skills User-Agent while that slot is unset", () => {
+    expect(HTTP_USER_AGENT).toBe("OpenMausBot-skills");
+  });
 });
 
 describe("startingModel", () => {

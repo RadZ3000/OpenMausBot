@@ -7,7 +7,7 @@ import "./styles.css";
 
 // Before the first paint, not inside a component: stamping the skin during
 // render would show one frame of the default palette first.
-applySkin(readSkin());
+applySkin(readSkin(distribution.defaultSkin));
 
 // Electron takes the window title from here, so a renamed build must set it
 // before the shell reads it rather than in a component that mounts later.

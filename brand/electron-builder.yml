@@ -1,0 +1,43 @@
+# Overlay on upstream's electron-builder.yml. Paths in the parent
+# (afterPack, directories.buildResources) stay relative to the *project*
+# directory — electron-builder's usual rule — not this file's folder.
+# Do not set appId, executableName, helper bundle names, or
+# directories.buildResources until those slots are plugged.
+extends: ../electron-builder.yml
+
+productName: FlowDesk
+artifactName: FlowDesk-${version}-${arch}.${ext}
+
+# Replaces the inherited GitHub publisher. Until the release-channel plan
+# plugs our repo, a packaged build must not offer their 0.1.x.
+publish: null
+
+extraMetadata:
+  distribution:
+    # Repeat engine/model: extraMetadata.distribution may replace the parent
+    # block rather than merge keys.
+    defaultEngine: hermesAgent
+    defaultModel: "ollama::qwen3-vl:8b"
+    productName: FlowDesk
+    teamLibrary: "off"
+
+nsis:
+  shortcutName: FlowDesk
+  artifactName: FlowDesk-${version}-setup.${ext}
+
+dmg:
+  artifactName: FlowDesk-${version}-${arch}.dmg
+
+linux:
+  vendor: Flow Enterprises
+  maintainer: Flow Enterprises
+  desktop:
+    entry:
+      Name: FlowDesk
+
+mac:
+  extendInfo:
+    NSMicrophoneUsageDescription: FlowDesk uses the microphone for voice dictation into the composer.
+    NSSpeechRecognitionUsageDescription: FlowDesk transcribes your voice on-device to type messages for you.
+    NSAccessibilityUsageDescription: FlowDesk uses Accessibility when you let a bot control this Mac.
+    NSScreenCaptureUsageDescription: FlowDesk uses Screen Recording so bots can see this Mac before acting.

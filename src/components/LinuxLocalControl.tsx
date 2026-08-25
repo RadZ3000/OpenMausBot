@@ -11,13 +11,12 @@ import {
 
 import { cn } from "@/lib/cn";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
-
-const LINUX_GUIDE_URL =
-  "https://github.com/milind-soni/OpenMausBot/blob/main/docs/linux-desktop.md#enable-local-control";
+import { docsUrl } from "@/lib/distribution";
 
 export function LinuxLocalControl() {
   const { capabilities } = useDesktopCapabilities();
   const local = capabilities.localComputer;
+  const linuxGuide = docsUrl("docs/linux-desktop.md#enable-local-control");
   const [pending, setPending] = useState<"enable" | "disable" | "retry" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -159,14 +158,16 @@ export function LinuxLocalControl() {
         )}
       </div>}
 
+      {linuxGuide && (
       <button
         type="button"
-        onClick={() => window.open(LINUX_GUIDE_URL, "_blank", "noopener,noreferrer")}
+        onClick={() => window.open(linuxGuide, "_blank", "noopener,noreferrer")}
         className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink"
       >
         {capabilities.host.packaged ? "Local control guide" : "Driver setup and troubleshooting"}{" "}
         <ExternalLink size={11} />
       </button>
+      )}
     </section>
   );
 }

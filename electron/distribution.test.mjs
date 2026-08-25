@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { distributionEnv, readDistributionMetadata } from "./distribution.mjs";
+import { FALLBACK_PRODUCT_NAME, distributionEnv, readDistributionMetadata, resolveProductName } from "./distribution.mjs";
 
 describe("distributionEnv", () => {
   it("passes nothing when the build configures nothing", () => {
@@ -16,6 +16,33 @@ describe("distributionEnv", () => {
       OMB_DEFAULT_ENGINE: "hermesAgent",
       OMB_DEFAULT_MODEL: "ollama::qwen3-vl:8b",
     });
+  });
+
+  it("forwards the product name the overlay baked in", () => {
+    expect(distributionEnv({ productName: "FlowDesk" }, {}).OMB_PRODUCT_NAME).toBe("FlowDesk");
+  });
+
+  it("does not forward unset brand slots", () => {
+    expect(
+      distributionEnv(
+        {
+          dataDirectoryName: "unset",
+          composioBrokerUrl: "unset",
+          companionName: "unset",
+          httpUserAgent: "unset",
+        },
+        {},
+      ),
+    ).toEqual({});
+  });
+
+  it("forwards the phone name without stealing the computer's Bonjour label", () => {
+    expect(distributionEnv({ companionName: "FlowDesk Phone" }, {}).OMB_PHONE_NAME).toBe("FlowDesk Phone");
+    expect(distributionEnv({ companionName: "FlowDesk Phone" }, {}).OMB_COMPANION_NAME).toBeUndefined();
+  });
+
+  it("forwards team library off so the server does not fetch upstream", () => {
+    expect(distributionEnv({ teamLibrary: "off" }, {}).OMB_TEAM_LIBRARY).toBe("off");
   });
 
   it("lets the real environment override the baked value", () => {
@@ -38,6 +65,12 @@ describe("distributionEnv", () => {
 
   it("survives metadata that is missing entirely", () => {
     expect(distributionEnv(undefined, {})).toEqual({});
+  });
+
+  it("falls back to the brand pack name, not the upstream name", () => {
+    expect(FALLBACK_PRODUCT_NAME).toBe("FlowDesk");
+    expect(resolveProductName({}, {})).toBe("FlowDesk");
+    expect(resolveProductName({ productName: "Acme" }, {})).toBe("Acme");
   });
 });
 
