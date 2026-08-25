@@ -23,7 +23,7 @@ whole table.
 |---|---|---|
 | [2026-08-20-003](2026-08-20-003-product-foundation-plan.md) | proposed; Phase 0 shipped; brand is [002](2026-08-25-002-brand-pack-plan.md) | What the product *is* (installer wedge, not breadth) |
 | [2026-08-20-004](2026-08-20-004-release-channel-plan.md) | proposed; customer update path recorded 2026-08-24 | Shipping Windows. Not the `windows-release` skill |
-| [2026-08-25-002](2026-08-25-002-brand-pack-plan.md) | A–C in tree; **Phase D not done**; `--release` red | Fork-owned `brand/` pack. Lock-once slots and assets unset |
+| [2026-08-25-002](2026-08-25-002-brand-pack-plan.md) | A–C in tree; Worker copy wired; domains unset; **Phase D not done**; `--release` red | Fork-owned `brand/` pack. Lock-once slots, artwork, and control-plane hosts unset |
 | [2026-08-20-005](2026-08-20-005-three-path-first-run-plan.md) | proposed; Path A building; Path C in tree ([001](2026-08-25-001-path-c-hosted-trial-plan.md)) | Three first-run paths |
 | [2026-08-25-001](2026-08-25-001-path-c-hosted-trial-plan.md) | decided; capability-then-credits in tree | Path C leftovers (Polar, tools-on-hosted, frontier SKU) |
 | [2026-08-22-001](2026-08-22-001-path-a-nsis-first-run.md) | WSL/virt in tree; B-26 open | NSIS Path A first run |

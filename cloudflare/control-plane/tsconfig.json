@@ -9,5 +9,11 @@
     "skipLibCheck": true,
     "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-plugin/types", "node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "worker-configuration.d.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "worker-configuration.d.ts",
+    "../../brand/profile.ts"
+  ]
 }

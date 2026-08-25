@@ -337,8 +337,12 @@ describe("Better Auth email OTP and bearer boundary", () => {
       otp: "12345678",
       type: "sign-in",
     });
+    expect(message.from.name).toBe("FlowDesk");
+    expect(message.subject).toBe("Your FlowDesk sign-in code");
     expect(message.text).toContain("12345678");
     expect(message.html).toContain("12345678");
+    expect(message.text).not.toContain("OpenMausBot");
+    expect(message.html).not.toContain("OpenMausBot");
 
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     await sendOTPEmail({ send: async () => { throw new Error("recipient@example.com 12345678"); } },

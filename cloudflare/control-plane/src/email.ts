@@ -1,3 +1,5 @@
+import { brandProfile } from "../../../brand/profile";
+
 export interface TransactionalEmailSender {
   send(message: {
     to: string;
@@ -14,11 +16,13 @@ export interface OTPEmailInput {
   type: "sign-in" | "email-verification" | "forget-password" | "change-email";
 }
 
+const productName = brandProfile.productName;
+
 const SUBJECTS = {
-  "sign-in": "Your OpenMausBot sign-in code",
-  "email-verification": "Verify your OpenMausBot email",
-  "forget-password": "Reset your OpenMausBot password",
-  "change-email": "Confirm your OpenMausBot email change",
+  "sign-in": `Your ${productName} sign-in code`,
+  "email-verification": `Verify your ${productName} email`,
+  "forget-password": `Reset your ${productName} password`,
+  "change-email": `Confirm your ${productName} email change`,
 } as const satisfies Record<OTPEmailInput["type"], string>;
 
 export function buildOTPEmail(from: string, input: OTPEmailInput) {
@@ -27,7 +31,7 @@ export function buildOTPEmail(from: string, input: OTPEmailInput) {
   const html = `<!doctype html><html><body><h1>${subject}</h1><p>Your one-time code is:</p><p style="font-size:32px;font-weight:700;letter-spacing:0.15em">${input.otp}</p><p>It expires in 10 minutes. If you did not request this code, you can ignore this email.</p></body></html>`;
   return {
     to: input.email,
-    from: { email: from, name: "OpenMausBot" },
+    from: { email: from, name: productName },
     subject,
     html,
     text,

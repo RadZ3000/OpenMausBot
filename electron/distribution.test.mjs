@@ -30,6 +30,7 @@ describe("distributionEnv", () => {
           composioBrokerUrl: "unset",
           companionName: "unset",
           httpUserAgent: "unset",
+          controlPlaneUrl: "unset",
         },
         {},
       ),
@@ -43,6 +44,12 @@ describe("distributionEnv", () => {
 
   it("forwards team library off so the server does not fetch upstream", () => {
     expect(distributionEnv({ teamLibrary: "off" }, {}).OMB_TEAM_LIBRARY).toBe("off");
+  });
+
+  it("forwards the control-plane origin only when plugged", () => {
+    expect(distributionEnv({ controlPlaneUrl: "https://accounts.example.com" }, {}).OMB_CONTROL_PLANE_URL).toBe(
+      "https://accounts.example.com",
+    );
   });
 
   it("lets the real environment override the baked value", () => {

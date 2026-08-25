@@ -83,5 +83,7 @@ export function distributionEnv(metadata, env) {
   if (recorderHelper) result.OMB_RECORDER_HELPER_NAME = recorderHelper;
   const protocolScheme = plugged(chosen(env.OMB_PROTOCOL_SCHEME, metadata?.protocolScheme));
   if (protocolScheme) result.OMB_PROTOCOL_SCHEME = protocolScheme;
+  const controlPlaneUrl = plugged(chosen(env.OMB_CONTROL_PLANE_URL, metadata?.controlPlaneUrl));
+  if (controlPlaneUrl) result.OMB_CONTROL_PLANE_URL = controlPlaneUrl;
   return result;
 }

@@ -1,10 +1,14 @@
 # Brand pack: rebrand this fork without a white-label platform
 
-Status: **Phase A–C in tree. Phase D not done.** Architecture, overlay, copy,
-hides, and leak gate landed. Lock-once values, artwork, helper names, iOS
-strings, homepage/author, and 004’s publish/broker URLs are still `unset`.
-`pnpm check:brand` is green in CI; `pnpm check:brand --release` is red and
-must stay red until Phase D. Do not invent those values to go green.
+Status: **Phase A–C in tree. Phase D not done.** Architecture, overlay, copy
+(including control-plane OTP From/Subject and Better Auth `appName`), hides,
+and leak gate landed. The checker walks the repo minus a denylist. Lock-once
+values, artwork, helper names, iOS strings, homepage/author, control-plane
+domains (`emailFromAddress`, `controlPlaneUrl`, `companionHostSuffix`), and
+004’s publish/broker URLs are still `unset`. Packaged desktop does not call
+milind’s accounts host. `pnpm check:brand` is green in CI;
+`pnpm check:brand --release` is red and must stay red until Phase D. Do not
+invent those values to go green.
 
 Standing map for agents: [`../identity-surface.md`](../identity-surface.md).
 
@@ -57,8 +61,11 @@ sentinel). `brand/electron-builder.yml` extends root YAML; `publish: null`;
 `productName` / Linux vendor / extraMetadata `productName` + `teamLibrary`.
 Packaging scripts use `--config brand/electron-builder.yml`. Root
 `electron-builder.yml` was not edited. `scripts/check-brand.mjs` + tests; CI
-runs `pnpm check:brand`. `package-win.yml` **fails** if `app-update.yml`
-contains `openmausbot-releases`. Window `DEFAULTS` read the profile; Foundry
+runs `pnpm check:brand`. The checker walks the repo minus a denylist (a new
+tree cannot hide the way `cloudflare/` did). `openmausbot.com` is a leak;
+`openmausbot-control-plane` health-probe id is not.
+`package-win.yml` **fails** if `app-update.yml` contains
+`openmausbot-releases`. Window `DEFAULTS` read the profile; Foundry
 via `readSkin(distribution.defaultSkin)`; `Avatar` loads `brand/mascot` when
 a drawing exists. Readers honor `unset`: `OMB_DATA_DIR_NAME`,
 `OMB_PROTOCOL_SCHEME`, helper `.app` env, `OMB_PHONE_NAME` (phone product
@@ -71,8 +78,8 @@ not override `afterPack` / `buildResources`.
 `OpenMaus ` in `src/`, `electron/`, `server/`, `companion/` go through
 `distribution.productName` / `PRODUCT_NAME`. `index.html` title is FlowDesk.
 Crash HTML has no mouse. [`identity-surface.md`](../identity-surface.md)
-refreshed. iOS strings and helper Info.plists still name upstream (Phase D /
-`INCOMPLETE`).
+refreshed. iOS strings and helper Info.plists still name upstream
+(`INCOMPLETE`). Control-plane OTP copy uses `brandProfile.productName`.
 
 **C — hides.** `teamLibrary: "off"` (Teams menu hidden, catalog 404, no
 milind fetch). `showUpdateDownload: false` (banner does not offer Download
@@ -80,10 +87,11 @@ while an update is merely available).
 
 **D — not done.** No `appId`, data-dir name, protocol display/scheme,
 `executableName`, helper bundle names, `httpUserAgent`, homepage/author,
-`docsBaseUrl`, icons, mascot artwork, iOS rebrand, or 004 publish/broker
-URLs. Packaged Composio still falls back to milind. Remaining leaks are
-named in `INCOMPLETE` in `scripts/check-brand.mjs`. Wiring those slots’
-readers is Phase A; filling their values is Phase D.
+`docsBaseUrl`, control-plane mailbox/host, icons, mascot artwork, iOS
+rebrand, or 004 publish/broker URLs. Packaged Composio still falls back to
+milind. Packaged desktop does **not** default to `accounts.openmausbot.com`.
+Remaining leaks are named in `INCOMPLETE` in `scripts/check-brand.mjs`.
+Wiring those slots’ readers is Phase A; filling their values is Phase D.
 
 ## What was true before landing (audit, 2026-08-25)
 
@@ -255,6 +263,7 @@ to empty this list.
 | `companionName` / iOS | Phone falls back to FlowDesk; iOS still OpenMausMobile |
 | `brand/icons/`, `brand/mascot/` | Empty; taskbar icon still theirs |
 | `server/local-computer.ts` | Application Support fallback still lists OpenMausBot |
+| `emailFromAddress` / `controlPlaneUrl` / `companionHostSuffix` | Wrangler still `noreply@openmausbot.com` / `accounts.openmausbot.com`. Packaged desktop has no milind default |
 
 ## Plug-and-play — the folder is the product; ingredients come later
 
@@ -300,6 +309,9 @@ features — these are *our* identity, not a switch per their screen.
 | `httpUserAgent` | skill-fetch, webhook tester | Still `OpenMausBot-skills` |
 | `homepage` / `authorName` / `authorEmail` | Overlay / extraMetadata (prefer not editing their `package.json`) | Milind / `milind-soni/OpenMausBot` in installer metadata |
 | `docsBaseUrl` | ApiKeys + LinuxLocalControl links | `github.com/milind-soni/OpenMausBot` |
+| `emailFromAddress` | Wrangler `EMAIL_FROM` / allowed sender | Still `noreply@openmausbot.com` |
+| `controlPlaneUrl` | Wrangler `BETTER_AUTH_URL` + extraMetadata → `OMB_CONTROL_PLANE_URL` | Still `accounts.openmausbot.com`; packaged desktop must not default there |
+| `companionHostSuffix` | Wrangler `COMPANION_HOST_SUFFIX` | Still `openmausbot.com` |
 | `publish` | Overlay `publish:` | `null` until 004 has our repo; then must be ours. Never `milind-soni/openmausbot-releases` |
 | `composioBrokerUrl` | `electron/main.mjs` packaged fallback | `milindsoni201.workers.dev` |
 | `teamLibrary` | `'off'` or our repo | `openmausbot-teams` fetch or browse link |
@@ -321,9 +333,9 @@ Named, short, reviewed. Anything else is a leak.
 - Apache `LICENSE` / `NOTICE` **file text** (OpenMausBot copyright). Filenames
   in `licenses/` must not say OpenMausBot.
 - Wire/process ids that are not the Explorer folder: `openmaus.team`,
-  `{ app: "openmausbot" }` health probe, `omb-*` keys, MCP server ids,
-  `OMB_*` **variable names**, Windows permission pipe names, container
-  labels.
+  `{ app: "openmausbot" }` health probe, `service: "openmausbot-control-plane"`,
+  `omb-*` keys, MCP server ids, `OMB_*` **variable names**, Windows permission
+  pipe names, container labels.
 - `openmausbot://` **only if** `protocolScheme` is explicitly that value.
 
 `~/.openmausbot` is **not** unavoidable. After `dataDirectoryName` is
@@ -341,6 +353,7 @@ words, then named hides, then the mascot files in `brand/mascot/`.
 | Approach | Why not |
 |---|---|
 | JSON generator that writes `electron-builder.yml` | Their file, our merge conflict, every upstream packaging change. |
+| `brand/wrangler.jsonc` or a wrangler YAML generator | Wrangler has no `extends`. Their `account_id` / zone stay in *their* wrangler file until 004-style deploy of *our* Worker. |
 | One TypeScript file imported by Vite, `tsc` server, and Electron `.mjs` | Three toolchains. Pass-through adapters would fail the deletion test. |
 | Growing on/off map of every upstream feature | Edits their UI forever; flags that are always on/off are dead code. 003 already dropped this. |
 | Extract a primitives / layout theme system | 003: rewrite wearing a reskin. Skins already are the token seam. |
@@ -374,7 +387,10 @@ customer build on Phase A.
    not default to upstream’s values in a `--release` build.**
 4. Point `package:win` / `package:mac` / `package:linux` (and linux
    variants) at `--config brand/electron-builder.yml`.
-5. Add `brand/` (and `ios/`) to brand-check scan roots.
+5. `check:brand` walks the repo minus a denylist (not a shipped-folder
+   whitelist). A new tree is scanned unless it is named in the skip list.
+   `#` comments apply only to YAML/JSONC, so markdown titles count.
+   `openmausbot.com` is a leak; `openmausbot-control-plane` is not.
 6. Add `scripts/check-brand.mjs`:
    - `pnpm check:brand` — CI. Every leak or empty slot must be named in
      `INCOMPLETE` with the slot it waits on (same shape as
@@ -390,12 +406,10 @@ customer build on Phase A.
      their docs URLs, `OpenMausMobile`, helper `.app` names, Linux
      `executableName`, crash-page mouse, `package.json` author/homepage
      if those still ship — all fail.
-   Scan `src/`, `electron/` (not `vendor/`), `server/` (string literals,
-   not comments-only if the checker cannot tell — prefer failing on
-   comments in shipped `.ts` that remain in `dist-server` as strings),
-   `companion/`, `ios/`, `brand/`, `package.json`, overlay YAML,
-   `index.html`. Do not scan `NOTICE` / `LICENSE` body for the product
-   name (UNAVOIDABLE). Planted-fixture tests for both modes.
+   Walk the repo minus a denylist (`docs/`, `tools/`, `NOTICE`, `LICENSE`,
+   `node_modules`, build output, …). Do not scan `NOTICE` / `LICENSE` body
+   for the product name (UNAVOIDABLE). Planted-fixture tests for both modes.
+   A path under `cloudflare/` and `apps/` must be in `found` or `INCOMPLETE`.
 7. Window tsconfig includes `brand`. Forward `OMB_PRODUCT_NAME` and
    later `OMB_DATA_DIR` default from extraMetadata.
 8. Flip `package-win.yml`: must **not** require `openmausbot-releases`.
@@ -450,6 +464,8 @@ green:
   `protocolDisplayName` / `protocolScheme`
 - `brand/icons/`, `brand/mascot/`, helper `.app` names
 - `homepage` / author via overlay extraMetadata
+- `emailFromAddress` / `controlPlaneUrl` / `companionHostSuffix` (same
+  turn: profile **and** `cloudflare/control-plane/wrangler.jsonc`)
 - `publish` and `composioBrokerUrl` **when 004 has decided the
   values** — they still plug **here**; 004 does not own a second
   `DATA_DIR`

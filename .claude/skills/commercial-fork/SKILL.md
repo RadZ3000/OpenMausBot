@@ -167,24 +167,29 @@ in `brand/profile.ts`. Do not hardcode `github.com/milind-soni/OpenMausBot`.
 - **Team library** — `brand/profile.ts` ships `teamLibrary: "off"`. Do not
 reintroduce a fetch of `milind-soni/openmausbot-teams`. Host our own catalog
 or keep it off.
-- **Package metadata** — `package.json`'s `homepage`, `repository` and `author`
-are still upstream's URLs and email (`INCOMPLETE` in `check:brand`). Overlay
-already sets Linux vendor/maintainer from the pack.
+- **Control-plane email** — OTP From name and subjects use
+`brandProfile.productName` (FlowDesk). The mailbox and host stay
+`noreply@openmausbot.com` / `accounts.openmausbot.com` until
+`emailFromAddress` / `controlPlaneUrl` / `companionHostSuffix` are plugged.
+Named in `check:brand` `INCOMPLETE`. Packaged desktop does **not** default
+to their accounts host. Do not invent a mailbox to go green.
 - **Brand** — Phases A–C of `docs/plans/2026-08-25-002-brand-pack-plan.md` are
 in the tree. Working names live in `brand/profile.ts` (today FlowDesk / Flow
 Enterprises). Window code still imports `@/lib/distribution`. Root
-`electron-builder.yml` stays theirs; we extend it. **Phase D is not done:**
-`appId`, data dir, icons, mascot, helper names, iOS, homepage/author, and
+`electron-builder.yml` stays theirs; we extend it. `pnpm check:brand` walks
+the repo minus a denylist. **Phase D is not done:** `appId`, data dir, icons,
+mascot, helper names, iOS, homepage/author, control-plane domains, and
 004’s publish/broker URLs stay `unset`. Apache §6 does not license their marks.
 Do not invent those values to make `--release` green. Map:
 `docs/identity-surface.md`.
 
 `pnpm check:brand` is the runnable half of the brand pack, the same shape as
-`check:distribution`: CI mode requires every leftover `OpenMausBot` / milind
-hit to be named in `INCOMPLETE`; `--release` requires that list empty. Do not
-invent a second profile, a YAML generator, or a feature-flag map. New copy
-uses `distribution.productName` / `PRODUCT_NAME`. A new hardcoded
-`OpenMausBot` in a shipped file fails the gate.
+`check:distribution`: CI mode walks the repo minus a denylist and requires
+every leftover `OpenMausBot` / milind / `openmausbot.com` hit to be named in
+`INCOMPLETE`; `--release` requires that list empty. Do not invent a second
+profile, a YAML generator, or a feature-flag map. New copy uses
+`distribution.productName` / `PRODUCT_NAME`. A new hardcoded `OpenMausBot`
+in a shipped file fails the gate.
 
 `docs/identity-surface.md` maps the whole naming surface, including which names
 are *not* branding and must survive a rebrand untouched — data directories,

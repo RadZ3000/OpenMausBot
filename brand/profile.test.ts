@@ -19,6 +19,9 @@ const SLOTS = [
   "authorName",
   "authorEmail",
   "docsBaseUrl",
+  "emailFromAddress",
+  "controlPlaneUrl",
+  "companionHostSuffix",
   "publish",
   "composioBrokerUrl",
   "teamLibrary",
@@ -50,5 +53,8 @@ describe("brand profile", () => {
     expect(brandProfile.teamLibrary).toBe("off");
     expect(brandProfile.showUpdateDownload).toBe(false);
     expect(brandProfile.composioBrokerUrl).toBe(UNSET);
+    expect(brandProfile.emailFromAddress).toBe(UNSET);
+    expect(brandProfile.controlPlaneUrl).toBe(UNSET);
+    expect(brandProfile.companionHostSuffix).toBe(UNSET);
   });
 });

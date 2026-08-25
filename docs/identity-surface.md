@@ -18,8 +18,8 @@ strands existing installs.
 Phases A–C of
 [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md)
 are in the tree. **Phase D is not.** Readers for lock-once slots already honor
-`unset`; the values are not filled. Do not invent an `appId`, data-dir name,
-icons, or 004 URLs to make `--release` green.
+`unset`; the values are not filled. Do not invent an `appId`, data-dir name, icons, mailbox, `accounts.` host, or
+004 URLs to make `--release` green.
 
 Working names: product **FlowDesk**, company **Flow Enterprises**, default
 skin **foundry**. Those are not locked until `--release` is green.
@@ -27,8 +27,8 @@ skin **foundry**. Those are not locked until `--release` is green.
 | | |
 |---|---|
 | **Set** | `productName`, `companyName`, `defaultSkin`, `teamLibrary: "off"`, `showUpdateDownload: false`, overlay `publish: null`, overlay Linux vendor / extraMetadata `productName` |
-| **Unset (Phase D)** | `appId`, `dataDirectoryName`, protocol display/scheme, `executableName`, helper `.app` names, `httpUserAgent`, homepage/author, `docsBaseUrl`, `composioBrokerUrl`, `companionName`, icons, mascot, iOS strings |
-| **Inherited until D** | Parent `appId` `com.openmausbot.app`, `~/.openmausbot`, `openmausbot://`, Linux binary `openmausbot`, packaged Composio milind fallback, `package.json` homepage/author, license extraResource filenames, taskbar icons in `build/` |
+| **Unset (Phase D)** | `appId`, `dataDirectoryName`, protocol display/scheme, `executableName`, helper `.app` names, `httpUserAgent`, homepage/author, `docsBaseUrl`, `composioBrokerUrl`, `companionName`, `emailFromAddress`, `controlPlaneUrl`, `companionHostSuffix`, icons, mascot, iOS strings |
+| **Inherited until D** | Parent `appId` `com.openmausbot.app`, `~/.openmausbot`, `openmausbot://`, Linux binary `openmausbot`, packaged Composio milind fallback, `package.json` homepage/author, license extraResource filenames, taskbar icons in `build/`, wrangler `noreply@openmausbot.com` / `accounts.openmausbot.com` |
 
 ## 1. Brand — may change per distribution
 
@@ -50,9 +50,15 @@ skin **foundry**. Those are not locked until `--release` is green.
 | Update Download | `showUpdateDownload: false` until `publish` is ours |
 | Docs links | hidden while `docsBaseUrl` is unset |
 | Mascot | `brand/mascot/` when a drawing exists; otherwise the bundled cursor |
+| Control-plane OTP / Better Auth | `brandProfile.productName` in `cloudflare/control-plane/src/email.ts` and `auth.ts` |
 
 iOS display strings still live in `ios/` until `brand/ios/` is filled.
-`--release` scans them.
+`--release` scans them. The Worker host (`accounts.openmausbot.com`,
+`noreply@openmausbot.com`) stays until `controlPlaneUrl` /
+`emailFromAddress` / `companionHostSuffix` are plugged. Packaged desktop
+does not default to their accounts host — empty unless
+`OMB_CONTROL_PLANE_URL` or extraMetadata is set. `pnpm check:brand` walks
+the repo minus a denylist so a new tree cannot hide.
 
 ### Brand that is not text
 
@@ -91,9 +97,11 @@ preload bridge, whose legacy name is referenced throughout `src/`.
 
 **Protocol and interop.** The `openmaus.team` export format id, the
 `{ app: "openmausbot" }` health-probe response that Electron checks before
-adopting a server, MCP server names (`openmausbot_image`, `openmausbot_phone`,
-`openmausbot_connectors`, `openmausbot-permissions`), the Windows permission
-pipe, and the container labels in `server/container-computer.ts`.
+adopting a server, the control-plane Worker health-probe id
+`service: "openmausbot-control-plane"`, MCP server names (`openmausbot_image`,
+`openmausbot_phone`, `openmausbot_connectors`, `openmausbot-permissions`), the
+Windows permission pipe, and the container labels in
+`server/container-computer.ts`.
 
 Upstream reached the same conclusion when they renamed the product themselves:
 `cb93606` scrubbed the pre-rename references and left the data-dir literals
@@ -171,7 +179,9 @@ two stamps, the existing window import.
    `pnpm check:brand --release` stays red until every slot is plugged —
    including artwork in `brand/icons/` and `brand/mascot/`.
 5. Publish repo and Composio URL are 004's *values*, plugged into this same
-   profile. Do not retarget the feed in root YAML.
+   profile. Do not retarget the feed in root YAML. Control-plane mailbox and
+   host go in the same profile slots **and** `wrangler.jsonc` in one turn.
+   Do not invent `noreply@…` or an `accounts.` hostname to go green.
 
 Read [`commercial-fork`](../.claude/skills/commercial-fork/SKILL.md) before
 shipping; the plan that defined the slots is

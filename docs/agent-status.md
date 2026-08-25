@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-25 (merged `upstream/main` through `bb087fa` / 0.1.34. Docs hop-on is [`README.md`](README.md); historical plans live in [`plans/archive/`](plans/archive/README.md). Path C and brand pack A–C are in `51a5a74`. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-08-25 (brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Merged `upstream/main` through `bb087fa` / 0.1.34. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
@@ -24,7 +24,7 @@ this file; git still has them.
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` |
-| HEAD | this merge of `upstream/main` through `bb087fa` (0.1.34). Path A 8B@32k is `033f1ab`. Brand + Path C is `51a5a74`. |
+| HEAD | this commit — inverted brand scan, control-plane OTP copy, fail-closed accounts host. Merge of `upstream/main` through `bb087fa` (0.1.34) is `c0b0478`. Path A 8B@32k is `033f1ab`. Brand + Path C is `51a5a74`. |
 | Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
 | Merge base | this merge — 0.1.34 (companion auth errors, control-plane Worker redirects). Path A 8B@32k and the fork layers sit on top. |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
@@ -68,15 +68,16 @@ Keep-alive does **not** make that a coworker.
 
 **Brand pack**. Phases A–C of
 [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md)
-are in the tree: `brand/profile.ts` + overlay `brand/electron-builder.yml`,
-copy through `distribution.productName` / `PRODUCT_NAME`, Team Library off,
-update Download hidden. Working names FlowDesk / Flow Enterprises / Foundry.
-`pnpm check:brand` is in CI. **Phase D is not done** — `appId`, data dir,
-protocol, helpers, icons, mascot, iOS, homepage/author, and 004’s
-publish/broker URLs stay `unset`. `pnpm check:brand --release` is red and
-must stay red. Do not invent those values to go green. Map:
-[`identity-surface.md`](identity-surface.md). Read `commercial-fork`; do not
-add a second profile.
+are in the tree: `brand/profile.ts` + overlay, copy through
+`distribution.productName` / `PRODUCT_NAME` (including control-plane OTP
+From/Subject and Better Auth `appName`), Team Library off, update Download
+hidden. `pnpm check:brand` walks the repo minus a denylist. Control-plane
+**domains** (`emailFromAddress`, `controlPlaneUrl`, `companionHostSuffix`)
+stay `unset`; wrangler still has `noreply@openmausbot.com`. Packaged
+desktop fails closed (no `accounts.openmausbot.com` default). **Phase D is
+not done.** `pnpm check:brand --release` stays red. Do not invent those
+values to go green. Map: [`identity-surface.md`](identity-surface.md).
+Read `commercial-fork`; do not add a second profile.
 
 Path A first-run **in code**: pinned Ollama zip, `qwen3-vl:8b` Thinking pull (~6.1 GB), in-app Hermes, Local VM
 (WSL/Podman/Cua). Checklist is serial CTAs, not one pass
@@ -198,7 +199,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
 7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
-8. **Brand pack Phase D** → only when ingredients exist (`appId`, data dir, icons, mascot, helper names, 004 URLs). Do not invent them. Plan: [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md).
+8. **Brand pack Phase D** → only when ingredients exist (`appId`, data dir, icons, mascot, helper names, control-plane mailbox/host, 004 URLs). Do not invent them. Plan: [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md).
 
 ## Do not
 
@@ -219,7 +220,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
 - Add another `docs/plans/YYYY-MM-DD-*-handoff.md`. Edit **this** file.
 - Start a job from `docs/plans/archive/` or `docs/superpowers/`.
 - Leave a finished plan in the Open table — archive it.
-- Invent an `appId`, data-dir name, icons, or 004 URLs to make `pnpm check:brand --release` green. Phase D waits on real ingredients.
+- Invent an `appId`, data-dir name, icons, mailbox, `accounts.` host, or 004 URLs to make `pnpm check:brand --release` green. Phase D waits on real ingredients.
 
 ## Map (one job, one file)
 

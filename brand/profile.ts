@@ -36,6 +36,9 @@ export interface BrandProfile {
   authorName: string | Unset;
   authorEmail: string | Unset;
   docsBaseUrl: string | Unset;
+  emailFromAddress: string | Unset;
+  controlPlaneUrl: string | Unset;
+  companionHostSuffix: string | Unset;
   publish: BrandPublish;
   composioBrokerUrl: string | Unset;
   teamLibrary: BrandTeamLibrary;
@@ -61,6 +64,9 @@ export const brandProfile: BrandProfile = {
   authorName: UNSET,
   authorEmail: UNSET,
   docsBaseUrl: UNSET,
+  emailFromAddress: UNSET,
+  controlPlaneUrl: UNSET,
+  companionHostSuffix: UNSET,
   publish: null,
   composioBrokerUrl: UNSET,
   teamLibrary: "off",
