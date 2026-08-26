@@ -1,7 +1,7 @@
 # Upstream license merge gate
 
 Status: **in tree (2026-08-25).** `pnpm check:upstream-license` is green on
-`upstream/main` `bb087fa` (Apache-2.0). Fetch stays vanilla. Merge does not.
+`upstream/main` `667af71` (Apache-2.0). Fetch stays vanilla. Merge does not.
 
 ## check-upstream-first (done before coding)
 

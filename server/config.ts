@@ -83,8 +83,10 @@ const appConfigSchema = z.object({
   vps: vpsConfigSchema.optional(),
   /** Optional OpenCode key; persisted write-only and passed only to its child. */
   opencodeGo: z.object({ apiKey: optionalText }).optional(),
-  /** Voice credentials and the selected voice id. */
-  tts: z.object({ key: optionalText, voice: optionalText }).optional(),
+  /** Voice credentials and the selected voice id. `provider` picks the
+   * engine: "elevenlabs" (default; needs a key) or "system" (the Mac's
+   * built-in voices, no key). */
+  tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional() }).optional(),
   /** `key` is the OS-stored secret for in-process avatars. `apiKey` / baseUrl /
    * model also feed the generate_image MCP proxy (hosted or a local diffusion
    * server). Only the keys are secret. */
@@ -112,7 +114,7 @@ export interface AppConfig {
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string };
   opencodeGo?: { apiKey?: string };
-  tts?: { key?: string; voice?: string };
+  tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
   imageGen?: { key?: string; apiKey?: string; baseUrl?: string; model?: string };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
@@ -203,6 +205,9 @@ export function loadConfig(): AppConfig {
   // shadow the save until the next launch.
   cfg.xai = { ...cfg.xai };
   if (process.env.XAI_API_KEY !== undefined) cfg.xai.key = process.env.XAI_API_KEY;
+  cfg.openaiCompat = { ...cfg.openaiCompat };
+  if (process.env.OPENAI_COMPAT_API_KEY !== undefined) cfg.openaiCompat.key = process.env.OPENAI_COMPAT_API_KEY;
+  if (process.env.OPENAI_COMPAT_URL !== undefined) cfg.openaiCompat.url = process.env.OPENAI_COMPAT_URL;
   cfg.composio = { ...cfg.composio };
   if (process.env.COMPOSIO_API_KEY !== undefined) cfg.composio.apiKey = process.env.COMPOSIO_API_KEY;
   cfg.box = { ...cfg.box };
@@ -233,6 +238,7 @@ export function loadConfig(): AppConfig {
 export function syncCredentialEnv(patch: Partial<AppConfig>): void {
   const secrets: Array<[value: string | undefined, name: string]> = [
     [patch.xai?.key, "XAI_API_KEY"],
+    [patch.openaiCompat?.key, "OPENAI_COMPAT_API_KEY"],
     [patch.composio?.apiKey, "COMPOSIO_API_KEY"],
     [patch.box?.token, "BOX_TOKEN"],
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
@@ -245,6 +251,10 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
     if (value) process.env[name] = value;
     else delete process.env[name];
   }
+  if (patch.openaiCompat?.url !== undefined) {
+    if (patch.openaiCompat.url) process.env["OPENAI_COMPAT_URL"] = patch.openaiCompat.url;
+    else delete process.env["OPENAI_COMPAT_URL"];
+  }
 }
 
 /** Env names of every workspace credential this process may be holding —
@@ -254,6 +264,8 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
  * child these are someone else's keys riding along in `...process.env`. */
 export const WORKSPACE_CREDENTIAL_ENV = [
   "XAI_API_KEY",
+  "OPENAI_COMPAT_API_KEY",
+  "OPENAI_COMPAT_URL",
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
@@ -300,7 +312,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
-  for (const key of ["xai", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features"] as const) {
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -452,10 +464,30 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
       if (!Object.hasOwn(map, id)) map[id] = { ...entry };
     }
   }
-  for (const entry of Object.values(map)) {
+  for (const [id, sourceEntry] of Object.entries(map)) {
+    // instanceConfigs() builds a transient runtime map. Never mutate the
+    // caller's persisted entries while injecting workspace defaults: doing so
+    // would turn the first workspace URL into a stale per-instance override.
+    const entry = { ...sourceEntry };
+    map[id] = entry;
     const environment = { ...entry.environment };
     for (const [key, value] of injectedEnvironment(cfg, entry.driver)) environment[key] = value;
     entry.environment = environment;
+    // The driver URL is configuration, not a credential. Environment is
+    // intentionally not consulted by ProviderRegistry when it decodes a
+    // driver's config, so carry the workspace default into the transient
+    // instance map while preserving a per-instance override.
+    if (entry.driver === "openai-compat" && cfg.openaiCompat?.url) {
+      const raw = entry.config;
+      if (raw === undefined) {
+        entry.config = { url: cfg.openaiCompat.url };
+      } else if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+        const current = raw as Record<string, unknown>;
+        if (typeof current.url !== "string" || !current.url.trim()) {
+          entry.config = { ...current, url: cfg.openaiCompat.url };
+        }
+      }
+    }
   }
   return map;
 }

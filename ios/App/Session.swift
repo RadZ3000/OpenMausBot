@@ -38,6 +38,9 @@ final class Session: ObservableObject {
     /// One exact message the next opened chat should reveal.
     @Published private(set) var focusedMessageId: String?
     @Published private(set) var notificationAuthorization: UNAuthorizationStatus = .notDetermined
+    /// Distinguishes a real `.notDetermined` result from the in-memory value
+    /// used while notification settings are still loading at launch.
+    @Published private(set) var notificationAuthorizationResolved = false
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
 
@@ -167,8 +170,15 @@ final class Session: ObservableObject {
         deviceName: String,
         pairRequestId: String
     ) async throws {
+        var invited = connection
+        // QR invites already carry this policy. Manual entry reaches the
+        // session as a parsed Connection, so establish the same consent
+        // boundary here before any health probe or credential redemption.
+        if invited.allowedRouteKinds == nil {
+            invited.establishRoutePolicyFromInvite()
+        }
         let outcome = try await CompanionClient.pairFirstReachable(
-            connection: connection,
+            connection: invited,
             credential: credential,
             deviceName: deviceName,
             pairRequestId: pairRequestId
@@ -177,14 +187,9 @@ final class Session: ObservableObject {
         // prefer the name the computer calls itself over the Bonjour label
         var stored = outcome.connection
         if !paired.serverName.isEmpty { stored.name = paired.serverName }
-        // The computer knows every address it answers on, and what it says at
-        // redeem time beats whatever the invite carried. The route that just
-        // redeemed leads this live session; future launches return to the
-        // desktop's security-prioritized typed order.
-        if let hosts = paired.hosts, !hosts.isEmpty { stored.hosts = Array(hosts.prefix(8)) }
-        if let endpoints = paired.endpoints, !endpoints.isEmpty {
-            stored.endpoints = Array(endpoints.prefix(8))
-        }
+        // The computer knows every address it answers on, but redemption may
+        // not widen the explicit route consent carried by the invite.
+        stored.applyPairingAdvertisement(hosts: paired.hosts, endpoints: paired.endpoints)
         let winner = outcome.connection.activeEndpoint ?? CompanionEndpoint.direct(
             host: outcome.connection.host,
             port: outcome.connection.port,
@@ -196,8 +201,28 @@ final class Session: ObservableObject {
         }
 
         try Keychain.save(paired.token, for: stored.id)
-        UserDefaults.standard.set(try? JSONEncoder().encode(stored), forKey: Self.connectionKey)
+        // Write the first-pair education marker before making the connection
+        // restorable. If the process stops between these writes, an orphan
+        // marker is harmless while unpaired; the reverse order could restore
+        // a pairing which permanently skipped this step.
+        // RootView may not have received iOS's notification status yet, and
+        // the app may be relaunched before that asynchronous lookup finishes.
+        CompanionPairingCommitSequence.persist {
+            UserDefaults.standard.set(
+                true,
+                forKey: CompanionOnboardingPreferences.pendingNotificationOnboardingKey
+            )
+        } saveConnection: {
+            UserDefaults.standard.set(
+                try? JSONEncoder().encode(stored),
+                forKey: Self.connectionKey
+            )
+        }
 
+        pairingInvite = CompanionPairingInvitePolicy.nextInvite(
+            current: pairingInvite,
+            after: .pairingSucceeded
+        )
         self.connection = stored
         self.token = paired.token
         let liveRoutes = winner.map { route in
@@ -216,7 +241,10 @@ final class Session: ObservableObject {
     }
 
     func receivePairingURL(_ url: URL) {
-        guard status == .unpaired else {
+        guard CompanionPairingInvitePolicy.allowsIncomingInvite(
+            hasConnection: connection != nil,
+            pairingStateIsUnpaired: status == .unpaired
+        ) else {
             actionError = "This phone is already paired. Unpair it in Settings before connecting it to another computer."
             return
         }
@@ -224,11 +252,17 @@ final class Session: ObservableObject {
             actionError = "That pairing invitation is not valid. Start pairing again on your computer."
             return
         }
-        pairingInvite = invite
+        pairingInvite = CompanionPairingInvitePolicy.nextInvite(
+            current: pairingInvite,
+            after: .received(invite)
+        )
     }
 
     func consumePairingInvite() {
-        pairingInvite = nil
+        pairingInvite = CompanionPairingInvitePolicy.nextInvite(
+            current: pairingInvite,
+            after: .consumed
+        )
     }
 
     func signOut() {
@@ -238,8 +272,15 @@ final class Session: ObservableObject {
         endpointRefreshTask = nil
         restorePending = false
         pendingNotification = nil
+        pairingInvite = CompanionPairingInvitePolicy.nextInvite(
+            current: pairingInvite,
+            after: .signedOut
+        )
         if let id = connection?.id { Keychain.remove(id) }
         UserDefaults.standard.removeObject(forKey: Self.connectionKey)
+        UserDefaults.standard.removeObject(
+            forKey: CompanionOnboardingPreferences.pendingNotificationOnboardingKey
+        )
         connection = nil
         client = nil
         token = nil
@@ -531,19 +572,15 @@ final class Session: ObservableObject {
     @discardableResult
     func updateAddress(_ text: String) -> Bool {
         guard var updated = connection, let parsed = Connection.parse(text) else { return false }
-        let existingRoutes = updated.orderedEndpoints
         guard let endpoint = parsed.activeEndpoint ?? CompanionEndpoint.direct(
             host: parsed.host,
             port: parsed.port,
             priority: 0
         ) else { return false }
-        updated.promote(endpoint)
-        updated.endpoints = [endpoint] + existingRoutes.filter { $0.url != endpoint.url }
+        updated.resetRoutePolicy(selecting: endpoint)
         connection = updated
         UserDefaults.standard.set(try? JSONEncoder().encode(updated), forKey: Self.connectionKey)
-        rotation = CandidateRotation(
-            endpoints: [endpoint] + updated.orderedEndpoints.filter { $0.url != endpoint.url }
-        )
+        rotation = CandidateRotation(endpoints: updated.orderedEndpoints)
         if let token {
             client = CompanionClient(connection: updated.dialing(endpoint), token: token)
         }
@@ -994,6 +1031,7 @@ final class Session: ObservableObject {
 
     func refreshNotificationAuthorization() async {
         notificationAuthorization = await NotificationCoordinator.shared.authorizationStatus()
+        notificationAuthorizationResolved = true
     }
 
     func enableNotifications() async {
