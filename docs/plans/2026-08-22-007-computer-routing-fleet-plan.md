@@ -26,7 +26,9 @@ hands, Qwen `computer_use__*` on Windows (B-19).
 
 - Cowork host-desktop on Windows Path A.
 - Restoring Hermes web/extract on Path A.
-- Per-bot screens on one VM.
+- Per-bot screens on one VM (later:
+  [`2026-08-28-002-shared-vm-seats-plan.md`](2026-08-28-002-shared-vm-seats-plan.md)
+  — one Chrome, piles + crop).
 
 ## Verify
 

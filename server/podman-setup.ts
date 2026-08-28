@@ -29,7 +29,9 @@ export const PODMAN_MSI_SHA256 = "c094059880f033656092f5fb4306457e42aa068ee32137
 const MSI_BYTES_MAX = 80 * 1024 * 1024;
 /** Cua container is `--memory 4g`; the guest default is 2 GiB. */
 export const PODMAN_MACHINE_MEMORY_MIB = 6144;
-const MACHINE_NAME = "podman-machine-default";
+export const PODMAN_MACHINE_NAME = "podman-machine-default";
+/** WSL-backed `podman info` after an idle VM can take ~70s on Windows. */
+export const WINDOWS_PODMAN_INFO_TIMEOUT_MS = 90_000;
 
 /** WSL guests cannot `machine set --memory` after create (Podman 6: "changing
  * memory not supported for WSL machines"). Size the VM at init. */
@@ -316,7 +318,7 @@ async function downloadMsi(
   await writeFile(dest, buffer);
 }
 
-function machineState(stdout: string): MachineSnapshot {
+export function podmanMachineSnapshot(stdout: string): MachineSnapshot {
   const parsed = inspectSchema.safeParse(JSON.parse(stdout || "[]"));
   if (!parsed.success || parsed.data.length === 0) return { running: false, memoryMiB: 0 };
   const row = parsed.data[0]!;
@@ -388,7 +390,7 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
   }
 
   yield { status: "Checking the Podman machine…" };
-  const listed = await podman(hooks, ["machine", "inspect", MACHINE_NAME], 15_000);
+  const listed = await podman(hooks, ["machine", "inspect", PODMAN_MACHINE_NAME], 15_000);
   const haveMachine = listed.code === 0 && listed.stdout.trim().startsWith("[");
   if (!haveMachine) {
     yield { status: "Creating the Podman machine (first time, a few minutes)…" };
@@ -399,11 +401,11 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
     }
   }
 
-  const inspected = await podman(hooks, ["machine", "inspect", MACHINE_NAME], 15_000);
+  const inspected = await podman(hooks, ["machine", "inspect", PODMAN_MACHINE_NAME], 15_000);
   let state = { running: false, memoryMiB: 0 };
   if (inspected.code === 0) {
     try {
-      state = machineState(inspected.stdout);
+      state = podmanMachineSnapshot(inspected.stdout);
     } catch {
       state = { running: false, memoryMiB: 0 };
     }
@@ -417,7 +419,7 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
     }
     // `machine set --memory` is a no-op on WSL. Recreate with --memory on init.
     yield { status: `Recreating the Podman machine with ${PODMAN_MACHINE_MEMORY_MIB} MiB…` };
-    const removed = await podman(hooks, ["machine", "rm", "--force", MACHINE_NAME], 60_000);
+    const removed = await podman(hooks, ["machine", "rm", "--force", PODMAN_MACHINE_NAME], 60_000);
     if (removed.code !== 0) {
       yield skipFromCli("Could not replace the undersized Podman machine", removed);
       return;
@@ -440,7 +442,7 @@ export async function* runPodmanSetup(hooks: PodmanSetupHooks = {}): AsyncGenera
     }
   }
 
-  const info = await podman(hooks, ["info", "--format", "json"], 20_000);
+  const info = await podman(hooks, ["info", "--format", "json"], WINDOWS_PODMAN_INFO_TIMEOUT_MS);
   if (info.code !== 0) {
     yield skip("Podman is installed but not answering yet. Chat still works without a computer.", "setup-failed");
     return;

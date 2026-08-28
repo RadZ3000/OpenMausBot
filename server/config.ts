@@ -478,6 +478,19 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     map[id] = entry;
     const environment = { ...entry.environment };
     for (const [key, value] of injectedEnvironment(cfg, entry.driver)) environment[key] = value;
+    // Path C's hosted instance is also openai-compat, but it authenticates
+    // with OMB_INFERENCE_BROKER_TOKEN. Leaving the workspace BYOK key on
+    // that entry would make create() prefer OPENAI_COMPAT_API_KEY over the
+    // install token (openai-compat.ts reads the workspace key first).
+    if (entry.driver === "openai-compat") {
+      const parsed = jsonObjectSchema.safeParse(entry.config);
+      const envName = parsed.success ? z.string().safeParse(parsed.data.apiKeyEnv) : null;
+      const named = envName?.success ? envName.data.trim() : "";
+      if (named && named !== "OPENAI_COMPAT_API_KEY") {
+        delete environment.OPENAI_COMPAT_API_KEY;
+        delete environment.OPENAI_COMPAT_URL;
+      }
+    }
     entry.environment = environment;
     // The driver URL is configuration, not a credential. Environment is
     // intentionally not consulted by ProviderRegistry when it decodes a

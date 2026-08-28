@@ -185,7 +185,7 @@ type SkillRecordingPayload = {
       saveFile?(filePath: string): Promise<string | null>;
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
-        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "openaiImageApiKey" | "imageGenApiKey",
+        name: "composioApiKey" | "xaiApiKey" | "openaiCompatApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "openaiImageApiKey" | "imageGenApiKey",
         value: string,
       ): Promise<ConfigStatus>;
       /** Whether this packaged build has a hosted-inference Worker URL. */

@@ -24,13 +24,14 @@ whole table.
 | [2026-08-20-003](2026-08-20-003-product-foundation-plan.md) | proposed; Phase 0 shipped; brand is [002](2026-08-25-002-brand-pack-plan.md) | What the product *is* (installer wedge, not breadth) |
 | [2026-08-20-004](2026-08-20-004-release-channel-plan.md) | proposed; customer update path recorded 2026-08-24 | Shipping Windows. Not the `windows-release` skill |
 | [2026-08-25-002](2026-08-25-002-brand-pack-plan.md) | A–C in tree; Worker copy wired; domains unset; **Phase D not done**; `--release` red | Fork-owned `brand/` pack. Lock-once slots, artwork, and control-plane hosts unset |
-| [2026-08-20-005](2026-08-20-005-three-path-first-run-plan.md) | proposed; Path A building; Path C in tree ([001](2026-08-25-001-path-c-hosted-trial-plan.md)) | Three first-run paths |
+| [2026-08-20-005](2026-08-20-005-three-path-first-run-plan.md) | proposed; Path A building; Path B detects major providers; Path C in tree ([001](2026-08-25-001-path-c-hosted-trial-plan.md)) | Three first-run paths |
 | [2026-08-25-001](2026-08-25-001-path-c-hosted-trial-plan.md) | decided; capability-then-credits in tree | Path C leftovers (Polar, tools-on-hosted, frontier SKU) |
 | [2026-08-22-001](2026-08-22-001-path-a-nsis-first-run.md) | WSL/virt in tree; B-26 open | NSIS Path A first run |
 | [2026-08-22-002](2026-08-22-002-computer-use-coworker-loop-plan.md) | in progress; P1/P3/P4/P6 in tree | Coworker computer loop |
 | [2026-08-22-008](2026-08-22-008-computer-safety-eval-plan.md) | in tree; **P8 binding** | Stop Granite `vm_*` recipes |
 | [2026-08-23-004](2026-08-23-004-evocua-path-a-goal.md) | conclusion + cheap tests | Path A goal = EvoCUA (GPU-box specialist, not this laptop’s first-run) |
 | [2026-08-24-005](2026-08-24-005-path-a-qwen3vl-8b-thinking-plan.md) | in tree; Admin CPU gold **fail** | Path A first-run is Thinking 8B @ 32k. Do not flip off this without a new plan |
+| [2026-08-28-002](2026-08-28-002-shared-vm-seats-plan.md) | **decided**; one Chrome, two piles, crop in the app | Shared VM parallel bots. [B-29](../known-bugs.md) Retry card. Not two Chromes / not a second VNC. P1–P4 in that file |
 
 ## In tree (do not redo)
 
@@ -50,6 +51,7 @@ Specs for work that already landed. Read them; do not reimplement.
 | [2026-08-24-004](2026-08-24-004-qwen3vl-vs-qwen-cua.md) | evaluated | Qwen-CUA is not first-run |
 | [2026-08-24-006](2026-08-24-006-skip-hermes-cpu-tee.md) | measured 2026-08-24 | Skip-Hermes CPU tools vs Hermes ACP stall |
 | [2026-08-25-003](2026-08-25-003-upstream-license-gate.md) | in tree | Merge gate: `pnpm check:upstream-license`. Fetch stays vanilla. User merge orders do not skip it. |
+| [2026-08-28-001](2026-08-28-001-grok-bot-phone-research.md) | evaluated; not a ship runbook | Grok phone is cloud-account. Ours stays thin-client. Android is a second client of the same sidecar, not out of scope |
 
 ## Archive (do not start here)
 

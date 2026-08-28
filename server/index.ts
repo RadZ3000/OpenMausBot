@@ -69,7 +69,14 @@ import {
   EVENTS_DIR,
   NATIVE_DIR,
 } from "./config.ts";
-import { apiKeyConfigured, withApiKeyEngine } from "./byok.ts";
+import {
+  apiKeyConfiguredFor,
+  byokSelection,
+  byokWorkspacePatch,
+  enableApiKeyBodySchema,
+  resolveApiKeyProvider,
+  withApiKeyEngine,
+} from "./byok.ts";
 import {
   applyManagedInferenceMessage,
   hostedInferenceConfigured,
@@ -5145,14 +5152,30 @@ const server = createServer(async (req, res) => {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
-      if (!apiKeyConfigured(cfg)) return json(res, 400, { error: "save an API key first" });
+      const parsed = enableApiKeyBodySchema.safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "invalid request" });
+      const provider = resolveApiKeyProvider(cfg, parsed.data.provider);
+      if (!provider || !apiKeyConfiguredFor(cfg, provider)) {
+        return json(res, 400, { error: "save an API key first" });
+      }
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       providerConfigBusy = true;
       try {
-        saveConfig({ instances: withApiKeyEngine(cfg) });
+        const instances = withApiKeyEngine(cfg, provider);
+        const urlPatch = byokWorkspacePatch(provider);
+        if ("openaiCompat" in urlPatch) {
+          saveConfig({ instances, openaiCompat: urlPatch.openaiCompat });
+        } else {
+          saveConfig({ instances });
+        }
         Object.assign(cfg, loadConfig());
         await reloadProviders();
         resetPathCache();
+        const selection = byokSelection(provider);
+        for (const bot of store.bots) {
+          if (bot.modelSelection.instanceId) continue;
+          store.patchBot(bot.id, { modelSelection: selection });
+        }
         return json(res, 200, { instances: await registry.describe() });
       } finally {
         providerConfigBusy = false;
@@ -5493,6 +5516,7 @@ const server = createServer(async (req, res) => {
         // never survive the merge in config.json.
         const persisted = structuredClone(patch);
         if (persisted.xai?.key !== undefined) persisted.xai.key = "";
+        if (persisted.openaiCompat?.key !== undefined) persisted.openaiCompat.key = "";
         if (persisted.composio?.apiKey !== undefined) persisted.composio.apiKey = "";
         if (persisted.box?.token !== undefined) persisted.box.token = "";
         if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";

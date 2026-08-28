@@ -293,6 +293,17 @@ dev who uses Claude.
 image → Retry card `Prepare the Cua desktop image with Driver 0.20.0`.
 **Runs on → Off** to chat. “This computer” stays grey on local-inject.
 
+Two Windows false-health cases that produce the same card (or “Start podman
+first”) while the other PC looks fine: Docker Desktop’s CLI can exit 0 with
+an empty `ServerVersion` when the engine is down, so a Docker-first probe
+claims the daemon is up and then cannot see the Podman image store. A
+sleeping WSL Podman machine still lists as running, but `podman info` can
+take ~70s; a 10s probe reports the daemon down. Status now prefers Podman
+on Windows, requires non-empty `info` stdout, skips `info` when
+`podman machine inspect` is not running, and waits 90s for `info` after a
+wake. A leftover `driver-0.20.0-v4` container against a `v7` image is
+“recreate it”, not a missing image.
+
 ### Hermes ACP on CPU vs the 20 min stall — **Decided** (measured 2026-08-24)
 
 Admin, no NVIDIA, Vulkan off, 32k: Hermes ACP 8B gold **cancelled** at
@@ -452,6 +463,13 @@ security boundary. Stopping the container ends GUI windows (X restarts);
 Start brings the desktop back without recreate. Per-bot mode is isolation.
 Recreate is for a drifted image or a broken safety contract. See
 [`docs/plans/2026-08-22-006-computer-durable-shared-plan.md`](plans/2026-08-22-006-computer-durable-shared-plan.md).
+Grok-style extra seats (second VNC / two Chromes) were **probed 2026-08-28
+and failed**. The decided product is **one Chrome, per-bot window piles,
+crop in the app**
+([002](plans/2026-08-28-002-shared-vm-seats-plan.md)). Mutex stays until
+that lands — today a second Shared bot gets
+[B-29](known-bugs.md) (`already being used by another turn`). Do not
+mutate the Admin VM during a live Computer session.
 
 ---
 

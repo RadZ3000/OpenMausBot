@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-27 (merged `upstream/main` through `ec7b487` / 0.1.37. License gate green: Apache-2.0. Hop-on map has app shape + whose-file. Brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-08-28 (Shared VM **piles** decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is the Cosmo Retry card while Zuko holds the VM — P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md) — their iOS is a cloud-account client; we keep the thin sidecar client. Android is in scope as a second client, not skipped because Grok launched iPhone-only. Fork store plans not drafted. Path B paste detects major providers. Local VM Windows probe: empty Docker `info` is not healthy; stopped Podman machine skips `info`; WSL `info` budget 90s. Admin box Local VM recreated on `driver-0.20.0-v7` (was stopped machine + leftover v4 container). Last merge remains `upstream/main` through `ec7b487` / 0.1.37. License gate green: Apache-2.0. Fetch 2026-08-28: `upstream/main` at `677538e` is 0.1.38+ commits ahead; not merged. Hop-on map has app shape + whose-file. Brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
 
 ## Start here
 
@@ -19,7 +19,7 @@ plans: [`plans/archive/README.md`](plans/archive/README.md). The 2026-08-21
 morning handoff and the 2026-08-23 cold-start were deleted as duplicates of
 this file; git still has them.
 
-## Git (this machine, 2026-08-27)
+## Git (this machine, 2026-08-28)
 
 | | |
 |---|---|
@@ -39,11 +39,13 @@ the public-release path is recorded in
 (not built).
 
 **This Windows box only (do not expect on the next machine):** shared Local VM
-recreated at `--pids-limit 2048`; `pnpm build:server` overlay into
-`%LOCALAPPDATA%\Programs\openmausbot\resources\server` so the packaged `.exe`
-accepts that cap. `~/.openmausbot`, Podman, and that overlay do not travel
-with git. On a new box: `git checkout merge/upstream-0.1.27` (already on
-origin), Path A / Local VM first-run as usual. Do not recreate a 2048 VM
+recreated at `--pids-limit 2048` on `driver-0.20.0-v7` (Admin, 2026-08-28:
+Podman machine had been stopped for days; Docker Desktop was down but its
+CLI looked healthy; leftover container was v4). `pnpm build:server` overlay
+into `%LOCALAPPDATA%\Programs\openmausbot\resources\server` so the packaged
+`.exe` accepts that cap. `~/.openmausbot`, Podman, and that overlay do not
+travel with git. On a new box: `git checkout merge/upstream-0.1.27` (already
+on origin), Path A / Local VM first-run as usual. Do not recreate a 2048 VM
 from an *un-overlaid* old `.exe` — it will say “missing safety limits”.
 
 ## Product goals (do not redefine)
@@ -100,6 +102,16 @@ credits skip classify and stay on basic. Chooser arm live. No packaged
 Worker URL. Chat-only. Polar and tools-on-hosted are later. Spec:
 [`plans/2026-08-25-001-path-c-hosted-trial-plan.md`](plans/2026-08-25-001-path-c-hosted-trial-plan.md).
 
+**Path B**: paste-a-key first-run is no longer xAI-only. Prefixes pick the
+engine — OpenAI `sk-`, Anthropic `sk-ant-`, Google `AIza`, xAI `xai-`,
+OpenRouter `sk-or-`, Groq `gsk_`. Unrecognized keys get a provider chip.
+xAI still enables `grokApi`; the others set the existing `openaiCompat`
+instance URL (do not add a second OpenAI-compat driver). Keys live on
+`XAI_API_KEY` / `OPENAI_COMPAT_API_KEY`, never `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY`. Spec leftover on
+[005](plans/2026-08-20-005-three-path-first-run-plan.md) (chooser reopen
+still open).
+
 Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
 
 - Honest `vm_open`: `server/compact-computer-open.ts`
@@ -151,6 +163,9 @@ Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
   replacement — it duplicated the file once.
 - Protected-input stop lives in `server/index.ts` (near the computer-use prompt).
 - `IMAGE_LAYER_VERSION` `"7"` in `server/container-computer.ts`
+- Windows Local VM health: prefer Podman, treat empty Docker `info` as
+  down, skip `info` when the Podman machine is stopped, wait 90s after a
+  WSL wake (`server/container-computer.ts`, `server/podman-setup.ts`).
 - Settings stay opt-in analytics. Upstream default-on PostHog **loses** that merge.
 
 `RECOMMENDED_MODEL` / `modelForTier` are `qwen3-vl:8b`. Context 32768 on both tiers. Comfortable floor 24 GB. `NEW_SESSION_TIMEOUT` 120s.
@@ -164,7 +179,7 @@ Hermes ACP 8B@32k gold, same prompt, `computer: off`, digest `901cae732162`, `ll
 
 Skip-Hermes on Admin (compact catalog, 32k, CPU): 4B **166 s**, 8B **240 s**, same three tools — tee [`plans/2026-08-24-006-skip-hermes-cpu-tee.md`](plans/2026-08-24-006-skip-hermes-cpu-tee.md). Chat still goes through Hermes. GPU is the Path A speed class for the agent prompt; do not bump `TURN_STALL_MS` to paper over CPU.
 
-**UI after the flip (Vite :5199, unpackaged harness):** new bots still prefer **Claude** when that CLI is available (`PREFERRED_ENGINE` default `claudeAgent`; packaged bake is Hermes). A bot left on **Local VM** Retry-cards even “hello” (`Prepare the Cua desktop image…`) — **Runs on → Off** to talk. On Admin CPU, Hermes ACP “hello”/“hey” at 32k sits at **0 tok** for minutes (8B or 4B); the picker can flash **Hermes not installed** while `GET /api/instances` waits on a busy Ollama. Do not treat that flash as a missing CLI.
+**UI after the flip (Vite :5199, unpackaged harness):** new bots still prefer **Claude** when that CLI is available (`PREFERRED_ENGINE` default `claudeAgent`; packaged bake is Hermes). A bot on **Local VM** Retry-cards “hello” when the Cua image or runtime is missing — **Runs on → Off** to talk without a desktop. Admin’s shared VM is ready again (`v7`, Podman running); keep Local VM selected and retry. On Admin CPU, Hermes ACP “hello”/“hey” at 32k sits at **0 tok** for minutes (8B or 4B); the picker can flash **Hermes not installed** while `GET /api/instances` waits on a busy Ollama. Do not treat that flash as a missing CLI.
 
 ## Two ceilings (do not confuse)
 
@@ -206,8 +221,10 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    new fetch **plus** `pnpm check:upstream-license`, then merge only if green.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
-7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs.
+7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs. Path B major-provider paste is in the tree; Windows Local VM health probe (empty Docker `info`, 90s Podman `info`) is in the tree; chooser reopen is still open on 005.
 8. **Brand pack Phase D** → only when ingredients exist (`appId`, data dir, icons, mascot, helper names, control-plane mailbox/host, 004 URLs). Do not invent them. Plan: [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md).
+9. **Phone app** → research landed ([001](plans/2026-08-28-001-grok-bot-phone-research.md)). Thin client stays (not Grok’s cloud account). **Android is the same architecture**, a second client; iOS-first only because `ios/` already exists. Next, if asked: fork iOS release plan and/or Android client against the sidecar — separate store plans, not one “mobile” runbook. Do not follow `ios/AppStore/RELEASE.md`. Identity still 002 Phase D.
+10. **Shared VM piles** → product decided ([2026-08-28-002](plans/2026-08-28-002-shared-vm-seats-plan.md)): one Chrome, per-bot windows, crop in the app. User-visible hole: [B-29](known-bugs.md) (second Shared bot Retry-cards while another turn holds the VM). Next, if asked: P1 concurrent pile leases (no second VNC). Live two-bot tee only when the user says the VM is free. Do not mutate the Admin VM during a live session.
 
 ## Do not
 
@@ -218,6 +235,8 @@ tools at 8k and 32k; do not hunt more `vm_*`.
 - Point `OMB_INFERENCE_BROKER_URL` at a default Worker (fail closed).
 - Use OpenRouter `auto` as the Path C capability picker.
 - Drive the host Windows desktop from Path A.
+- Mutate the Admin Local VM while the user is in a live Computer session
+  (Phase 0 seats probe already did; ask first). Read-only inspect is fine.
 - Send JPEGs to Granite (`IMAGE_LAYER_VERSION` stays `"7"` for that).
 - Change `RECOMMENDED_MODEL` / `modelForTier` off `qwen3-vl:8b` except by a new plan (rollback is in 005).
 - Wrap Path A in `observe-computer-mcp` (~60 Cua tools).
@@ -250,6 +269,8 @@ Hop-on index: [`README.md`](README.md). Full catalog:
 | [`plans/2026-08-25-001-path-c-hosted-trial-plan.md`](plans/2026-08-25-001-path-c-hosted-trial-plan.md) | Path C hosted router. |
 | [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md) | Brand pack. A–C in tree; Phase D unset. |
 | [`plans/2026-08-25-003-upstream-license-gate.md`](plans/2026-08-25-003-upstream-license-gate.md) | Upstream license merge gate. |
+| [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md) | Grok Bot iOS vs our companion. |
+| [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md) | One Chrome, two piles, crop in the app. [B-29](known-bugs.md) is P1. |
 | [`../cloudflare/inference-broker/`](../cloudflare/inference-broker/) | Path C Worker. |
 | [`../server/hosted-inference.ts`](../server/hosted-inference.ts) | Distinct `hostedInference` instance. |
 | `.claude/skills/<folder>/SKILL.md` | Folders = table in `AGENTS.md`. |

@@ -62,7 +62,7 @@ the tab”):
 | Their architecture | Closest thing we have | In this plan’s first build? |
 |---|---|---|
 | **Connectors first**, browser second, pixels last (both) | Composio + Hermes web (we *disable* web on Path A so Granite uses the VM) | Policy later, not P1 |
-| **Grok Bot: one persistent cloud Linux VM per user**, all bots share files/cookies/logins; each bot has its **own screen**, not its own security boundary | Shared Local VM + Box; Computer panel preview; `/home/cua/workspace` durable, Chromium in `.browser-profiles`; Start resumes a healthy stopped VM | Per-bot screens on one VM, and lid-closed always-on, stay out |
+| **Grok Bot: one persistent cloud Linux VM per user**, all bots share files/cookies/logins; each bot has its **own screen**, not its own security boundary | Shared Local VM + Box; Computer panel preview; `/home/cua/workspace` durable, Chromium in `.browser-profiles`; Start resumes a healthy stopped VM | Screens: [002](2026-08-28-002-shared-vm-seats-plan.md) (**decided**: one Chrome, piles + crop). Lid-closed always-on stays out |
 | **Grok Bot: work continues with the laptop closed** | Box / VPS yes; Local VM only while this PC and WSL/Podman stay up | Out of P1–P3 |
 | **Cowork: hypervisor Linux VM for files/code**; **computer use is the real desktop** (screenshots, no sandbox, per-app permission, desktop must stay awake) | Local VM ≈ their *sandbox*, not their computer-use tier. Host Cua ≈ their computer-use tier (macOS). Path A never drives the Windows desktop | Do not “make Granite click the host.” Keep VM as the sandbox |
 | **Vision** (screenshots as the model’s eyes) | Box JPEG fused; Path A text AX only | Frontier P4 in tree; not Granite |

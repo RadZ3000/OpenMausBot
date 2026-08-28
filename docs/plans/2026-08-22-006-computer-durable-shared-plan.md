@@ -40,8 +40,10 @@ container, so leftover apps and a Start button could not exist.
   `docs/known-bugs.md`.
 
 Out of scope: closing leftover tabs in the harness, isolated-profile Cua
-launch (SIGTRAP), Grok lid-closed always-on cloud (Box/VPS), per-bot
-screens on one VM.
+launch (SIGTRAP), Grok lid-closed always-on cloud (Box/VPS). Per-bot
+screens on one VM were out of *this* slice; that job is
+[`2026-08-28-002-shared-vm-seats-plan.md`](2026-08-28-002-shared-vm-seats-plan.md)
+(one Chrome, piles + crop).
 
 ## Verify
 

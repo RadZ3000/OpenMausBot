@@ -1,6 +1,6 @@
 # The three-path first run
 
-Status: proposed; Path A still building, Path C in tree per
+Status: proposed; Path A still building, Path B detects major providers, Path C in tree per
 [2026-08-25-001](2026-08-25-001-path-c-hosted-trial-plan.md). This is Phase 1 of
 [the product foundation plan](2026-08-20-003-product-foundation-plan.md), which
 defines the wedge as **one installer that produces a working bot without the
@@ -368,10 +368,14 @@ need `OMB_INFERENCE_BROKER_URL` (no default).
 
 ## Open decisions
 
-1. **Which provider backs Path B first.** xAI is what exists today with zero
-   additional work. An OpenAI-compatible HTTP driver would widen it, and issue
-   [#54](https://github.com/milind-soni/OpenMausBot/issues/54) upstream wants the
-   same thing — check it before building a second one.
+1. **Which provider backs Path B first.** **Decided 2026-08-28.** Paste
+   detects OpenAI (`sk-`), Anthropic (`sk-ant-`), Google (`AIza`), xAI
+   (`xai-`), OpenRouter (`sk-or-`), and Groq (`gsk_`). Unrecognized keys
+   still get a provider chip. xAI enables `grokApi`; the others reuse the
+   existing `openai-compat` driver (do not add a second one — upstream
+   [#54](https://github.com/milind-soni/OpenMausBot/issues/54) is that
+   driver). Anthropic/OpenAI keys stay on `OPENAI_COMPAT_API_KEY` so Claude
+   and Codex keep subscription login.
 2. **Whether the chooser can be re-opened.** Onboarding today can only be
    re-shown by clearing `omb-email-gate` by hand. A path chooser that can never
    be revisited is worse, since the arms convert into one another.

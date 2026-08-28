@@ -16,11 +16,18 @@ import { resolveCuaDesktopStatus } from "./cua-desktop-status.ts";
 import { augmentedPath } from "./env-path.ts";
 import { DATA_DIR } from "./config.ts";
 import { PRODUCT_NAME } from "./distribution.ts";
+import {
+  PODMAN_MACHINE_NAME,
+  WINDOWS_PODMAN_INFO_TIMEOUT_MS,
+  podmanMachineSnapshot,
+} from "./podman-setup.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { localVmCanResume } from "../shared/local-vm-lifecycle.ts";
 
 const run = promisify(execFile);
 const SCREENSHOT_STATUS_TTL_MS = 10_000;
+const RUNTIME_INFO_TIMEOUT_MS = 10_000;
+const WINDOWS_PODMAN_MACHINE_INSPECT_TIMEOUT_MS = 15_000;
 
 export type CommandRunner = (
   command: string,
@@ -244,6 +251,43 @@ async function installed(
   }
 }
 
+async function runtimeDaemonUp(
+  candidate: Runtime,
+  runner: CommandRunner,
+  platform: NodeJS.Platform,
+): Promise<boolean> {
+  if (candidate === "podman" && platform === "win32") {
+    try {
+      const { stdout } = await runner(
+        "podman",
+        ["machine", "inspect", PODMAN_MACHINE_NAME],
+        WINDOWS_PODMAN_MACHINE_INSPECT_TIMEOUT_MS,
+      );
+      if (!podmanMachineSnapshot(stdout).running) return false;
+    } catch {
+      // Inspect can fail on a broken CLI; still try `info`.
+    }
+  }
+  try {
+    const infoArgs = candidate === "container"
+      ? ["system", "status"]
+      : candidate === "podman"
+        ? ["info", "--format", "json"]
+        : ["info", "--format", "{{.ServerVersion}}"];
+    const timeoutMs = candidate === "podman" && platform === "win32"
+      ? WINDOWS_PODMAN_INFO_TIMEOUT_MS
+      : RUNTIME_INFO_TIMEOUT_MS;
+    const { stdout } = await runner(candidate, infoArgs, timeoutMs);
+    // Docker Desktop's Windows CLI exits 0 with an empty ServerVersion
+    // when the engine pipe is missing, so exit-code-only would report
+    // a dead daemon as up and then ask to prepare an image it cannot
+    // build.
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export interface ContainerRuntimeStatus {
   runtime: Runtime | null;
   available: Runtime[];
@@ -265,23 +309,7 @@ export async function containerRuntimeStatus(
   const present = await Promise.all(candidates.map((runtime) => installed(runtime, runner, platform)));
   const available = candidates.filter((_, index) => present[index]);
   const healthy = await Promise.all(
-    available.map(async (candidate) => {
-      try {
-        const infoArgs = candidate === "container"
-          ? ["system", "status"]
-          : candidate === "podman"
-            ? ["info", "--format", "json"]
-            : ["info", "--format", "{{.ServerVersion}}"];
-        await runner(
-          candidate,
-          infoArgs,
-          10_000,
-        );
-        return true;
-      } catch {
-        return false;
-      }
-    }),
+    available.map((candidate) => runtimeDaemonUp(candidate, runner, platform)),
   );
   const healthyIndex = healthy.indexOf(true);
   return {

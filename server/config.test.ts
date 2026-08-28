@@ -133,6 +133,28 @@ describe("default fleet", () => {
     });
   });
 
+  it("does not inject the workspace OpenAI-compatible key into an instance that names a different env", () => {
+    const map = instanceConfigs({
+      openaiCompat: { key: "secret", url: "https://models.example.test/v1" },
+      instances: {
+        openaiCompat: { driver: "openai-compat" },
+        hostedInference: {
+          driver: "openai-compat",
+          config: { url: "https://worker.example.test/v1", apiKeyEnv: "OMB_INFERENCE_BROKER_TOKEN" },
+        },
+      },
+    });
+    expect(map.hostedInference.environment).toEqual({});
+    expect(map.hostedInference.config).toEqual({
+      url: "https://worker.example.test/v1",
+      apiKeyEnv: "OMB_INFERENCE_BROKER_TOKEN",
+    });
+    expect(map.openaiCompat.environment).toEqual({
+      OPENAI_COMPAT_API_KEY: "secret",
+      OPENAI_COMPAT_URL: "https://models.example.test/v1",
+    });
+  });
+
   it("preserves a per-instance OpenAI-compatible URL override", () => {
     const map = instanceConfigs({
       openaiCompat: { url: "https://workspace.example.test/v1" },

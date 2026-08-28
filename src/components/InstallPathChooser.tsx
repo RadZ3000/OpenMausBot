@@ -5,6 +5,14 @@ import { track } from "@/lib/analytics";
 import { distribution } from "@/lib/distribution";
 import { choosePath, firstRunStep, type InstallPath } from "@/lib/install-path";
 import { LocalModelArm } from "./LocalModelArm";
+import {
+  BYOK_PROVIDER_IDS,
+  BYOK_PROVIDERS,
+  byokConfigPatch,
+  byokCredentialName,
+  detectByokProvider,
+  type ByokProviderId,
+} from "../../shared/byok-provider";
 
 // First run, before anything else: how is this install going to get a working
 // bot? Three answers, because they suit genuinely different buyers — see
@@ -74,40 +82,53 @@ function ArmCard({ path, onPick }: { path: InstallPath; onPick: () => void }) {
   );
 }
 
-/** Path B. The key is stored through Electron's OS-backed credential store when
+/** Path B. Prefixes pick the provider so a major-key paste is one click.
+ * The key is stored through Electron's OS-backed credential store when
  * there is one, and only then is the engine turned on — an engine enabled
  * without a key is an instance that exists and cannot answer. */
 function ApiKeyArm({ onConnected }: { onConnected: () => void }) {
   const [key, setKey] = useState("");
+  const [provider, setProvider] = useState<ByokProviderId | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const onKeyChange = (value: string) => {
+    setKey(value);
+    const detected = detectByokProvider(value);
+    if (detected) setProvider(detected);
+  };
 
   const connect = async () => {
     const secret = key.trim();
     if (!secret || busy) return;
+    if (!provider) {
+      setError("Choose which provider this key is for.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       if (window.ogb?.setCredential) {
-        await window.ogb.setCredential("xaiApiKey", secret);
+        await window.ogb.setCredential(byokCredentialName(provider), secret);
       } else {
         // browser dev has no credential store; the harness writes config.json
         const saved = await fetch("/api/config", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ xai: { key: secret } }),
+          body: JSON.stringify(byokConfigPatch(provider, secret)),
         });
         if (!saved.ok) throw new Error("The key could not be saved.");
       }
       const enabled = await fetch("/api/engines/api-key", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider }),
       });
       if (!enabled.ok) {
         const body: { error?: string } = await enabled.json().catch(() => ({}));
         throw new Error(body.error ?? "The engine could not be turned on.");
       }
-      track("install_path_completed", { path: "byok" });
+      track("install_path_completed", { path: "byok", provider });
       onConnected();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Something went wrong.");
@@ -116,22 +137,41 @@ function ApiKeyArm({ onConnected }: { onConnected: () => void }) {
     }
   };
 
+  const spec = provider ? BYOK_PROVIDERS[provider] : null;
+
   return (
     <>
       <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
-        Paste an xAI API key. It is stored on this machine and sent only to xAI &mdash; no CLI to
-        install and nothing to sign into.
+        Paste a key from OpenAI, Anthropic, Google, xAI, OpenRouter, or Groq. It stays on this
+        machine and is billed to that account &mdash; no CLI to install.
       </p>
       <input
         autoFocus
         type="password"
         value={key}
-        onChange={(event) => setKey(event.target.value)}
+        onChange={(event) => onKeyChange(event.target.value)}
         onKeyDown={(event) => event.key === "Enter" && void connect()}
-        placeholder="xai-…"
+        placeholder={spec?.placeholder ?? "sk-… or xai-…"}
         spellCheck={false}
         className="mt-5 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
       />
+      <div className="mt-3 flex w-full flex-wrap justify-center gap-1.5">
+        {BYOK_PROVIDER_IDS.map((id) => (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={provider === id}
+            onClick={() => setProvider(id)}
+            className={
+              provider === id
+                ? "rounded-full bg-accent px-2.5 py-1 text-[12px] font-medium text-white"
+                : "rounded-full bg-inset px-2.5 py-1 text-[12px] text-ink-secondary hover:text-ink"
+            }
+          >
+            {BYOK_PROVIDERS[id].label}
+          </button>
+        ))}
+      </div>
       {error && <div className="mt-2 w-full text-[12.5px] leading-snug text-danger">{error}</div>}
       <button
         type="button"
@@ -144,11 +184,11 @@ function ApiKeyArm({ onConnected }: { onConnected: () => void }) {
       </button>
       <a
         className="mt-3 text-[12.5px] text-ink-secondary hover:underline"
-        href="https://console.x.ai"
+        href={spec?.helpUrl ?? "https://platform.openai.com/api-keys"}
         target="_blank"
         rel="noreferrer"
       >
-        Get a key from console.x.ai
+        {spec?.helpLabel ?? "Where to get a key"}
       </a>
     </>
   );

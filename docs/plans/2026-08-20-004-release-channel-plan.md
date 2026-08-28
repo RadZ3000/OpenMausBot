@@ -225,7 +225,9 @@ particular, which is the most valuable thing upstream wrote about releasing.
 
 ## Out of scope
 
-iOS. `ios/AppStore/RELEASE.md` is upstream's, targets upstream's App Store
-Connect team, and the fork has made no decision about shipping a phone app at
-all. It needs its own plan, and it needs Apple-account decisions that do not
-follow from the five above.
+iOS. `ios/AppStore/RELEASE.md` is upstream's and targets upstream's App Store
+Connect team. The user wants a phone app; that still does **not** follow from
+the five desktop decisions above. Grok Bot's phone (cloud-account client, iOS
+18 iPhone only, no Android at launch) is
+[2026-08-28-001](2026-08-28-001-grok-bot-phone-research.md). A fork iOS
+release plan is a later file. Do not follow their runbook.

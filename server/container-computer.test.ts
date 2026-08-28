@@ -34,20 +34,27 @@ import {
   type CommandRunner,
   type LocalVmTarget,
 } from "./container-computer.ts";
+import { PODMAN_MACHINE_NAME, WINDOWS_PODMAN_INFO_TIMEOUT_MS } from "./podman-setup.ts";
 
 function runner(responses: Record<string, string | Error>) {
   const calls: string[] = [];
-  const run: CommandRunner = async (command, args) => {
+  const timeouts = new Map<string, number | undefined>();
+  const run: CommandRunner = async (command, args, timeout) => {
     const key = [command, ...args].join(" ");
     calls.push(key);
+    timeouts.set(key, timeout);
     const response = responses[key];
     if (response instanceof Error || response === undefined) {
       throw response ?? new Error(`unexpected command: ${key}`);
     }
     return { stdout: response };
   };
-  return { calls, run };
+  return { calls, timeouts, run };
 }
+
+const PODMAN_MACHINE_RUNNING = JSON.stringify([{ State: "running", Resources: { Memory: 6144 } }]);
+const PODMAN_MACHINE_STOPPED = JSON.stringify([{ State: "stopped", Resources: { Memory: 6144 } }]);
+const PODMAN_MACHINE_INSPECT = `podman machine inspect ${PODMAN_MACHINE_NAME}`;
 
 const driverExec =
   `docker exec -u cua -e HOME=/home/cua -e DISPLAY=:1 -e CUA_DRIVER_INSTALL_CHANNEL=python_package ` +
@@ -143,6 +150,7 @@ describe("containerComputerStatus", () => {
     const fake = runner({
       "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
       "where.exe docker": "C:\\Program Files\\Docker\\docker.exe\n",
+      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_RUNNING,
       "podman info --format json": '{"host":{"arch":"amd64"}}\n',
       "docker info --format {{.ServerVersion}}": "29.0.0\n",
     });
@@ -154,6 +162,53 @@ describe("containerComputerStatus", () => {
       available: ["podman", "docker"],
       daemonUp: true,
     });
+  });
+
+  it("does not treat a stopped Docker Desktop CLI as a healthy daemon on Windows", async () => {
+    const fake = runner({
+      "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
+      "where.exe docker": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\n",
+      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_STOPPED,
+      // real `docker info --format {{.ServerVersion}}` when Desktop is stopped:
+      // exit 0, stdout a newline, error on stderr
+      "docker info --format {{.ServerVersion}}": "\n",
+    });
+
+    const status = await containerRuntimeStatus(fake.run, "win32");
+
+    expect(status).toEqual({
+      runtime: "podman",
+      available: ["podman", "docker"],
+      daemonUp: false,
+    });
+    expect(fake.calls).not.toContain("podman info --format json");
+  });
+
+  it("does not wait on podman info when the Windows machine is stopped", async () => {
+    const fake = runner({
+      "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
+      "where.exe docker": new Error("missing"),
+      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_STOPPED,
+    });
+
+    const status = await containerRuntimeStatus(fake.run, "win32");
+
+    expect(status.daemonUp).toBe(false);
+    expect(fake.calls).not.toContain("podman info --format json");
+  });
+
+  it("gives Windows Podman long enough to answer info after a WSL wake", async () => {
+    const fake = runner({
+      "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
+      "where.exe docker": new Error("missing"),
+      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_RUNNING,
+      "podman info --format json": '{"host":{"arch":"amd64"}}\n',
+    });
+
+    const status = await containerRuntimeStatus(fake.run, "win32");
+
+    expect(status.daemonUp).toBe(true);
+    expect(fake.timeouts.get("podman info --format json")).toBe(WINDOWS_PODMAN_INFO_TIMEOUT_MS);
   });
 
   it("accepts exact Podman-on-Windows hardening and its WSL-translated durable mount", async () => {
@@ -180,6 +235,7 @@ describe("containerComputerStatus", () => {
     const fake = runner({
       "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
       "where.exe docker": new Error("missing"),
+      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_RUNNING,
       "podman info --format json": '{"host":{"arch":"amd64"}}\n',
       [`podman image inspect ${IMAGE}`]: preparedImageInspect(),
       [`podman inspect ${target.containerName}`]: JSON.stringify([detail]),

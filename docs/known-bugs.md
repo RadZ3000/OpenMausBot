@@ -171,6 +171,23 @@ That is WSL's first-distro OOBE, not our window.
 Best-effort `taskkill /IM wslsettings.exe` if it still appears. `reg.exe` /
 `taskkill.exe` argv, no shell.
 
+### B-29 · A second Shared bot Retry-cards while another turn holds the Local VM — `open`
+
+Confirmed Admin 2026-08-28. Isolation **Shared**, Cosmo on Claude, Zuko
+already mid-turn. Cosmo asked where a file Zuko wrote lived; the chat
+showed the red card
+`this Local VM is already being used by another turn — wait for that turn to finish`
+(`server/index.ts`, `LocalVmLease.claim` failed). Retry does not help
+until Zuko’s turn ends.
+
+The throw is the **whole-VM mutex working**, not a crashed desktop. Shared
+without piles is one lock. The decided product is per-bot window piles on
+that same house
+([2026-08-28-002](plans/2026-08-28-002-shared-vm-seats-plan.md) P1). Files
+in `/home/cua/workspace` are already shared; Cosmo should not have to wait
+for Zuko’s clicks to look. Do **not** delete the throw. Same bot, second
+thread still waits after P1.
+
 ### B-26 · Path A chooser lives in Electron userData, not the harness data dir — `open`
 
 `firstRunStep` (`src/lib/install-path.ts`) stores `omb-install-path` in
