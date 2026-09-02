@@ -8,8 +8,8 @@
 # mac build — different trees under one version number. Run this from the
 # same commit as the mac build and attach the artifact to the release.
 #
-# Deliberately artifact-only: pushing straight to the separate releases
-# repo would need a cross-repo token this workflow has no business holding.
+# Deliberately artifact-only: the full release workflow is the one place
+# allowed to create a GitHub release.
 name: Package Windows
 
 on:

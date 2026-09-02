@@ -1,14 +1,9 @@
-// Building the text a driver actually receives. Two situations force an
-// inline replay of the active branch at dispatch: a rewind (the visible
-// branch changed) and a fresh engine (this instance has no session here —
-// the user switched the bot's model mid-thread). They coincide today but
-// are distinct markers on purpose: rewound also invalidates OTHER
-// instances' cursors, fresh does not.
-//
-// A third case lives in the ACP driver: the harness handed over a resume
-// cursor, session/load came back empty, and session/new opened a blank
-// session. replayAfterFailedResume is that wrap — same history format,
-// different preamble, applied after the load miss rather than at dispatch.
+// Building the text a driver actually receives. Three situations force an
+// inline replay of the active branch: a rewind (the visible branch changed),
+// a fresh engine (this instance has no session here — the user switched the
+// bot's model mid-thread), and an update appended outside the provider's own
+// turn. The first two coincide today but are distinct markers on purpose:
+// rewound also invalidates OTHER instances' cursors, fresh does not.
 export interface TurnContextInput {
   /** the user's new message */
   text: string;
@@ -18,6 +13,10 @@ export interface TurnContextInput {
   rewound: boolean;
   /** this driver instance has no session cursor for this thread */
   fresh: boolean;
+  /** a message was appended outside the provider's own turn (for example,
+   * a delegated teammate returned a result). Native resume state cannot
+   * contain it, so the active branch must be replayed once. */
+  externallyUpdated: boolean;
   /** transcript-replay drivers get history via SendTurnInput.transcript instead */
   replaysNatively: boolean;
 }
@@ -48,6 +47,8 @@ const REWOUND_PREAMBLE =
   "[The user rewound this conversation (edited a message or switched to another version). Everything before this point was replaced by the following history:]";
 const FRESH_PREAMBLE =
   "[You are joining this conversation mid-thread (the user switched this bot over to you). The conversation so far:]";
+const EXTERNAL_UPDATE_PREAMBLE =
+  "[This conversation received an update outside your provider session. The complete current history follows so you can use that update in your next response:]";
 const LOST_SESSION_PREAMBLE =
   "[The previous agent session could not be resumed. The conversation so far:]";
 
@@ -91,12 +92,16 @@ export function buildTurnContext(input: TurnContextInput): {
   /** false when the native session must not be resumed */
   resume: boolean;
 } {
-  const { text, transcript, rewound, fresh, replaysNatively } = input;
-  const resume = !rewound && !fresh;
+  const { text, transcript, rewound, fresh, externallyUpdated, replaysNatively } = input;
+  const resume = !rewound && !fresh && !externallyUpdated;
   const replay = !resume && !replaysNatively && transcript.length > 0;
   if (!replay) return { turnText: text, resume };
   return {
-    turnText: wrapWithTranscript(rewound ? REWOUND_PREAMBLE : FRESH_PREAMBLE, transcript, text),
+    turnText: wrapWithTranscript(
+      rewound ? REWOUND_PREAMBLE : externallyUpdated ? EXTERNAL_UPDATE_PREAMBLE : FRESH_PREAMBLE,
+      transcript,
+      text,
+    ),
     resume,
   };
 }

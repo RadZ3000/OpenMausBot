@@ -120,3 +120,8 @@ remotes or publish steps. Known defects, including ones in upstream code we
 ship, are listed in [`docs/known-bugs.md`](docs/known-bugs.md) — check it
 before assuming something you just hit is new. Path A tensions:
 [`docs/local-model-path.md`](docs/local-model-path.md).
+
+Before claiming a server or conversation change works, follow
+[`docs/verification/README.md`](docs/verification/README.md). Always launch an
+isolated fixture; never verify mutations against the user's live app or data.
+More specific `AGENTS.md` files override this note within their directories.

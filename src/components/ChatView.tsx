@@ -7,12 +7,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Bug,
-  Clock,
   Copy,
   Crown,
   Folder,
   ListTree,
-  Loader2,
   Monitor,
   MessageSquareReply,
   Pencil,
@@ -24,12 +22,14 @@ import {
   Webhook,
   X,
 } from "lucide-react";
+import { WorkingDots } from "@/components/WorkingIndicator";
 import { cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, usageChip, usageDetail } from "@/lib/usage";
 import {
   useStore,
   useStreaming,
   formatTime,
   messageVersions,
+  openNotificationTarget,
   visibleMessages,
   type Bot,
   type InstanceInfo,
@@ -50,23 +50,26 @@ import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
-import { AttachedImageGallery } from "./AttachmentPreview";
+import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
+import { AttachedFileChips, AttachedImageGallery } from "./AttachmentPreview";
 import { ModelPicker } from "./ModelPicker";
 import { RenameTitle } from "./RenameTitle";
 import { TaskPicker } from "./TaskPicker";
-import { ReactionBar, ReactionChips } from "./Reactions";
+
 import { SpeakButton } from "./SpeakButton";
 import { CallButton, CallOverlay } from "./CallView";
-import { ExpandableImage } from "./Lightbox";
 import { cn } from "@/lib/cn";
 import { COMPACT_BUBBLE, COMPACT_SQUARE } from "@/lib/compact-chip";
 import { useFocusMessage } from "@/lib/focus-message";
-import { groupActivityRuns } from "@/lib/activity-runs";
+import { groupTranscript } from "@/lib/activity-runs";
 import { ActivityRun } from "./ActivityRun";
+import { TurnNarrationRun } from "./TurnNarrationRun";
 import { webhookMessageView } from "@/lib/webhook-message";
-import { splitAttachedImages } from "@/lib/composer-attachments";
+import { splitTranscriptAttachments } from "@/lib/composer-attachments";
 import { messageImageSrc } from "@/lib/message-image";
+import { ExpandableImage } from "./Lightbox";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
+import { useComposerDockPad } from "@/lib/composer-dock";
 import {
   TRANSCRIPT_WINDOW_SIZE,
   expandWindowStart,
@@ -75,11 +78,13 @@ import {
   tailWindowStart,
 } from "@/lib/transcript-window";
 import { timelineEvents } from "@/lib/taskTimeline";
+import { useReplyDraft } from "@/lib/drafts";
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
  * bury the conversation; bots get full markdown. */
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
+const noop = () => {};
 
 /** "Today" / "Yesterday" / "Mon, Aug 11" — real dates, not a hardcoded label. */
 function dayLabel(at: number): string {
@@ -129,7 +134,7 @@ function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }
                     : event.state === "complete"
                       ? "bg-success"
                       : event.state === "running"
-                        ? "animate-pulse bg-accent"
+                        ? "animate-status-pulse bg-accent"
                         : "bg-ink-secondary",
                 )}
               />
@@ -312,8 +317,8 @@ function Bubble({
   const [expanded, setExpanded] = useState(false);
   const text = message.text ?? "";
   const webhookView = user ? webhookMessageView(text) : null;
-  const attachedImages = user && !webhookView ? splitAttachedImages(text) : null;
-  const visibleText = webhookView?.task ?? attachedImages?.display ?? text;
+  const attachments = user && !webhookView ? splitTranscriptAttachments(text) : null;
+  const visibleText = webhookView?.task ?? attachments?.display ?? text;
   const collapsible =
     user && !webhookView && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
 
@@ -347,7 +352,6 @@ function Bubble({
             <Pencil size={14} />
           </button>
         )}
-        {user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
         {user && <CopyButton text={visibleText} />}
         {user && (
           <>
@@ -419,14 +423,19 @@ function Bubble({
             </div>
           ) : user ? (
             <>
-              {attachedImages && attachedImages.images.length > 0 && (
-                <AttachedImageGallery paths={attachedImages.images} />
+              {attachments && attachments.images.length > 0 && (
+                <AttachedImageGallery paths={attachments.images} />
               )}
-              <div
-                className={cn(collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
-              >
-                {visibleText}
-              </div>
+              {attachments && attachments.files.length > 0 && (
+                <AttachedFileChips files={attachments.files} className={!visibleText ? "mb-0" : undefined} />
+              )}
+              {visibleText && (
+                <div
+                  className={cn(collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
+                >
+                  {visibleText}
+                </div>
+              )}
               {message.steered && (
                 <div className="mt-1 text-[11px] text-ink-secondary/70" title="Sent while the bot was working — it saw this before its next step, inside the same turn.">
                   sent mid-turn
@@ -444,16 +453,22 @@ function Bubble({
               )}
             </>
           ) : (
-            <MessageBoundary fallbackText={text}>
-              <ChatMarkdown text={text} />
+            <MessageBoundary fallbackText={text || "Generated image"}>
+              {message.attachments?.length ? (
+                <AttachedImageGallery
+                  paths={message.attachments.map((attachment) => attachment.path)}
+                  className={text ? "justify-start" : "mb-0 justify-start"}
+                />
+              ) : null}
+              {text ? <ChatMarkdown text={text} /> : null}
             </MessageBoundary>
           )}
         </div>
         {!user && (
           <>
             <div className="flex flex-col gap-0.5 self-end pb-0.5">
-              <CopyButton text={text} />
-              {message.kind === "text" && (
+              {text && <CopyButton text={text} />}
+              {message.kind === "text" && text && (
                 <SpeakButton text={text} botId={bot.id} messageId={message.id} voiceId={bot.voice} />
               )}
               {isLastBotText && !bot.busy && onRegenerate && (
@@ -496,7 +511,6 @@ function Bubble({
             </button>
           </>
         )}
-        {!user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
         <span
           className={cn(
             "self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100",
@@ -506,23 +520,6 @@ function Bubble({
           {formatTime(message.at)}
         </span>
       </div>
-      {/* busy-gated so a flag stranded by a server restart shows nothing */}
-      {user && message.queued && bot.busy && (
-        <div className="mt-1 flex items-center gap-1 pr-1 text-[11px] text-ink-secondary/70">
-          <Clock size={11} aria-hidden="true" />
-          <span>Queued — sends when this turn finishes</span>
-          <button
-            type="button"
-            onClick={() => dispatch({ type: "cancelQueued", botId: bot.id, queueId: message.queueId ?? message.id })}
-            aria-label="Cancel queued message"
-            title="Cancel queued message"
-            className="ml-0.5 flex size-4 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"
-          >
-            <X size={11} strokeWidth={2.5} />
-          </button>
-        </div>
-      )}
-      <ReactionChips threadId={bot.threadId} message={message} align={user ? "right" : "left"} />
       {versions.length > 1 && (
         <div className="mt-1 flex items-center gap-0.5 pr-1 text-[12px] text-ink-secondary">
           <button
@@ -552,12 +549,13 @@ function Bubble({
 
 /** A tool run: spinner while live, check/cross once settled. */
 function ActivityChip({ message }: { message: Message }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const tool = message.tool;
   if (!tool) return null;
   // bot⇄bot comm chip: opens the channel where the exchange lives
   const comm = message.comm;
   if (comm) {
+    const withBot = state.bots.find((b) => b.id === comm.withBotId);
     return (
       <div className="flex justify-start">
         <button
@@ -565,7 +563,7 @@ function ActivityChip({ message }: { message: Message }) {
           title={`Open the conversation with ${comm.withName}`}
           className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
-          <MausAvatar color={comm.withColor} state="happy" size={16} />
+          <MausAvatar color={comm.withColor} bodyId={withBot?.mascotBody ?? undefined} state="happy" size={16} />
           <span className="max-w-[480px] truncate">{tool.name}</span>
           <ChevronRight size={13} />
         </button>
@@ -582,7 +580,7 @@ function ActivityChip({ message }: { message: Message }) {
         )}
       >
         {tool.ok === undefined ? (
-          <Loader2 size={13} className="animate-spin" />
+          <WorkingDots size={3.5} />
         ) : failed ? (
           <X size={13} />
         ) : (
@@ -594,11 +592,11 @@ function ActivityChip({ message }: { message: Message }) {
   );
 }
 
-function ScreenFrame({ src }: { src: string }) {
+function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
   return (
     <div className="flex justify-start">
-      <ExpandableImage
-        src={src}
+      <img
+        src={`data:${mime ?? "image/png"};base64,${png}`}
         alt="Bot's screen"
         className="w-fit max-w-[min(42rem,78%)] rounded-2xl border border-hairline/40"
       />
@@ -606,23 +604,19 @@ function ScreenFrame({ src }: { src: string }) {
   );
 }
 
-/** A picture the bot generated. Framed like a screen capture, but it is a
- * deliverable rather than a moment, so the file path rides along — the user
- * has to be able to find it on disk without asking. */
 function GeneratedImage({ src, path }: { src: string; path?: string }) {
+  const name = path?.split(/[\\/]/).pop();
   return (
-    <div className="flex flex-col items-start gap-1">
+    <div className="flex justify-start">
       <ExpandableImage
         src={src}
-        alt="Image the bot generated"
-        caption={path}
+        alt={name ?? "Generated image"}
+        caption={name}
         className="w-fit max-w-[min(42rem,78%)] rounded-2xl border border-hairline/40"
       />
-      {path && <span className="text-[11px] text-ink-secondary/70">{path}</span>}
     </div>
   );
 }
-
 
 /** The settled transcript, memoized as one unit: during streaming every
  * frame re-renders ChatView, but all of these props keep their identity
@@ -663,9 +657,9 @@ const MessagesList = memo(function MessagesList({
 }) {
   const { state, dispatch } = useStore();
   const showToolCalls = showToolCallsEnabled(state.config);
-  // Fold finished tool chips into runs, so a stretch of them cannot bury
-  // what the bot actually said. Hidden unless Settings → Tool calls is on.
-  const items = useMemo(() => groupActivityRuns(messages), [messages]);
+  // Finished tool chips become compact runs; settled assistant narration
+  // becomes one reversible turn row while the terminal answer stays visible.
+  const items = useMemo(() => groupTranscript(messages), [messages]);
   // A search hit inside a folded run has to open it: the fold keeps the
   // row out of the DOM, and there is nothing for the scroll to land on.
   const focus = state.focusMessage;
@@ -688,9 +682,38 @@ const MessagesList = memo(function MessagesList({
       )}
       {items.map((item, i) => {
         const previous = items[i - 1];
-        const prev = previous && (previous.kind === "run" ? previous.messages.at(-1) : previous.message);
-        const first = item.kind === "run" ? item.messages[0] : item.message;
+        const prev = previous && (previous.kind === "message" ? previous.message : previous.messages.at(-1));
+        const first = item.kind === "message" ? item.message : item.messages[0];
         const newDay = !prev || new Date(prev.at).toDateString() !== new Date(first.at).toDateString();
+        if (item.kind === "turn") {
+          return (
+            <div key={item.id} className="contents">
+              {newDay && <DaySeparator at={first.at} />}
+              <TurnNarrationRun
+                label={item.label}
+                forceOpen={item.messages.some((message) => message.id === focusedId)}
+              >
+                {item.messages.map((message) => (
+                  <div key={message.id} className="contents" data-mid={message.id}>
+                    <Bubble
+                      bot={bot}
+                      message={message}
+                      editing={false}
+                      isLastBotText={false}
+                      onStartEdit={noop}
+                      onCancelEdit={noop}
+                      onSubmitEdit={noop}
+                      replyTarget={message.replyToId
+                        ? bot.messages.find((candidate) => candidate.id === message.replyToId)
+                        : undefined}
+                      onReply={() => onReply(message)}
+                    />
+                  </div>
+                ))}
+              </TurnNarrationRun>
+            </div>
+          );
+        }
         if (item.kind === "run") {
           if (!showToolCalls) return null;
           return (
@@ -722,6 +745,22 @@ const MessagesList = memo(function MessagesList({
               }
               if (shouldHideOnboardingCard(m, transcript)) return null;
               return <OptionCard botId={bot.id} message={m} />;
+            case "routine.run": {
+              const executionThreadId = m.routineRun?.executionThreadId;
+              const canOpen = hasRoutineExecutionTask(bot.tasks, executionThreadId);
+              return (
+                <RoutineRunCard
+                  message={m}
+                  onOpen={canOpen
+                    ? () => openNotificationTarget(
+                        dispatch,
+                        { botId: bot.id, threadId: executionThreadId },
+                        state,
+                      )
+                    : undefined}
+                />
+              );
+            }
             case "activity": {
               // a failed turn is an error, not a tool run — render it as one.
               // bot⇄bot comm chips stay because they link to another conversation.
@@ -738,10 +777,8 @@ const MessagesList = memo(function MessagesList({
               if (!showToolCalls && !m.comm) return null;
               return <ActivityChip message={m} />;
             }
-            case "screen": {
-              const src = messageImageSrc(bot.threadId, m);
-              return src ? <ScreenFrame src={src} /> : null;
-            }
+            case "screen":
+              return m.png ? <ScreenFrame png={m.png} mime={m.mime} /> : null;
             case "image": {
               const src = messageImageSrc(bot.threadId, m);
               return src ? <GeneratedImage src={src} path={m.path} /> : null;
@@ -825,6 +862,8 @@ function PinnedBanner({
 export function ChatView({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerDockRef = useRef<HTMLDivElement>(null);
+  const composerDock = useComposerDockPad(composerDockRef);
 
   const stream = useStreaming();
   const streaming = stream.streaming[bot.threadId];
@@ -832,9 +871,12 @@ export function ChatView({ bot }: { bot: Bot }) {
   const provisioning = state.provisioning[bot.id];
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const [findOpen, setFindOpen] = useState(false);
-  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const { replyTo, selectReply, clearReply, consumeReply, restoreReply } = useReplyDraft(
+    bot.threadId,
+    `bot:${bot.id}:${bot.threadId}`,
+    bot.messages,
+  );
   useEffect(() => setFindOpen(false), [bot.threadId]);
-  useEffect(() => setReplyTo(null), [bot.threadId]);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
@@ -909,7 +951,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   const waiting = Boolean(
     bot.busy &&
       bot.activity !== "waiting-on-you" &&
-      showWorkingDots(bot.busy, undefined, lastMessage),
+      showWorkingDots(bot.busy, lastMessage),
   );
   const wasWaiting = useRef(false);
   const [popping, setPopping] = useState<{ id: string; text: string } | null>(null);
@@ -928,6 +970,13 @@ export function ChatView({ bot }: { bot: Bot }) {
     return () => clearTimeout(timer);
   }, [lastMessage?.id, lastMessage?.role, lastMessage?.kind, lastMessage?.text]);
   const presenceVisible = waiting || popping !== null;
+  const poppingMessage = popping ? messages.find((message) => message.id === popping.id) : undefined;
+  // Wall-clock anchor for the working row's elapsed readout — set when the
+  // turn starts, cleared when it settles, reset on bot switch.
+  const [busySince, setBusySince] = useState<number | null>(null);
+  useEffect(() => {
+    setBusySince(bot.busy ? Date.now() : null);
+  }, [bot.busy, bot.id]);
 
   // regenerate = fork the last user message with the same text — reuses the
   // existing branch machinery, so the old answer stays reachable via ‹ ›
@@ -971,13 +1020,16 @@ export function ChatView({ bot }: { bot: Bot }) {
   useFocusMessage(bot.threadId, messages.length > 0);
 
   // deps track the FULL messages.length, so expanding the window (which only
-  // changes windowedMessages) can never re-trigger this bottom scrollTo
+  // changes windowedMessages) can never re-trigger this bottom scrollTo.
+  // `follow` is intentionally omitted: flipping it true used to yank the
+  // viewport to the end. Re-pinning only arms future content; Jump to latest
+  // and this effect on new rows do the scrolling.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [bot.id, messages.length, streaming, reasoning, bot.busy, follow]);
+  }, [bot.id, messages.length, streaming, reasoning, bot.busy, composerDock.pad]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put
@@ -1007,11 +1059,13 @@ export function ChatView({ bot }: { bot: Bot }) {
     setTranscriptWindow((w) => ({ ...w, end: nextEnd >= messages.length ? null : nextEnd }));
   };
 
-  // keyboard is a scroll gesture too (upstream lesson): PageUp/Home break
-  // follow like an upward wheel; the at-end onScroll check re-arms it
+  // keyboard is a scroll gesture too (upstream lesson): PageUp/Home/ArrowUp
+  // break follow like an upward wheel; the at-end onScroll check re-arms it.
+  // ArrowUp only counts outside inputs — in the composer it edits, not scrolls.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "PageUp" || (e.key === "Home" && !(e.target instanceof HTMLTextAreaElement))) {
+      const typing = e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement;
+      if (e.key === "PageUp" || ((e.key === "Home" || e.key === "ArrowUp") && !typing)) {
         setBottomFollow(false);
       }
     };
@@ -1031,14 +1085,6 @@ export function ChatView({ bot }: { bot: Bot }) {
     });
   };
 
-  // on Windows the frameless window's min/max/close overlay sits at the
-  // top-right: the header becomes the drag strip and clears room for it
-  const isWin = window.ogb?.platform === "win32";
-  // SAFETY: Electron supports this nonstandard CSS property, which React's type declarations omit.
-  const drag = isWin ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  // SAFETY: Electron supports this nonstandard CSS property, which React's type declarations omit.
-  const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
-
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* Call mode covers the thread while the bot is on the line */}
@@ -1051,11 +1097,9 @@ export function ChatView({ bot }: { bot: Bot }) {
           "@container/chathead flex items-center justify-between px-5 py-3",
           // Room for the drawer button, which overlays this corner below md.
           "pl-11 md:pl-5",
-          isWin && "pr-[148px]",
         )}
-        style={drag}
       >
-        <div className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1" style={noDrag}>
+        <div className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1">
           <button
             onClick={() => dispatch({ type: "toggleSettings", open: true })}
             className="flex size-10 shrink-0 items-center justify-center rounded-lg hover:bg-raised/50"
@@ -1083,9 +1127,9 @@ export function ChatView({ bot }: { bot: Bot }) {
               <Crown size={11} /> Chief of Staff
             </span>
           )}
-          {bot.busy && <Loader2 size={14} className="animate-spin text-ink-secondary" />}
+          {bot.busy && <WorkingDots className="text-ink-secondary" />}
         </div>
-        <div className="flex shrink-0 items-center gap-2" style={noDrag}>
+        <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={() => setFindOpen((open) => !open)}
             aria-label="Find in conversation"
@@ -1167,10 +1211,18 @@ export function ChatView({ bot }: { bot: Bot }) {
 
       {showToolCallsEnabled(state.config) && <TaskTimeline messages={messages} busy={bot.busy ?? false} />}
 
-      {/* Messages */}
+      {/* Messages + composer share one pane so bubbles scroll into the pill
+          instead of dying on a rectangular clip above a black dock. */}
+      <div className="relative min-h-0 flex-1">
       <div
         ref={scrollRef}
-        className="flex-1 overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
+        className="h-full overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 [overflow-anchor:none]"
+        onPointerDown={(e) => {
+          // grabbing the scrollbar is a scroll gesture too — the lane lives
+          // past the content box (clientWidth excludes it)
+          const el = scrollRef.current;
+          if (el && e.target === el && e.nativeEvent.offsetX >= el.clientWidth) setBottomFollow(false);
+        }}
         onWheel={(e) => {
           if (e.deltaY < 0) setBottomFollow(false);
           else if (atEnd()) setBottomFollow(true);
@@ -1196,7 +1248,8 @@ export function ChatView({ bot }: { bot: Bot }) {
         }}
       >
         <div
-          className="flex w-full flex-col gap-3 pb-4"
+          className="flex w-full flex-col gap-3"
+          style={{ paddingBottom: composerDock.pad }}
           role="log"
           aria-live="polite"
           aria-label={`Conversation with ${bot.name}`}
@@ -1224,7 +1277,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             onCancelEdit={cancelEdit}
             onSubmitEdit={submitEdit}
             onRegenerate={regenerate}
-            onReply={setReplyTo}
+            onReply={selectReply}
           />
           {laterCount > 0 && (
             <div className="flex justify-center">
@@ -1239,7 +1292,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           {provisioning && (
             <div className="flex justify-start">
               <div className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary">
-                <Loader2 size={13} className="animate-spin" />
+                <WorkingDots size={3.5} />
                 Setting up this bot's computer…
               </div>
             </div>
@@ -1258,11 +1311,18 @@ export function ChatView({ bot }: { bot: Bot }) {
             visible={presenceVisible}
             label={activityLabel}
             answering={popping !== null}
+            since={busySince}
           >
             {popping ? (
               <div className="w-fit max-w-[min(42rem,78%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
-                <MessageBoundary fallbackText={popping.text}>
-                  <ChatMarkdown text={popping.text} />
+                <MessageBoundary fallbackText={popping.text || "Generated image"}>
+                  {poppingMessage?.attachments?.length ? (
+                    <AttachedImageGallery
+                      paths={poppingMessage.attachments.map((attachment) => attachment.path)}
+                      className={popping.text ? "justify-start" : "mb-0 justify-start"}
+                    />
+                  ) : null}
+                  {popping.text ? <ChatMarkdown text={popping.text} /> : null}
                 </MessageBoundary>
               </div>
             ) : null}
@@ -1275,24 +1335,29 @@ export function ChatView({ bot }: { bot: Bot }) {
         <button
           onClick={jumpToLatest}
           aria-label="Jump to latest messages"
-          className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          className="animate-pop-in absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          style={{ bottom: composerDock.height }}
         >
           <ArrowDown size={13} /> Jump to latest
         </button>
       )}
 
-      {/* keyed by bot: a draft belongs to the conversation it was typed in,
-          so switching bots starts from an empty composer instead of carrying
-          the previous bot's half-written message over. ArrowUp-to-edit is
-          gated on busy like the pencil button — editing rewinds the thread,
-          which a live turn forbids (the server 409s it). */}
+      {/* Keyed by task: each conversation keeps its own draft and a failed
+          request can restore the old task without spilling into the newly
+          selected one. ArrowUp-to-edit stays gated on busy because editing
+          rewinds the thread, which a live turn forbids (the server 409s it). */}
+      <div ref={composerDockRef} className="absolute inset-x-0 bottom-0 z-[2]">
       <Composer
-        key={bot.id}
+        key={bot.threadId}
         bot={bot}
         replyTo={replyTo}
-        onClearReply={() => setReplyTo(null)}
+        onClearReply={clearReply}
+        onConsumeReply={consumeReply}
+        onRestoreReply={restoreReply}
         onEditLast={lastUserMessage && !bot.busy ? () => setEditingId(lastUserMessage.id) : undefined}
       />
+      </div>
+      </div>
 
     </main>
   );

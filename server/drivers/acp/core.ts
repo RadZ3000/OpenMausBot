@@ -356,6 +356,17 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
         if (imageGen) {
           servers.push({ name: "image", command: imageGen.command, args: imageGen.args, env: acpEnv(imageGen.env) });
         }
+        const browser = turn.integrations?.browser;
+        if (browser) {
+          servers.push({ name: "browser", command: browser.command, args: browser.args, env: acpEnv(browser.env) });
+        }
+        // user-configured servers, after the built-ins: a residual name
+        // collision keeps the built-in (reserved names are filtered at the
+        // config boundary; this is defense in depth).
+        for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
+          if (servers.some((existing) => existing.name === name)) continue;
+          servers.push({ name, command: server.command, args: server.args, env: acpEnv(server.env) });
+        }
         return servers;
       };
 
@@ -627,8 +638,18 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
           const u = p.update ?? {};
           switch (u.sessionUpdate) {
             case "agent_message_chunk": {
-              const delta = u.content?.text;
-              if (typeof delta === "string" && delta) {
+              const content = u.content;
+              const delta = content?.text;
+              if (content?.type === "image" && typeof content.data === "string" && content.data) {
+                flushAssistantText();
+                emit({
+                  ...base(threadId, turnId),
+                  type: "item.completed",
+                  itemType: "assistant_image",
+                  data: content.data,
+                  alt: "Generated image",
+                });
+              } else if (typeof delta === "string" && delta) {
                 state.text += delta;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
               }
@@ -925,9 +946,11 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
           capabilities: {
             sessionModelSwitch: "unsupported",
             agentsMcp: true,
+            customMcp: true,
             computerMcp: true,
             composioMcp: true,
             imageGenMcp: true,
+            browserMcp: true,
             images: support.images !== false,
             effortLevels: support.effortLevels,
             localComputerMcp: !config.fullAuto,

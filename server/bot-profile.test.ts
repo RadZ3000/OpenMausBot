@@ -8,7 +8,7 @@ import { parseBotProfilePatch } from "./bot-profile.ts";
 
 describe("parseBotProfilePatch (strict — the paired boundary)", () => {
   it("refuses every privilege-bearing bot field by name", () => {
-    for (const field of ["autoApprove", "alwaysAllow", "computer", "cwd", "composio", "chiefOfStaff", "acknowledgeLocalAuto"]) {
+    for (const field of ["autoApprove", "autoReview", "alwaysAllow", "computer", "cwd", "composio", "chiefOfStaff", "acknowledgeLocalAuto"]) {
       const result = parseBotProfilePatch({ name: "Mira", [field]: true } as never, true);
       expect(result.ok, field).toBe(false);
       if (!result.ok) expect(result.error).toContain(field);
@@ -57,6 +57,23 @@ describe("parseBotProfilePatch (both modes)", () => {
     expect(parseBotProfilePatch({ avatarCrop: "hexagon" } as never, true)).toEqual({
       ok: false,
       error: "avatarCrop must be mascot, circle, rounded, or square",
+    });
+  });
+});
+
+describe("mascotBody", () => {
+  it("accepts a known body", () => {
+    expect(parseBotProfilePatch({ mascotBody: "blob" } as never, true)).toEqual({
+      ok: true,
+      patch: { mascotBody: "blob" },
+    });
+  });
+
+  it("maps an unknown body to a readable message", () => {
+    expect(parseBotProfilePatch({ mascotBody: "hexagram" } as never, true)).toEqual({
+      ok: false,
+      error:
+        "mascotBody must be cursor, blob, circle, squircle, capsule, drop, shield, hexagon, diamond, or star",
     });
   });
 });

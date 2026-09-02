@@ -18,6 +18,22 @@ import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 const EMPTY: ModelCatalog = { default: "", options: [] };
 
+export const HERMES_OPENMAUS_SCREENSHOT_COMPAT = "HERMES_OPENMAUS_SCREENSHOT_COMPAT";
+export const HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL = "HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL";
+
+/** Bind screenshot pseudo-call compatibility to one exact injected model. */
+export function bindHermesScreenshotCompat(
+  env: Record<string, string | undefined>,
+  modelId: string | null | undefined,
+): void {
+  delete env[HERMES_OPENMAUS_SCREENSHOT_COMPAT];
+  delete env[HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL];
+  const inject = decodeInjectId(modelId);
+  if (!inject) return;
+  env[HERMES_OPENMAUS_SCREENSHOT_COMPAT] = "1";
+  env[HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL] = inject.model;
+}
+
 /** Directory Hermes actually reads. The Windows installer sets
  * `HERMES_HOME=%LOCALAPPDATA%\hermes`; `~/.hermes` is the POSIX (and WSL)
  * layout. Prefer an existing config.yaml so a machine that still uses
@@ -1175,6 +1191,7 @@ const support: AcpSupport = {
   models: EMPTY,
   resolveModels,
   resolveTurnModel: (model, env) => {
+    bindHermesScreenshotCompat(env, model);
     if (!model) return model;
     ensureHermesInjectProvider(model, env);
     selectHermesInjectProvider(model, env);

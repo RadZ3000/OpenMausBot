@@ -16,6 +16,15 @@ import {
 import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
+import type { MascotBodyId } from "../../shared/mascot-bodies";
+import type { RoutineRequestCardData } from "../../shared/routine-request";
+import type { RoutineRunCardData } from "../../shared/routine-run";
+import type { GroupGoalRunCardData } from "../../shared/group-goal-run";
+import {
+  reviewedSkillSha256,
+  skillRequestBehavior,
+  type SkillRequestCardData,
+} from "../../shared/skill-request";
 import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
 import { currentCall } from "@/lib/call";
@@ -23,8 +32,10 @@ import { showNotification, type NotificationTarget } from "@/lib/notify";
 import { speaker } from "@/lib/tts";
 import { createBotPatchQueue, type BotUpdatePatch } from "./bot-patch-queue";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
+import { openLiveEvents } from "@/lib/live-events";
 
 export type { MausColor } from "@/lib/mascot";
+export type { RoutineRunCardData } from "../../shared/routine-run";
 
 export interface OptionCardData {
   title: string;
@@ -41,6 +52,10 @@ export interface OptionCardData {
   /** the narrow grant "always allow" remembers, e.g. "Bash:git" */
   allowKey?: string;
   approvalScope?: "local-computer";
+  /** Persisted proposal used by the server when the user confirms it. */
+  routineRequest?: RoutineRequestCardData;
+  /** Staged learned-skill change; applied only after the user confirms this card. */
+  skillRequest?: SkillRequestCardData;
 }
 
 export interface ConnectorCardData {
@@ -70,25 +85,35 @@ export interface SecretRequestCardData {
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "image" | "connector" | "secret";
+  kind: "text" | "options" | "activity" | "screen" | "image" | "connector" | "secret" | "routine.run" | "goal.run";
   text?: string;
+  /** Provider-generated files attached to this assistant response. */
+  attachments?: Array<{ kind: "image"; path: string; mime: string }>;
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
+  /** Lifecycle mirror for a routine whose real work lives in a fresh task. */
+  routineRun?: RoutineRunCardData;
+  /** Durable lifecycle receipt for a goal-driven channel run. */
+  goalRun?: GroupGoalRunCardData;
+  /** How a channel user message should be handled. Absent means ordinary chat. */
+  channelMode?: "chat" | "goal";
   /** activity messages: tool name + outcome. `spoken` is the server's
    * narration of the same chip ("reading a file"), used by call mode. */
   /** `setup` marks an error fixed by installing something, not by retrying. */
   tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
-  /** screen messages: a frame of the bot's computer (base64).
-   * image messages: a picture the bot generated, saved at `path`. */
+  /** Provider turn that produced this message. */
+  turnId?: string;
+  /** Last assistant text item from a settled provider turn. */
+  turnTerminal?: boolean;
+  /** screen/image messages: a frame of the bot's computer or a generated picture (base64) */
   png?: string;
-  /** the server strips pixels from stored messages and sets this instead, so
-   * a reloaded transcript knows a picture exists and can go fetch it. */
-  hasImage?: boolean;
   mime?: string;
-  /** image messages: where the file was written, so the user can open it. */
+  /** After persist, pixels live on disk; the client fetches them by id. */
+  hasImage?: boolean;
+  /** Workspace path of a generated image, shown as a caption. */
   path?: string;
   at: number;
   /** the message this one follows; null = thread root. Edited messages
@@ -96,6 +121,8 @@ export interface Message {
   parentId?: string | null;
   /** Flat reply reference for an inline quote; unrelated to branch ancestry. */
   replyToId?: string;
+  /** Stable client identity for at-most-once chat POST retries. */
+  sendId?: string;
   /** rooms: which member said this (sender attribution). */
   from?: { botId: string; name: string; color: MausColor };
   /** emoji reactions; by = "user" or a member botId. */
@@ -129,6 +156,8 @@ export interface Group {
   /** auto-created bot⇄bot channel (ask_bot exchanges mirror here) */
   dm?: boolean;
   busyBotId?: string | null;
+  /** True for the whole orchestrated run, including hand-offs between members. */
+  working?: boolean;
   /** the room's shared desk — where member turns run their shell tools,
    * overriding each member's own folder; absent = each member's own */
   cwd?: string;
@@ -142,7 +171,20 @@ export interface Group {
   /** New user-created rooms remain in setup until Save or Skip. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;
+  /** Separate conversations in this channel. DMs deliberately stay on one
+   * thread and omit this collection. */
+  tasks?: GroupTask[];
   messages: Message[];
+}
+
+/** One of a channel's independent conversations. The channel's threadId
+ * points at the active one; folder and pin state belong to the task. */
+export interface GroupTask {
+  threadId: string;
+  title: string;
+  createdAt: number;
+  pinnedCwd?: string | null;
+  pinnedMessageId?: string;
 }
 
 export interface ModelSelection {
@@ -187,6 +229,8 @@ export interface Bot {
   notifications: boolean;
   color: MausColor;
   mascotExpression?: string | null;
+  /** Which body the bot wears. Unknown/absent values fall back to the cursor. */
+  mascotBody?: MascotBodyId | null;
   /** App-owned image attachment used for this bot's profile. */
   avatarUrl?: string | null;
   /** Mascot, or the crop applied to avatarUrl. */
@@ -196,8 +240,9 @@ export interface Bot {
   /** what the bot is doing, as the harness sees it; busy is derived from it */
   activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead";
   modelSelection: ModelSelection;
-  /** Where this bot's computer runs; unset = auto (cloud box if one exists, else local). */
-  computer?: "cloud" | "vm" | "local" | "off";
+  /** Where this bot works: a computer, only the built-in browser tab, or
+   * nowhere; unset = auto (cloud box if one exists, else local). */
+  computer?: "cloud" | "vm" | "local" | "browser" | "off";
   /** Which cloud computer backs `computer: "cloud"`; absent means Box. */
   cloudBackend?: CloudBackend;
   /** Allow Auto to prepare/start the managed VPS container. Off by default. */
@@ -206,6 +251,8 @@ export interface Bot {
   cwd?: string;
   /** auto mode: the bot approves its own tool permissions */
   autoApprove?: boolean;
+  /** optional model review for otherwise undecided, attended approvals */
+  autoReview?: "off" | "shadow" | "enforce";
   /** tools this bot may always use without asking */
   alwaysAllow?: string[];
   /** speak this bot's replies aloud as they settle */
@@ -229,6 +276,11 @@ export interface Bot {
   /** Whether this bot may generate images. Unset means allowed; the
    * credential is workspace-wide, the grant is per bot. */
   imageGen?: boolean;
+  /** Whether this bot gets the app's built-in browser (Browser tab). On unless switched off. */
+  browser?: boolean;
+  /** Named browser profile id (config.browserProfiles); absent/null = the
+   * bot's own session (null is how a clear travels over PATCH). */
+  browserProfile?: string | null;
   messages: Message[];
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
@@ -274,17 +326,29 @@ export interface ConfigStatus {
    * a voice, which is what it takes to actually speak. The key itself is
    * never echoed back. */
   tts?: { configured: boolean; ready: boolean; voice: string; provider?: "elevenlabs" | "system" };
-  /** Image generation. `configured` = a key or a local endpoint is set. */
+  /** Shared write-only credential for on-demand GPT Image avatars. */
   imageGen?: { configured: boolean };
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
+  /** UI language override; "" (or absent) follows the system language. */
+  language?: string;
   /** Opt-in flags. Absent means off. */
-  features?: { skillRecorder: boolean; showToolCalls?: boolean };
+  features?: { skillRecorder: boolean; showToolCalls?: boolean; browser?: boolean };
+  /** Named browser sessions any bot can be pointed at. */
+  browserProfiles?: BrowserProfile[];
+}
+
+export interface BrowserProfile {
+  id: string;
+  name: string;
+  /** Read-only durable Electron routing inherited from legacy profiles.
+   * Config PATCH payloads must omit it. */
+  partitionId?: string;
 }
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "composio" | "box" | "vps" | "rooms" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "features"
+  "xai" | "composio" | "box" | "vps" | "rooms" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "language" | "features" | "browserProfiles"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -299,7 +363,9 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     tts: frame.tts,
     imageGen: frame.imageGen,
     profile: frame.profile,
+    language: frame.language,
     features: frame.features,
+    browserProfiles: frame.browserProfiles,
   };
 }
 
@@ -326,17 +392,21 @@ export interface InstanceInfo {
     /** a reported cost on a subscription is notional; the UI says so */
     billing?: "metered" | "subscription";
   };
-  models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean }> };
+  models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean; provider?: string }> };
   capabilities?: {
     computerMcp?: boolean;
     agentsMcp?: boolean;
     composioMcp?: boolean;
+    browserMcp?: boolean;
     imageGenMcp?: boolean;
     images?: boolean;
     effortLevels?: readonly EffortLevel[];
     /** the engine keeps a live session and takes a message mid-turn */
     queueing?: boolean;
     localComputerMcp?: boolean;
+    /** This engine can answer a bounded review prompt without changing the
+     * bot's active conversation. */
+    approvalReview?: boolean;
   };
   /** `custom` agents sit below the rail divider — no subscription catalog. */
   access?: "subscription" | "custom";
@@ -352,6 +422,7 @@ export interface InstanceInfo {
 
 export type AppSettingsSection =
   | "general"
+  | "experimental"
   | "connections"
   | "engines"
   | "companion"
@@ -396,7 +467,7 @@ export interface AppState {
     nonce: number;
     kind: Exclude<MausMotion, "none">;
   } | null;
-  /** 1:1 queue-fallback lines waiting for drain; keyed by threadId.
+  /** Queued follow-up lines waiting for drain; keyed by threadId.
    * Each entry is identified by the server queueId, not by text. */
   pendingQueued: Record<string, Array<{ queueId: string; text: string }>>;
   /** queueIds whose drain frame beat the POST continuation. One-shot and
@@ -406,13 +477,52 @@ export interface AppState {
 
 const MAX_CONSUMED_QUEUE_IDS = 64;
 
-function rememberConsumedQueueId(consumed: Record<string, true>, queueId: string): Record<string, true> {
+function rememberConsumedQueueId(
+  consumed: AppState["consumedQueueIds"],
+  queueId: string,
+): AppState["consumedQueueIds"] {
   const next = { ...consumed, [queueId]: true as const };
   const overflow = Object.keys(next).length - MAX_CONSUMED_QUEUE_IDS;
   if (overflow > 0) {
     for (const id of Object.keys(next).slice(0, overflow)) delete next[id];
   }
   return next;
+}
+
+interface QueueReceiptSnapshot {
+  messages?: Message[];
+}
+
+/** A replacement snapshot can contain the canonical user line after this
+ * window missed its queue-drain frame. Remove any matching chip and retain a
+ * short tombstone so a slower POST continuation cannot add the chip back. */
+function reconcileSnapshotQueues(
+  state: AppState,
+  conversations: QueueReceiptSnapshot[],
+): AppState {
+  const landed: Array<{ queueId: string; at: number }> = [];
+  for (const conversation of conversations) {
+    for (const message of conversation.messages ?? []) {
+      if (message.queueId) landed.push({ queueId: message.queueId, at: message.at });
+    }
+  }
+  if (landed.length === 0) return state;
+
+  const landedIds = new Set(landed.map((entry) => entry.queueId));
+  const pendingQueued: AppState["pendingQueued"] = {};
+  for (const [threadId, entries] of Object.entries(state.pendingQueued)) {
+    const waiting = entries.filter((entry) => !landedIds.has(entry.queueId));
+    if (waiting.length > 0) pendingQueued[threadId] = waiting;
+  }
+
+  let consumedQueueIds = state.consumedQueueIds;
+  // Preserve the newest receipts when a large historical snapshot contains
+  // more than the bounded tombstone window.
+  landed.sort((left, right) => left.at - right.at);
+  for (const entry of landed) {
+    consumedQueueIds = rememberConsumedQueueId(consumedQueueIds, entry.queueId);
+  }
+  return { ...state, pendingQueued, consumedQueueIds };
 }
 
 export type BotAnnouncement = Omit<Bot, "messages"> & { messages?: Message[] };
@@ -444,22 +554,43 @@ export type Action =
   | { type: "groupPatched"; group: Partial<Group> & { id: string } }
   | { type: "groupDeleted"; groupId: string }
   | { type: "createGroup"; memberIds: string[]; name?: string; section?: string }
-  | { type: "sendGroup"; groupId: string; text: string; replyToId?: string }
+  | {
+      type: "sendGroup";
+      groupId: string;
+      text: string;
+      sendId?: string;
+      replyToId?: string;
+      threadId?: string;
+      mode?: "chat" | "goal";
+      onError?: () => void;
+    }
   | {
       type: "patchGroup";
       groupId: string;
       patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section">>;
     }
   | { type: "deleteGroup"; groupId: string }
-  | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }
+  | { type: "newGroupTask"; groupId: string }
+  | { type: "switchGroupTask"; groupId: string; threadId: string }
+  | { type: "renameGroupTask"; groupId: string; threadId: string; title: string }
+  | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "interruptGroup"; groupId: string }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
-  | { type: "send"; botId: string; text: string; replyToId?: string }
+  | {
+      type: "send";
+      botId: string;
+      text: string;
+      sendId?: string;
+      replyToId?: string;
+      threadId?: string;
+      onError?: () => void;
+    }
   | { type: "pendingQueued"; threadId: string; queueId: string; text: string }
   | { type: "consumePendingQueued"; threadId: string; queueId: string }
   | { type: "cancelQueued"; botId: string; queueId: string }
+  | { type: "cancelGroupQueued"; groupId: string; threadId: string; queueId: string }
   | { type: "editMessage"; botId: string; messageId: string; text: string }
   | { type: "switchBranch"; botId: string; messageId: string }
   | { type: "threadActive"; threadId: string; activeLeafId: string }
@@ -473,8 +604,12 @@ export type Action =
       requestId: string;
       behavior: "allow" | "deny" | "answer";
       message?: string;
+      /** Exact proposal hash displayed by a current learned-skill client. */
+      reviewedSha256?: string;
       /** remember this exact grant (the server's allowKey) for the bot */
       alwaysAllow?: { botId: string; key: string };
+      /** Local UI recovery hook for voice flows. Never sent to the server. */
+      onError?: (message: string) => void;
     }
   | { type: "newTask"; botId: string }
   | { type: "switchTask"; botId: string; threadId: string }
@@ -509,18 +644,49 @@ export type Action =
       patch: BotUpdatePatch;
     };
 
+interface NotificationThreadOwner {
+  id: string;
+  threadId: string;
+  tasks?: Array<{ threadId: string }>;
+}
+
+interface NotificationRoutingState {
+  bots: NotificationThreadOwner[];
+  groups: NotificationThreadOwner[];
+}
+
+/** The exact conversation currently on screen. A focused window is not
+ * enough to suppress an alert when its actionable card is in another task. */
+export function visibleNotificationThread(
+  state: NotificationRoutingState & Pick<AppState, "activeView" | "selectedId">,
+): string | null {
+  if (state.activeView !== "chat") return null;
+  return (
+    state.bots.find((candidate) => candidate.id === state.selectedId)?.threadId ??
+    state.groups.find((candidate) => candidate.id === state.selectedId)?.threadId ??
+    null
+  );
+}
+
 export function openNotificationTarget(
   dispatch: (action: Action) => void,
   target: NotificationTarget,
-  state: Pick<AppState, "bots" | "groups">,
+  state: NotificationRoutingState,
 ) {
   // A room's approval/question notification carries the asker bot with the
   // GROUP's thread id; asking the bot to switch to that thread would 404.
   // Open the room itself. A thread that is neither a room nor one of the
   // bot's own lands on a plain bot select instead of an error banner.
-  const group = state.groups.find((candidate) => candidate.threadId === target.threadId);
+  const group = state.groups.find(
+    (candidate) =>
+      candidate.threadId === target.threadId ||
+      (candidate.tasks ?? []).some((task) => task.threadId === target.threadId),
+  );
   if (group) {
     dispatch({ type: "select", id: group.id });
+    if (group.threadId !== target.threadId) {
+      dispatch({ type: "switchGroupTask", groupId: group.id, threadId: target.threadId });
+    }
     return;
   }
   dispatch({ type: "select", id: target.botId });
@@ -579,13 +745,16 @@ export function reducer(state: AppState, action: Action): AppState {
       const known = (id: string) => action.bots.some((b) => b.id === id) || action.groups.some((g) => g.id === id);
       const selectedId =
         state.selectedId && known(state.selectedId) ? state.selectedId : (action.bots[0]?.id ?? "");
-      return {
-        ...state,
-        bots: action.bots,
-        groups: action.groups,
-        computerControl: action.computerControl,
-        selectedId,
-      };
+      return reconcileSnapshotQueues(
+        {
+          ...state,
+          bots: action.bots,
+          groups: action.groups,
+          computerControl: action.computerControl,
+          selectedId,
+        },
+        [...action.bots, ...action.groups],
+      );
     }
     case "showRoutines":
       return {
@@ -741,10 +910,11 @@ export function reducer(state: AppState, action: Action): AppState {
       // team import), so add it now; the following message frames will fill
       // its greeting without waiting for a full-page hydration.
       if (!before) {
-        return {
+        const added = {
           ...state,
           bots: [{ ...action.bot, messages: action.bot.messages ?? [] }, ...state.bots],
         };
+        return reconcileSnapshotQueues(added, [action.bot]);
       }
       const kind =
         action.bot.unread && !before?.unread
@@ -767,7 +937,7 @@ export function reducer(state: AppState, action: Action): AppState {
         : animated;
       const switchedThread =
         typeof action.bot.threadId === "string" && action.bot.threadId !== before.threadId;
-      return updateBot(next, action.bot.id, (b) => ({
+      const patched = updateBot(next, action.bot.id, (b) => ({
         ...b,
         ...action.bot,
         // Ordinary bot patches omit messages and must preserve the current
@@ -779,6 +949,9 @@ export function reducer(state: AppState, action: Action): AppState {
             ? action.bot.messages
             : b.messages,
       }));
+      return switchedThread && Array.isArray(action.bot.messages)
+        ? reconcileSnapshotQueues(patched, [action.bot])
+        : patched;
     }
     case "messageAdded": {
       const bot = state.bots.find((b) => b.threadId === action.threadId);
@@ -794,28 +967,35 @@ export function reducer(state: AppState, action: Action): AppState {
           ),
         };
       }
+      // The POST response and the canonical SSE frame may arrive in either
+      // order. A repeated message is already folded; moving the active leaf
+      // back to it can hide a newer assistant reply that won the race.
+      if (bot.messages.some((message) => message.id === action.message.id)) return state;
       // every server-side append chains onto (and becomes) the active leaf
       const next = updateBot(state, bot.id, (b) => {
-        if (b.messages.some((m) => m.id === action.message.id)) {
-          return { ...b, activeLeafId: action.message.id };
-        }
+        // A message chains onto the leaf → it becomes the leaf (the normal
+        // append). A message parented elsewhere is a chain-insert of a late
+        // turn artifact (settle-time screenshot) — the leaf must stay put,
+        // or the follow-up send it raced would fall off the active branch.
+        const adoptsLeaf = (action.message.parentId ?? null) === (b.activeLeafId ?? null);
         let messages = [...b.messages, action.message];
         // base64 screen frames are big; a long computer-use session would
         // grow memory without bound. Keep the newest few frames' pixels and
-        // strip the rest — `hasImage` marks what was dropped, so scrolling
-        // back re-fetches the frame instead of showing a hole.
+        // strip the rest (the message row survives as a placeholder).
         if (action.message.kind === "screen") {
           const withPng = messages.filter((m) => m.kind === "screen" && m.png);
           const excess = withPng.length - MAX_KEPT_SCREEN_FRAMES;
           if (excess > 0) {
             const dropIds = new Set(withPng.slice(0, excess).map((m) => m.id));
-            messages = messages.map((m) => (dropIds.has(m.id) ? { ...m, png: undefined, hasImage: true } : m));
+            messages = messages.map((m) => (dropIds.has(m.id) ? { ...m, png: undefined } : m));
           }
         }
-        return { ...b, messages, activeLeafId: action.message.id };
+        return { ...b, messages, activeLeafId: adoptsLeaf ? action.message.id : b.activeLeafId };
       });
       const motion =
-        action.message.kind === "options"
+        action.message.role === "user" && action.message.kind === "text" && Boolean(action.message.queueId)
+          ? "working"
+          : action.message.kind === "options"
           ? "thinking"
           : action.message.kind === "activity"
             ? action.message.tool?.ok === false
@@ -993,24 +1173,6 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         groups: state.groups.map((g) => (g.id === action.groupId ? { ...g, ...action.patch } : g)),
       };
-    case "toggleReaction": {
-      const toggle = (m: Message): Message => {
-        if (m.id !== action.messageId) return m;
-        const reactions = m.reactions ?? [];
-        const at = reactions.findIndex((r) => r.emoji === action.emoji && r.by === "user");
-        const next = at >= 0 ? reactions.filter((_, i) => i !== at) : [...reactions, { emoji: action.emoji, by: "user" }];
-        return { ...m, reactions: next.length ? next : undefined };
-      };
-      return {
-        ...state,
-        bots: state.bots.map((b) =>
-          b.threadId === action.threadId ? { ...b, messages: b.messages.map(toggle) } : b,
-        ),
-        groups: state.groups.map((g) =>
-          g.threadId === action.threadId ? { ...g, messages: g.messages.map(toggle) } : g,
-        ),
-      };
-    }
     // handled entirely by the async wrapper
     case "pendingQueued": {
       if (state.consumedQueueIds[action.queueId]) {
@@ -1054,17 +1216,55 @@ export function reducer(state: AppState, action: Action): AppState {
       else delete pendingQueued[bot.threadId];
       return { ...state, pendingQueued };
     }
+    case "cancelGroupQueued": {
+      const prev = state.pendingQueued[action.threadId] ?? [];
+      const rest = prev.filter((entry) => entry.queueId !== action.queueId);
+      if (rest.length === prev.length) return state;
+      const pendingQueued = { ...state.pendingQueued };
+      if (rest.length) pendingQueued[action.threadId] = rest;
+      else delete pendingQueued[action.threadId];
+      return { ...state, pendingQueued };
+    }
     case "send":
       return withMascotMotion(dismissOnboardingCard(state, action.botId), action.botId, "working");
     case "editMessage":
       return withMascotMotion(state, action.botId, "working");
     case "newTask":
     case "switchTask":
-    case "renameTask":
     case "deleteTask":
+    case "newGroupTask":
+    case "switchGroupTask":
+    case "deleteGroupTask":
       return state;
-    case "taskSwitched":
-      return updateBot(state, action.bot.id, (bot) => ({ ...bot, ...action.bot, messages: action.bot.messages ?? [] }));
+    case "renameTask":
+      return updateBot(state, action.botId, (bot) => ({
+        ...bot,
+        tasks: (bot.tasks ?? []).map((task) =>
+          task.threadId === action.threadId ? { ...task, title: action.title } : task,
+        ),
+      }));
+    case "renameGroupTask":
+      return {
+        ...state,
+        groups: state.groups.map((group) =>
+          group.id === action.groupId
+            ? {
+                ...group,
+                tasks: (group.tasks ?? []).map((task) =>
+                  task.threadId === action.threadId ? { ...task, title: action.title } : task,
+                ),
+              }
+            : group,
+        ),
+      };
+    case "taskSwitched": {
+      const switched = updateBot(state, action.bot.id, (bot) => ({
+        ...bot,
+        ...action.bot,
+        messages: action.bot.messages ?? [],
+      }));
+      return reconcileSnapshotQueues(switched, [action.bot]);
+    }
     case "newBot":
     case "duplicateBot":
     case "interrupt":
@@ -1123,6 +1323,35 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
   return body;
+}
+
+export interface PeripheralSnapshotLoad<Key extends string = string> {
+  key: Key;
+  load: () => Promise<void>;
+}
+
+function normalizeSnapshotFailure(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause));
+}
+
+/** A refused SSE resume needs the chat transcript snapshot before its cursor
+ * can be acknowledged. The other panels should refresh at the same boundary,
+ * but a broken optional endpoint must not hold every chat frame hostage. */
+export async function loadSnapshotBoundary<Key extends string>(
+  loadChat: () => Promise<void>,
+  peripherals: readonly PeripheralSnapshotLoad<Key>[],
+  onPeripheralFailure: (part: PeripheralSnapshotLoad<Key>, error: Error) => void,
+): Promise<boolean> {
+  const [chat, ...settledPeripherals] = await Promise.allSettled([
+    loadChat(),
+    ...peripherals.map((part) => part.load()),
+  ]);
+  settledPeripherals.forEach((result, index) => {
+    if (result.status === "rejected") {
+      onPeripheralFailure(peripherals[index]!, normalizeSnapshotFailure(result.reason));
+    }
+  });
+  return chat.status === "fulfilled";
 }
 
 /** Per-frame stream state lives in its OWN context: token frames update only
@@ -1257,7 +1486,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (action.type === "deleteBot") botPatchQueue.cancel(action.botId);
       // A queued message is still real until the server confirms deletion.
       // All other actions keep their existing optimistic behavior.
-      if (action.type !== "cancelQueued") rawDispatch(action);
+      if (action.type !== "cancelQueued" && action.type !== "cancelGroupQueued") rawDispatch(action);
       switch (action.type) {
         case "createRoutine":
           api("/api/routines", { method: "POST", body: JSON.stringify(action.input) }).catch(showError);
@@ -1285,15 +1514,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then(() => rawDispatch(action))
             .catch(showError);
           break;
+        case "cancelGroupQueued":
+          void api(`/api/groups/${action.groupId}/queue/${action.queueId}`, { method: "DELETE" })
+            .then(() => rawDispatch(action))
+            .catch(showError);
+          break;
         case "send": {
           // persist through the existing card route so an older server that
           // does not auto-dismiss still hides the quiz on this client
           if (quizBeforeSend) persistCard(action.botId, quizBeforeSend.id, { dismissed: true });
+          const threadId =
+            action.threadId ?? stateRef.current.bots.find((bot) => bot.id === action.botId)?.threadId;
+          const sendId = action.sendId ?? crypto.randomUUID();
           void api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text, replyToId: action.replyToId }),
+            body: JSON.stringify({ text: action.text, replyToId: action.replyToId, threadId, sendId }),
           })
             .then((body) => {
+              if (body?.message && typeof body.threadId === "string") {
+                rawDispatch({ type: "messageAdded", threadId: body.threadId, message: body.message });
+              }
               if (
                 body?.queued &&
                 typeof body.threadId === "string" &&
@@ -1307,7 +1547,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 });
               }
             })
-            .catch(showError);
+            .catch((error) => {
+              showError(error);
+              action.onError?.();
+            });
           break;
         }
         case "editMessage":
@@ -1330,8 +1573,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 requestId: action.requestId,
                 behavior: action.behavior,
                 message: action.message,
+                reviewedSha256: action.reviewedSha256,
               }),
-            }).catch(showError);
+            }).catch((error) => {
+              showError(error);
+              action.onError?.(error instanceof Error ? error.message : String(error));
+            });
           if (action.alwaysAllow) {
             const bot = stateRef.current.bots.find((b) => b.id === action.alwaysAllow!.botId);
             const next = [...new Set([...(bot?.alwaysAllow ?? []), action.alwaysAllow.key])];
@@ -1355,14 +1602,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const bot = stateRef.current.bots.find((b) => b.id === action.botId);
           const card = bot?.messages.find((m) => m.id === action.messageId)?.card;
           if (card?.requestId) {
-            const behavior =
-              action.answer === "Allow" ? "allow" : action.answer === "Deny" ? "deny" : "answer";
+            const behavior = card.skillRequest
+              ? skillRequestBehavior(action.answer)
+              : action.answer === "Allow" ? "allow" : action.answer === "Deny" ? "deny" : "answer";
             api(`/api/bots/${action.botId}/respond`, {
               method: "POST",
               body: JSON.stringify({
                 requestId: card.requestId,
                 behavior,
                 message: behavior === "answer" ? action.answer : undefined,
+                reviewedSha256: behavior === "allow" && card.skillRequest
+                  ? reviewedSkillSha256(card.skillRequest)
+                  : undefined,
               }),
             }).catch(showError);
           } else {
@@ -1450,12 +1701,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             })
             .catch(showError);
           break;
-        case "sendGroup":
+        case "sendGroup": {
+          const threadId =
+            action.threadId ?? stateRef.current.groups.find((group) => group.id === action.groupId)?.threadId;
+          const sendId = action.sendId ?? crypto.randomUUID();
           api(`/api/groups/${action.groupId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text, replyToId: action.replyToId }),
-          }).catch(showError);
+            body: JSON.stringify({
+              text: action.text,
+              replyToId: action.replyToId,
+              threadId,
+              sendId,
+              mode: action.mode ?? "chat",
+            }),
+          })
+            .then((body) => {
+              if (body?.message && typeof body.threadId === "string") {
+                rawDispatch({ type: "messageAdded", threadId: body.threadId, message: body.message });
+              }
+              if (
+                body?.queued &&
+                typeof body.threadId === "string" &&
+                typeof body.queueId === "string"
+              ) {
+                rawDispatch({
+                  type: "pendingQueued",
+                  threadId: body.threadId,
+                  queueId: body.queueId,
+                  text: action.text,
+                });
+              }
+            })
+            .catch((error) => {
+              showError(error);
+              action.onError?.();
+            });
           break;
+        }
         case "patchGroup":
           api(`/api/groups/${action.groupId}`, {
             method: "PATCH",
@@ -1464,12 +1746,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "deleteGroup":
           api(`/api/groups/${action.groupId}`, { method: "DELETE" }).catch(showError);
-          break;
-        case "toggleReaction":
-          api(`/api/threads/${action.threadId}/messages/${action.messageId}/reactions`, {
-            method: "POST",
-            body: JSON.stringify({ emoji: action.emoji, by: "user" }),
-          }).catch(showError);
           break;
         case "setModel":
           api(`/api/bots/${action.botId}`, {
@@ -1503,6 +1779,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then((r: any) => r?.bot && dispatch({ type: "taskSwitched", bot: r.bot }))
             .catch(showError);
           break;
+        // Channel tasks mirror bot tasks, but hydrate the whole channel so
+        // switching atomically replaces its transcript, folder and pin.
+        case "newGroupTask":
+          api(`/api/groups/${action.groupId}/tasks`, { method: "POST", body: "{}" })
+            .then((r: any) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
+            .catch(showError);
+          break;
+        case "switchGroupTask":
+          api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, { method: "POST" })
+            .then((r: any) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
+            .catch(showError);
+          break;
+        case "renameGroupTask":
+          api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ title: action.title }),
+          }).catch(showError);
+          break;
+        case "deleteGroupTask":
+          api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, { method: "DELETE" })
+            .then((r: any) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
+            .catch(showError);
+          break;
         case "interruptGroup":
           api(`/api/groups/${action.groupId}/interrupt`, { method: "POST" }).catch(showError);
           break;
@@ -1522,30 +1821,123 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {
     let alive = true;
-    const loadAll = () =>
-      Promise.all([
-        api("/api/bots")
-          .then(({ bots, groups, computerControl }) =>
-            alive && rawDispatch({
-              type: "hydrate",
-              bots,
-              groups: groups ?? [],
-              computerControl: computerControl ?? {},
-            }))
-          .catch(() => {}),
-        api("/api/instances")
-          .then(({ instances }) => alive && rawDispatch({ type: "instances", instances }))
-          .catch(() => {}),
-        api("/api/config")
-          .then((config) => alive && rawDispatch({ type: "configStatus", config }))
-          .catch(() => {}),
-        api("/api/routines")
-          .then(({ routines, runs }) => alive && rawDispatch({ type: "routinesHydrated", routines, runs }))
-          .catch(() => {}),
-        api("/api/webhooks")
-          .then(({ webhooks, attempts, ingress }) => alive && rawDispatch({ type: "webhooksHydrated", webhooks, attempts: attempts ?? [], ingress }))
-          .catch(() => {}),
-      ]);
+    type PeripheralKey = "instances" | "config" | "routines" | "webhooks";
+    type PeripheralPart = {
+      key: PeripheralKey;
+      request: () => Promise<() => void>;
+    };
+    type PeripheralRefresh = {
+      attempt: number;
+      generation: number;
+      timer: ReturnType<typeof setTimeout> | null;
+      version: number;
+    };
+    const peripheralRefresh = new Map<PeripheralKey, PeripheralRefresh>();
+    const refreshState = (key: PeripheralKey) => {
+      let current = peripheralRefresh.get(key);
+      if (!current) {
+        current = { attempt: 0, generation: 0, timer: null, version: 0 };
+        peripheralRefresh.set(key, current);
+      }
+      return current;
+    };
+    const peripheralParts: PeripheralPart[] = [
+      {
+        key: "instances",
+        request: async () => {
+          const { instances } = await api("/api/instances");
+          return () => rawDispatch({ type: "instances", instances });
+        },
+      },
+      {
+        key: "config",
+        request: async () => {
+          const config = await api("/api/config");
+          return () => rawDispatch({ type: "configStatus", config });
+        },
+      },
+      {
+        key: "routines",
+        request: async () => {
+          const { routines, runs } = await api("/api/routines");
+          return () => rawDispatch({ type: "routinesHydrated", routines, runs });
+        },
+      },
+      {
+        key: "webhooks",
+        request: async () => {
+          const { webhooks, attempts, ingress } = await api("/api/webhooks");
+          return () =>
+            rawDispatch({ type: "webhooksHydrated", webhooks, attempts: attempts ?? [], ingress });
+        },
+      },
+    ];
+    const partByKey = new Map(peripheralParts.map((part) => [part.key, part]));
+    const schedulePeripheralRetry = (part: PeripheralPart, error?: Error) => {
+      if (!alive) return;
+      const refresh = refreshState(part.key);
+      if (refresh.timer) return;
+      if (error !== undefined) {
+        console.warn(`snapshot: ${part.key} refresh failed; retrying`, error);
+      }
+      const delay = Math.min(30_000, 1_000 * 2 ** Math.min(refresh.attempt, 5));
+      refresh.attempt += 1;
+      refresh.timer = setTimeout(() => {
+        refresh.timer = null;
+        void loadPeripheral(part, true).catch((nextError) => schedulePeripheralRetry(part, nextError));
+      }, delay);
+    };
+    const loadPeripheral = async (part: PeripheralPart, protectLiveFrames: boolean): Promise<void> => {
+      const refresh = refreshState(part.key);
+      if (refresh.timer) {
+        clearTimeout(refresh.timer);
+        refresh.timer = null;
+      }
+      const generation = ++refresh.generation;
+      const version = refresh.version;
+      try {
+        const apply = await part.request();
+        if (!alive || refresh.generation !== generation) return;
+        // A background retry must never replace a live patch that arrived
+        // after its request began. Discard that stale response and try again
+        // from the newer event boundary instead.
+        if (protectLiveFrames && refresh.version !== version) {
+          schedulePeripheralRetry(part);
+          return;
+        }
+        apply();
+        refresh.attempt = 0;
+      } catch (error) {
+        // A newer refresh owns this lane now; its result will decide whether
+        // another retry is needed.
+        if (!alive || refresh.generation !== generation) return;
+        throw normalizeSnapshotFailure(error);
+      }
+    };
+    const bumpPeripheralVersion = (...keys: PeripheralKey[]) => {
+      for (const key of keys) refreshState(key).version += 1;
+    };
+    const loadAll = async (): Promise<boolean> => {
+      const chat = () =>
+        api("/api/bots").then(({ bots, groups, computerControl }) => {
+          if (!alive) return;
+          rawDispatch({
+            type: "hydrate",
+            bots,
+            groups: groups ?? [],
+            computerControl: computerControl ?? {},
+          });
+        });
+      const peripherals = peripheralParts.map((part) => ({
+        key: part.key,
+        load: () => loadPeripheral(part, false),
+      }));
+      const chatReady = await loadSnapshotBoundary(chat, peripherals, (failed, error) => {
+        const part = partByKey.get(failed.key);
+        if (part) schedulePeripheralRetry(part, error);
+      });
+      return alive && chatReady;
+    };
 
     // A snapshot and the live fold have to meet at a defined boundary. Start
     // hydration only after the stream says hello, queue frames that arrive
@@ -1553,43 +1945,52 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // a late hydrate can overwrite a newer event, or an event can land between
     // an eager request and the stream opening and disappear entirely.
     let hydrated = false;
-    let hydrating = false;
+    let hydrationPromise: Promise<boolean> | null = null;
     let rehydrateRequested = false;
     const pendingFrames: any[] = [];
     let handleFrame: (frame: any) => void;
-    const hydrate = () => {
-      if (hydrating) {
+    const hydrate = (): Promise<boolean> => {
+      if (hydrationPromise) {
         // A second non-resumable hello means this snapshot may have started
         // before another connection gap. Run one more after it settles.
         rehydrateRequested = true;
-        return;
+        return hydrationPromise;
       }
-      hydrating = true;
       hydrated = false;
-      void loadAll().finally(() => {
-        if (!alive) return;
-        hydrating = false;
-        if (rehydrateRequested) {
+      hydrationPromise = (async () => {
+        let loaded = false;
+        do {
           rehydrateRequested = false;
-          hydrate();
-          return;
-        }
+          loaded = await loadAll();
+        } while (alive && rehydrateRequested);
+        if (!alive || !loaded) return false;
         hydrated = true;
         for (const frame of pendingFrames.splice(0)) handleFrame(frame);
+        return true;
+      })().finally(() => {
+        hydrationPromise = null;
       });
+      return hydrationPromise;
     };
     // If SSE is unavailable, the app should still show its saved state. A
     // later first hello hydrates again because it cannot prove there was no
     // gap before that connection opened.
     const hydrationFallback = setTimeout(hydrate, 1_000);
 
-    const es = new EventSource("/api/events");
     // The hydrate decision belongs to the hello frame, not to onopen: the
     // server replays what we missed when it can, and re-downloading every
     // transcript on a reconnect it already covered is pure waste.
-    es.onopen = () => rawDispatch({ type: "connected", value: true });
-    es.onerror = () => rawDispatch({ type: "connected", value: false });
     handleFrame = (frame) => {
+      if (frame.kind === "config") bumpPeripheralVersion("config", "instances");
+      else if (frame.kind === "routine" || frame.kind === "routine.deleted" || frame.kind === "routine.run") {
+        bumpPeripheralVersion("routines");
+      } else if (
+        frame.kind === "webhook" ||
+        frame.kind === "webhook.attempt" ||
+        frame.kind === "webhook.deleted"
+      ) {
+        bumpPeripheralVersion("webhooks");
+      }
       switch (frame.kind) {
         case "message": {
           rawDispatch({ type: "messageAdded", threadId: frame.threadId, message: frame.message });
@@ -1670,6 +2071,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             frame.notification,
             (target) => openNotificationTarget(dispatch, target, stateRef.current),
             stateRef.current.bots.find((bot) => bot.id === frame.notification.botId)?.avatarUrl,
+            visibleNotificationThread(stateRef.current),
           );
           break;
         case "group.deleted":
@@ -1742,33 +2144,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             type: "configStatus",
             config: configStatusFromFrame(frame),
           });
-          api("/api/instances")
-            .then(({ instances }) => rawDispatch({ type: "instances", instances }))
-            .catch(() => {});
+          {
+            const instances = partByKey.get("instances");
+            if (instances) {
+              void loadPeripheral(instances, true).catch((error) =>
+                schedulePeripheralRetry(instances, error),
+              );
+            }
+          }
           break;
       }
     };
-    es.onmessage = (raw) => {
-      let frame: any;
-      try {
-        frame = JSON.parse(raw.data);
-      } catch {
-        return;
-      }
-      // `hello` is the snapshot boundary. A false `resumed` means the server
-      // could not fill the gap, so queue subsequent frames behind a hydrate.
-      if (frame.kind === "hello") {
+    const stopLive = openLiveEvents({
+      onOpen: () => rawDispatch({ type: "connected", value: true }),
+      onError: () => rawDispatch({ type: "connected", value: false }),
+      onSnapshotRequired: () => {
         clearTimeout(hydrationFallback);
-        if (!frame.resumed) hydrate();
-        return;
-      }
-      if (hydrated) handleFrame(frame);
-      else pendingFrames.push(frame);
-    };
+        // Frames buffered before this non-resumable stream belong to an
+        // abandoned generation. Keep the new generation behind hydrate().
+        pendingFrames.splice(0);
+        return hydrate();
+      },
+      onFrame: (frame) => {
+        if (hydrated) handleFrame(frame);
+        else pendingFrames.push(frame);
+      },
+    });
     return () => {
       alive = false;
       clearTimeout(hydrationFallback);
-      es.close();
+      for (const refresh of peripheralRefresh.values()) {
+        if (refresh.timer) clearTimeout(refresh.timer);
+      }
+      stopLive();
     };
   }, []);
 

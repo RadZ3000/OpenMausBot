@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-08-28 (Shared VM **piles** decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is the Cosmo Retry card while Zuko holds the VM — P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md) — their iOS is a cloud-account client; we keep the thin sidecar client. Android is in scope as a second client, not skipped because Grok launched iPhone-only. Fork store plans not drafted. Path B paste detects major providers. Local VM Windows probe: empty Docker `info` is not healthy; stopped Podman machine skips `info`; WSL `info` budget 90s. Admin box Local VM recreated on `driver-0.20.0-v7` (was stopped machine + leftover v4 container). Last merge remains `upstream/main` through `ec7b487` / 0.1.37. License gate green: Apache-2.0. Fetch 2026-08-28: `upstream/main` at `677538e` is 0.1.38+ commits ahead; not merged. Hop-on map has app shape + whose-file. Brand scan inverted; control-plane OTP copy from `brand/profile.ts`; domain slots unset and flagged; packaged desktop fail-closed on accounts host. Docs hop-on is [`README.md`](README.md). Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present.)
+Last updated: 2026-09-02 (Merged `upstream/main` through `4b6adf8` / **0.1.49**, Apache-2.0. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md). Android companion is now **in upstream's tree** (`android/`); we inherit it as theirs. Fork store plans not drafted. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Hop-on map: [`README.md`](README.md).)
 
 ## Start here
 
@@ -19,19 +19,19 @@ plans: [`plans/archive/README.md`](plans/archive/README.md). The 2026-08-21
 morning handoff and the 2026-08-23 cold-start were deleted as duplicates of
 this file; git still has them.
 
-## Git (this machine, 2026-08-28)
+## Git (this machine, 2026-09-02)
 
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` |
-| HEAD | this merge — `upstream/main` through `ec7b487` (0.1.37). License gate is `ead88cf`. Path A 8B@32k is `033f1ab`. Brand + Path C is `51a5a74`. |
+| HEAD | this merge — `upstream/main` through `4b6adf8` (0.1.49). License gate is that same SHA, Apache-2.0. Path A 8B@32k is `033f1ab`. Brand + Path C is `51a5a74`. |
 | Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
-| Merge base | this merge — 0.1.37 (chat presence, cached-token usage, Composio auth configs, Windows skin overlay, server boot window, Pi/iOS/recorder fixes). Path A 8B@32k and the fork layers sit on top. |
+| Merge base | this merge — 0.1.49 (Android companion, i18n, custom MCP/engines, browser-per-bot, pairing/remote workspace, white-label `brand.json`, automations/calendar, mascot body catalog). Path A 8B@32k and the fork layers sit on top. |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `origin/main` | `d037f40` — this branch is **not** merged to our `main` |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Caught up to `upstream/main` `ec7b487` on 2026-08-27 (still 0.1.37). License check was green (Apache-2.0). Previous catch-up was `667af71` on 2026-08-26. Their chat-presence mascot, opt-in tool chips, named cached-token usage, Composio per-project auth configs, Windows caption-button skin overlay, 60s packaged-server boot budget, Pi MCP/local-inject, iOS trust/linger, recorder Accessibility stop, Claude built-in tool scope, and ACP-env content redact won on their paths. We kept consent-gated analytics, compact `vm_*` wrap, ACP keep-alive (`pool.release` on `end_turn`), Chromium VM status, Path A 8B@32k, image-gen extra fields (1:1, rooms, and iOS `.image`), brand pack A–C, Path C, and the product-name overlay (error page uses `productName()`, no crash-page mouse). Brand `INCOMPLETE` gained iOS connected-apps copy and a docs configuration count bump.
+Caught up to `upstream/main` `4b6adf8` on 2026-09-02 (0.1.49). License check was green (Apache-2.0) before the merge started. Previous catch-up was `ec7b487` (0.1.37) on 2026-08-27. Theirs won at their paths: Android companion, i18n/`brand.json`, custom MCP, built-in browser, pairing, automations, mascot bodies. We kept consent-gated analytics (`AnalyticsSettings`), compact `vm_*` wrap, ACP keep-alive, Path A 8B@32k + first-run routes, image-gen MCP extra fields (1:1, rooms, iOS `.image`), brand pack A–C (`distribution.productName` / `PRODUCT_NAME`, Team Library off, update Download hidden), Path B/C, anti-slop oxlint, and `AGENTS.md` house rules (plus their `docs/verification/` pointer). Brand `INCOMPLETE` grew for new upstream files (docker/sync-release workflows, browser surface, pairing page). `pnpm check:brand --release` stays red. Hop-on whose-file is still `git diff --stat upstream/main` — the cheat sheet in [`README.md`](README.md) is not the ownership record.
 
 Hermes ACP gold **passed on this NVIDIA box** and **failed on Admin CPU**. Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
@@ -39,14 +39,14 @@ the public-release path is recorded in
 (not built).
 
 **This Windows box only (do not expect on the next machine):** shared Local VM
-recreated at `--pids-limit 2048` on `driver-0.20.0-v7` (Admin, 2026-08-28:
-Podman machine had been stopped for days; Docker Desktop was down but its
-CLI looked healthy; leftover container was v4). `pnpm build:server` overlay
-into `%LOCALAPPDATA%\Programs\openmausbot\resources\server` so the packaged
-`.exe` accepts that cap. `~/.openmausbot`, Podman, and that overlay do not
-travel with git. On a new box: `git checkout merge/upstream-0.1.27` (already
-on origin), Path A / Local VM first-run as usual. Do not recreate a 2048 VM
-from an *un-overlaid* old `.exe` — it will say “missing safety limits”.
+recreated at `--pids-limit 2048` on `driver-0.20.0-v7` (Admin, 2026-08-28).
+`pnpm build:server` overlay into
+`%LOCALAPPDATA%\Programs\openmausbot\resources\server` so the packaged `.exe`
+accepts that cap. `~/.openmausbot`, Podman, and that overlay do not travel
+with git. Local `pnpm test` needs `OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`
+(same as CI Windows — Electron 43 `EXCEPTION_BREAKPOINT` on the closed-shadow
+fixture). AppImage `test:electron` needs Git `usr\bin` on PATH (`mv`); we did
+not patch their Linux installer test.
 
 ## Product goals (do not redefine)
 
@@ -83,7 +83,7 @@ Read `commercial-fork`; do not add a second profile.
 
 **Upstream license gate.** [`plans/2026-08-25-003-upstream-license-gate.md`](plans/2026-08-25-003-upstream-license-gate.md)
 is in tree. `pnpm check:upstream-license` after `git fetch upstream`, before any
-merge. Green today on `ec7b487` (Apache-2.0). A “fetch and merge” order does
+merge. Green today on `4b6adf8` (Apache-2.0). A “fetch and merge” order does
 **not** skip it. On red: stop, paste the alert, wait for a named acknowledgment;
 default is freeze. Do not wrap fetch. Weekly Action:
 `.github/workflows/check-upstream-license.yml`.
@@ -217,13 +217,13 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Catch upstream** — done through `ec7b487` (this merge). Next catch-up is a
+4. **Catch upstream** — done through `4b6adf8` (this merge, 0.1.49). Next catch-up is a
    new fetch **plus** `pnpm check:upstream-license`, then merge only if green.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
 7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs. Path B major-provider paste is in the tree; Windows Local VM health probe (empty Docker `info`, 90s Podman `info`) is in the tree; chooser reopen is still open on 005.
 8. **Brand pack Phase D** → only when ingredients exist (`appId`, data dir, icons, mascot, helper names, control-plane mailbox/host, 004 URLs). Do not invent them. Plan: [`plans/2026-08-25-002-brand-pack-plan.md`](plans/2026-08-25-002-brand-pack-plan.md).
-9. **Phone app** → research landed ([001](plans/2026-08-28-001-grok-bot-phone-research.md)). Thin client stays (not Grok’s cloud account). **Android is the same architecture**, a second client; iOS-first only because `ios/` already exists. Next, if asked: fork iOS release plan and/or Android client against the sidecar — separate store plans, not one “mobile” runbook. Do not follow `ios/AppStore/RELEASE.md`. Identity still 002 Phase D.
+9. **Phone app** → research landed ([001](plans/2026-08-28-001-grok-bot-phone-research.md)). Thin client stays (not Grok’s cloud account). **Upstream now ships `android/`** — inherit it as theirs; do not rewrite those files. Next, if asked: fork store plans against the sidecar. Do not follow `ios/AppStore/RELEASE.md`. Identity still 002 Phase D.
 10. **Shared VM piles** → product decided ([2026-08-28-002](plans/2026-08-28-002-shared-vm-seats-plan.md)): one Chrome, per-bot windows, crop in the app. User-visible hole: [B-29](known-bugs.md) (second Shared bot Retry-cards while another turn holds the VM). Next, if asked: P1 concurrent pile leases (no second VNC). Live two-bot tee only when the user says the VM is free. Do not mutate the Admin VM during a live session.
 
 ## Do not

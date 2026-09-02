@@ -61,6 +61,7 @@ function mountMcpServer(
   env: Record<string, string | undefined>,
   name: string,
   server: StdioMcpServer,
+  preApproved = true,
 ): void {
   Object.assign(env, server.env);
   const prefix = `mcp_servers.${name}`;
@@ -70,11 +71,12 @@ function mountMcpServer(
     // Values stay in the child environment; argv contains names only so
     // credentials never appear in process listings or diagnostics.
     "-c", `${prefix}.env_vars=${JSON.stringify(Object.keys(server.env))}`,
-    // `auto` still sends every tool that isn't annotated read-only here for
-    // approval and lets the read-only ones — screenshots, state reads — run
-    // free; `prompt` would put a card in front of every screenshot too.
-    "-c", `${prefix}.default_tools_approval_mode="auto"`,
   );
+  // Harness-owned servers are pre-quieted; a user-configured server keeps
+  // codex's on-request policy so its tool calls become approval cards.
+  if (preApproved) {
+    appServerArgs.push("-c", `${prefix}.default_tools_approval_mode="auto"`);
+  }
 }
 
 export const CodexDriver: ProviderDriver<CodexConfig> = {
@@ -180,6 +182,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // The host daemon and isolated Local VM both arrive as a direct Cua
           // Driver stdio MCP server. Codex sees the same computer tool surface.
           mountMcpServer(appServerArgs, env, "computer", turn.integrations.localComputer);
+        }
+        if (turn.integrations?.browser) {
+          mountMcpServer(appServerArgs, env, "browser", turn.integrations.browser);
+        }
+        for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
+          mountMcpServer(appServerArgs, env, name, server, false);
         }
         if (turn.integrations?.phone) {
           const bridge = turn.integrations.phone;
@@ -392,6 +400,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 state.sawStreamDelta = false;
                 emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: item.text });
               }
+            } else if (item.type === "imageGeneration" && item.status !== "failed") {
+              // Current Codex app-server (the same schema consumed by T3
+              // Code) returns the generated raster as base64 `result` and
+              // may also expose a local `savedPath`. Use bytes, never the
+              // provider-owned path: the harness will validate and copy
+              // them into its private attachment store.
+              if (typeof item.result === "string" && item.result.trim()) {
+                emit({
+                  ...base(threadId, turnId),
+                  type: "item.completed",
+                  itemType: "assistant_image",
+                  itemId: item.id,
+                  data: item.result,
+                  alt: typeof item.revisedPrompt === "string" ? item.revisedPrompt : undefined,
+                });
+              }
             } else if (["commandExecution", "fileChange", "mcpToolCall", "webSearch"].includes(item.type)) {
               emit({
                 ...base(threadId, turnId),
@@ -469,7 +493,20 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           } catch {
             continue;
           }
-          appendNative(threadId, { dir: "in", source: "codex.app-server", msg });
+          const loggedMessage = msg.method === "item/completed" && msg.params?.item?.type === "imageGeneration"
+            ? {
+                ...msg,
+                params: {
+                  ...msg.params,
+                  item: {
+                    ...msg.params.item,
+                    result: `[generated image omitted · ${String(msg.params.item.result ?? "").length} base64 chars]`,
+                    savedPath: undefined,
+                  },
+                },
+              }
+            : msg;
+          appendNative(threadId, { dir: "in", source: "codex.app-server", msg: loggedMessage });
           if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
             const pend = rpcPending.get(msg.id);
             if (pend) {
@@ -637,7 +674,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         localComputerMcp: true,
         composioMcp: true,
         agentsMcp: true,
+      customMcp: true,
         phoneMcp: true,
+        browserMcp: true,
         imageGenMcp: true,
         images: true,
         effortLevels: ["low", "medium", "high", "xhigh", "max"],

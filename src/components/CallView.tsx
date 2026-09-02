@@ -26,7 +26,7 @@ import { speaker } from "@/lib/tts";
 import { useSpeech } from "@/lib/tts/useSpeech";
 import { usePushToTalk } from "@/lib/push-to-talk";
 import { MausAvatar } from "./Avatar";
-import { pendingApprovals } from "./PendingApproval";
+import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
 import { cn } from "@/lib/cn";
 import { distribution } from "@/lib/distribution";
 import { track } from "@/lib/analytics";
@@ -228,7 +228,12 @@ function Call({ bot }: { bot: Bot }) {
 
   // the approval we last asked about aloud, so a card that stays open
   // while the user thinks is not re-read every render
-  const askedApproval = useRef<string | null>(null);
+  const askedApproval = useRef<{
+    requestId: string;
+    routine: boolean;
+    skill: boolean;
+    submitted: boolean;
+  } | null>(null);
   const askedQuestion = useRef<{ requestId: string; messageId: string } | null>(null);
   const phaseRef = useRef<Phase>(initialPhase);
   const alive = useRef(true);
@@ -316,17 +321,47 @@ function Call({ bot }: { bot: Bot }) {
 
       const open = askedApproval.current;
       if (open) {
+        if (open.submitted) {
+          move("working");
+          hush();
+          return;
+        }
         if (YES.test(said) || NO.test(said)) {
           const allow = YES.test(said);
-          askedApproval.current = null;
+          if (allow && open.skill) {
+            setHeard("");
+            void sayThenListen("Open this chat to review the complete skill before enabling it. You can say no now to deny it.");
+            return;
+          }
+          // Keep this request claimed until the server's durable card patch
+          // arrives. Clearing it here lets a render in that network gap read
+          // and submit the same approval again.
+          open.submitted = true;
+          move("working");
+          hush();
+          setHeard("");
           dispatch({
             type: "decideRequest",
             threadId: bot.threadId,
-            requestId: open,
+            requestId: open.requestId,
             behavior: allow ? "allow" : "deny",
             message: allow ? undefined : "Denied by the user, on a call.",
+            onError: (error: string) => {
+              const pending = askedApproval.current;
+              if (
+                !alive.current ||
+                currentCall() !== bot.id ||
+                pending?.requestId !== open.requestId ||
+                !pending.submitted
+              ) return;
+              pending.submitted = false;
+              const detail = error.trim().slice(0, 240);
+              const decision = open.routine ? "routine decision" : "approval";
+              void sayThenListen(
+                `I couldn't save that ${decision}${detail ? `: ${detail}` : "."} Please try again.`,
+              );
+            },
           });
-          move("working");
           return;
         }
         // not a decision — leave the card up and say so rather than
@@ -344,7 +379,7 @@ function Call({ bot }: { bot: Bot }) {
       }
 
       move("sending");
-      dispatch({ type: "send", botId: bot.id, text: said });
+      dispatch({ type: "send", botId: bot.id, text: said, threadId: bot.threadId });
     });
     const offEnd = bridge.onSpeechEnd(({ code, reason }) => {
       if (!alive.current || currentCall() !== bot.id) return;
@@ -374,14 +409,16 @@ function Call({ bot }: { bot: Bot }) {
     // busy/approval are intentionally initial snapshots. Their live changes
     // are handled below without tearing down native event listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bot.id, bot.threadId, dispatch, listen, move, sayThenListen]);
+  }, [bot.id, bot.threadId, dispatch, hush, listen, move, sayThenListen]);
 
   // ── narrate the work, speak the answer, read the approvals ───────────
   useEffect(() => {
     // The request may be resolved from the normal approval UI or by another
     // client while this call is open. Do not keep treating future speech as
     // an answer to a card that no longer exists.
-    if (askedApproval.current && approval?.requestId !== askedApproval.current) {
+    let resumeAfterRoutine = false;
+    if (askedApproval.current && approval?.requestId !== askedApproval.current.requestId) {
+      resumeAfterRoutine = askedApproval.current.routine && askedApproval.current.submitted;
       askedApproval.current = null;
     }
     if (askedQuestion.current && question?.card?.requestId !== askedQuestion.current.requestId) {
@@ -391,10 +428,25 @@ function Call({ bot }: { bot: Bot }) {
       move("working");
       hush();
     }
-    if (approval && askedApproval.current !== approval.requestId && phase !== "speaking") {
-      askedApproval.current = approval.requestId;
+    if (resumeAfterRoutine && !approval && !question && !bot.busy) {
+      listen();
+      return;
+    }
+    // Nothing may reopen capture or narrate new work while the server is
+    // durably settling this exact decision.
+    if (askedApproval.current?.submitted) return;
+    if (approval && askedApproval.current?.requestId !== approval.requestId && phase !== "speaking") {
+      askedApproval.current = {
+        requestId: approval.requestId,
+        routine: isRoutineApproval(approval),
+        skill: isSkillApproval(approval),
+        submitted: false,
+      };
       spokenIds.current.add(approval.message.id);
-      void sayThenListen(`${bot.name} wants to ${approval.tool}. ${approval.detail}. Should I allow it?`);
+      const skillPrompt = approval.message.card?.skillRequest?.action === "update"
+        ? `${bot.name} wants to update a learned skill. Open this chat to review the complete skill before replacing the current version. You can say no to deny it.`
+        : `${bot.name} wants to enable a new learned skill. Open this chat to review the complete skill before enabling it. You can say no to deny it.`;
+      void sayThenListen(isSkillApproval(approval) ? skillPrompt : spokenApprovalPrompt(approval, bot.name));
       return;
     }
     if (
@@ -426,7 +478,7 @@ function Call({ bot }: { bot: Bot }) {
         if (stillMine && phaseRef.current === "speaking") move("working");
       });
     }
-  }, [messages, approval, question, phase, bot.busy, bot.name, hush, move, say, sayThenListen]);
+  }, [messages, approval, question, phase, bot.busy, bot.name, hush, listen, move, say, sayThenListen]);
 
   // busy is the harness's word for "a turn is running"
   useEffect(() => {
@@ -489,7 +541,7 @@ function Call({ bot }: { bot: Bot }) {
         <X size={18} />
       </button>
 
-      <MausAvatar color={bot.color} state={mascotState} size={220} animated trackPointer />
+      <MausAvatar color={bot.color} bodyId={bot.mascotBody ?? undefined} state={mascotState} size={220} animated trackPointer />
 
       <div className="flex flex-col items-center gap-1.5 text-center">
         <div className="text-[20px] font-medium text-ink">{bot.name}</div>

@@ -2,12 +2,12 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Check, AlertTriangle, Loader2, Mic } from "lucide-react";
 import { MausAvatar } from "./Avatar";
 import { identifyEmail, setEmailGateDone, track } from "@/lib/analytics";
-import { distribution } from "@/lib/distribution";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { EngineSetup } from "./EngineSetup";
 import { ProviderMark } from "./ProviderIcons";
 import { PhoneSetupFlow } from "./PhoneSetupFlow";
 import type { InstanceInfo } from "@/state/store";
+import { brand } from "../lib/brand";
 
 // First-run onboarding: who you are (email), what's installed (live engine
 // checks from the harness), what the app may use (TCC), then an optional
@@ -35,7 +35,7 @@ function StatusRow({
     <div className="flex items-start gap-3 rounded-xl bg-card p-3.5">
       <span
         className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ${
-          ok ? "bg-[#00c97222] text-[#38d591]" : warn ? "bg-[#ff980022] text-[#ff9800]" : "bg-raised text-ink-secondary"
+          ok ? "bg-success/15 text-success" : warn ? "bg-warning/15 text-warning" : "bg-raised text-ink-secondary"
         }`}
       >
         {ok ? <Check size={14} /> : <AlertTriangle size={13} />}
@@ -195,11 +195,15 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       >
         {step === 0 && (
           <div className="flex flex-col items-center">
-            <MausAvatar color="green" state="happy" size={72} />
-            <h1 className="mt-4 text-[20px] font-semibold text-ink">Welcome to {distribution.productName}</h1>
+            {brand().logo ? (
+              <img src={brand().logo} alt="" width={72} height={72} className="h-[72px] w-[72px] object-contain" />
+            ) : (
+              <MausAvatar color="green" state="happy" size={72} />
+            )}
+            <h1 className="mt-4 text-[20px] font-semibold text-ink">Welcome to {brand().name}</h1>
             <p className="mt-1.5 text-center text-[14px] leading-relaxed text-ink-secondary">
               Bots that do real work on their own computer. Tell us who you are
-              &mdash; your name and email stay on this machine.
+              and we&rsquo;ll let you know when big things ship.
             </p>
             <input
               autoFocus
@@ -299,7 +303,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                   </div>
                 </div>
                 {perms?.mic === "granted" ? (
-                  <Check size={16} className="shrink-0 text-[#38d591]" />
+                  <Check size={16} className="shrink-0 text-success" />
                 ) : perms?.mic === "denied" || perms?.mic === "restricted" ? (
                   <button
                     onClick={() => window.ogb?.permOpenSettings?.("mic")}

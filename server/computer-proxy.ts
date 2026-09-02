@@ -38,6 +38,8 @@ import {
 import { CONTROL_REFUSAL, createControlClient } from "./control-client.ts";
 import {
   ensureRemoteCuaCommand,
+  isolatedRemoteCommand,
+  MAX_REMOTE_COMMAND_LENGTH,
   REMOTE_CUA_EXECUTABLE,
   REMOTE_CUA_SESSION,
   REMOTE_CUA_SOCKET,
@@ -126,19 +128,7 @@ async function runOnBox(command: string, timeoutMs = 60_000, allowWake = true): 
   // Old boxes may predate noEnv:true. Run every agent-issued command with an
   // explicit desktop-only environment so provider/account credentials cannot
   // leak through `computer_exec` or a child GUI process.
-  const isolatedCommand = [
-    "exec env -i",
-    'HOME="$HOME"',
-    'USER="${USER:-$(id -un)}"',
-    'LOGNAME="${LOGNAME:-${USER:-$(id -un)}}"',
-    'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"',
-    'DISPLAY="${DISPLAY:-:0}"',
-    'XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"',
-    'XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"',
-    'DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"',
-    "/bin/bash -c",
-    shellQuote(command),
-  ].join(" ");
+  const isolatedCommand = isolatedRemoteCommand(command);
   const res = await fetch(`${BOX_API}/boxes/${boxId}/commands`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -424,9 +414,10 @@ function observed(
   frame: Frame | null,
   crop: CropRegion | null = null,
   followsAction = true,
+  isError = false,
 ) {
   if (!frame) {
-    return text(id, `${note}\n(couldn't capture the screen — call screenshot to retry)`);
+    return text(id, `${note}\n(couldn't capture the screen — call screenshot to retry)`, isError);
   }
   const observation = observations.observeFrame(frame.hash ?? (crop ? null : frame.data), crop);
   if (!observation.changed) {
@@ -436,7 +427,7 @@ function observed(
     const guidance = followsAction
       ? " Don't repeat the action — it may already have succeeded. If you expected a change, call screenshot again after it has had time to render."
       : " No new image is attached.";
-    return text(id, `${note}\n(the screen is identical to the frame you already have.${guidance})`);
+    return text(id, `${note}\n(the screen is identical to the frame you already have.${guidance})`, isError);
   }
   send({
     jsonrpc: "2.0",
@@ -446,6 +437,7 @@ function observed(
         { type: "text", text: note },
         { type: "image", data: frame.data, mimeType: frame.mime },
       ],
+      isError: isError || undefined,
     },
   });
 }
@@ -556,7 +548,6 @@ const TOOLS = [
         y: { type: "number" },
         button: { type: "string", enum: ["left", "right"], description: "default left" },
         double: { type: "boolean", description: "double-click" },
-        ...OBSERVE_PROPS,
       },
       required: ["x", "y"],
     },
@@ -632,13 +623,40 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        command: { type: "string" },
+        command: { type: "string", maxLength: MAX_REMOTE_COMMAND_LENGTH },
         observe: {
           type: "boolean",
           description: "default false — set true to also return a screenshot (e.g. after launching a GUI app)",
         },
       },
       required: ["command"],
+    },
+  },
+  {
+    name: "wait_for",
+    description:
+      "Wait on the bot's cloud computer until a condition holds, then return in ONE call instead of repeatedly polling with computer_exec or screenshots. Give only the fields needed by the chosen condition.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        condition: {
+          type: "string",
+          enum: ["http_ready", "tcp_ready", "output_matches", "file_exists"],
+          description:
+            "http_ready = a URL returns a successful response; tcp_ready = a local port accepts; output_matches = a bounded, read-only command's output matches a pattern; file_exists = a path appears",
+        },
+        url: { type: "string", description: "http_ready only: the URL to poll, e.g. http://localhost:3000/health" },
+        port: { type: "integer", description: "tcp_ready only: the local TCP port, e.g. 5432" },
+        command: {
+          type: "string",
+          description: "output_matches only: a quick, read-only shell command whose combined output is checked each poll",
+        },
+        pattern: { type: "string", description: "output_matches only: extended regex the output must match, e.g. ready|listening" },
+        path: { type: "string", description: "file_exists only: absolute path on the computer" },
+        timeout_seconds: { type: "integer", description: "give up after this many seconds; default 60, max 240" },
+        ...OBSERVE_PROPS,
+      },
+      required: ["condition"],
     },
   },
   {
@@ -982,13 +1000,81 @@ async function call(id: unknown, name: string, args: any) {
     return actAndObserve(id, actions, `ran ${actions.length} actions: ${summary}`, args, 180_000);
   }
   if (name === "computer_exec") {
-    const command = String(args.command ?? "").slice(0, 4000);
+    const command = String(args.command ?? "");
+    if (command.length > MAX_REMOTE_COMMAND_LENGTH) {
+      return text(id, `command is too long (maximum ${MAX_REMOTE_COMMAND_LENGTH} characters)`, true);
+    }
     observations.noteAction();
     const out = await runOnBox(command, 120_000);
     const note = `exit ${out.exitCode}\n${out.stdout.slice(-6000)}${out.stderr ? `\n[stderr]\n${out.stderr.slice(-2000)}` : ""}`;
     if (args.observe !== true) return text(id, note);
     const shot = await runOnBox([ENV, GEOMETRY, ensureRemoteCuaCommand(), captureBlock()].join("; "), 60_000);
     return observed(id, note, await frameFrom(shot));
+  }
+  if (name === "wait_for") {
+    const condition = String(args.condition ?? "").trim().toLowerCase();
+    const timeout = Math.min(Math.max(Math.trunc(Number(args.timeout_seconds) || 60), 1), 240);
+    let check = "";
+    let label = "";
+    if (condition === "http_ready") {
+      const url = String(args.url ?? "").trim();
+      if (!/^https?:\/\//i.test(url)) {
+        return text(id, 'http_ready needs "url", e.g. {"condition":"http_ready","url":"http://localhost:3000/health"}.', true);
+      }
+      check = `curl -fsS -o /dev/null --connect-timeout 1 --max-time 1 ${shellQuote(url)}`;
+      label = url;
+    } else if (condition === "tcp_ready") {
+      const portNumber = Math.trunc(Number(args.port));
+      if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+        return text(id, 'tcp_ready needs "port" 1-65535, e.g. {"condition":"tcp_ready","port":5432}.', true);
+      }
+      check = `timeout --kill-after=1s 1s bash -c ${shellQuote(`echo > /dev/tcp/127.0.0.1/${portNumber}`)} 2>/dev/null`;
+      label = `port ${portNumber}`;
+    } else if (condition === "output_matches") {
+      const probe = String(args.command ?? "").slice(0, 2000);
+      const pattern = String(args.pattern ?? "").slice(0, 500);
+      if (!probe.trim() || !pattern.trim()) {
+        return text(id, 'output_matches needs "command" and "pattern", e.g. {"condition":"output_matches","command":"tail -1 /tmp/build.log","pattern":"done|failed"}.', true);
+      }
+      // A probe is rerun until it matches, so bound every individual run.
+      // This prevents a hung command from outliving the advertised wait.
+      check = `timeout --kill-after=1s 1s bash -c ${shellQuote(probe)} 2>&1 | grep -Eq -- ${shellQuote(pattern)}`;
+      label = `/${pattern}/ in ${probe.slice(0, 80)}`;
+    } else if (condition === "file_exists") {
+      const target = String(args.path ?? "").trim();
+      if (!target.startsWith("/")) {
+        return text(id, 'file_exists needs an absolute "path", e.g. {"condition":"file_exists","path":"/tmp/render.done"}.', true);
+      }
+      check = `[ -e ${shellQuote(target)} ]`;
+      label = target;
+    } else {
+      return text(id, 'wait_for needs "condition": http_ready, tcp_ready, output_matches, or file_exists.', true);
+    }
+
+    const loop = [
+      "MET=no",
+      "START=$SECONDS",
+      `END=$((SECONDS+${timeout}))`,
+      `while [ "$SECONDS" -lt "$END" ]; do if ${check}; then MET=yes; break; fi; REMAIN=$((END-SECONDS)); [ "$REMAIN" -le 0 ] && break; [ "$REMAIN" -lt 2 ] && sleep "$REMAIN" || sleep 2; done`,
+      'echo "WAIT_RESULT $MET ELAPSED $((SECONDS-START))"',
+    ].join("; ");
+    observations.noteAction();
+    // Keep this condition-only. A person can take control during a long wait;
+    // appending a screenshot to the same remote shell would bypass the fresh
+    // control check and could capture credentials they typed. A follow-up
+    // screenshot is a separate tool call and therefore re-checks the lease.
+    const out = await runOnBox(loop, (timeout + 15) * 1000);
+    const marker = out.stdout.match(/^WAIT_RESULT (yes|no) ELAPSED (\d+)$/m);
+    if (!out.ok || !marker) {
+      const detail = out.stderr.slice(0, 300) || `exit ${out.exitCode ?? "unknown"}`;
+      return text(id, `wait_for could not check ${label}: ${detail}`, true);
+    }
+    const met = marker[1] === "yes";
+    const elapsed = marker[2];
+    const note = met
+      ? `condition met: ${label} (~${elapsed}s)`
+      : `timed out after ${timeout}s waiting for ${label} — inspect with computer_exec (logs, process list) before waiting again.`;
+    return text(id, note, !met);
   }
   if (name === "open_url") {
     const url = String(args.url ?? "");

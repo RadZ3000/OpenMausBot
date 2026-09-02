@@ -26,6 +26,8 @@ export type BotUpdatePatch = Partial<
     | "approvePeerComms"
     | "composio"
     | "imageGen"
+    | "browser"
+    | "browserProfile"
     | "modelSelection"
   >
 > & {

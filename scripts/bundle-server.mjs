@@ -41,6 +41,8 @@ const yamlEsmPlugin = {
 // Every file run as its own process. Keep in sync with the spawn sites above.
 const ENTRY_POINTS = [
   "index.ts",
+  // `pair` for operators of a container or headless install (docs/self-hosting.md)
+  "pair-cli.ts",
   // The packaged smoke probe imports this manifest directly. Importing the
   // shared avatar contract widens TypeScript's inferred emit root to the repo,
   // so tsc may place its copy under dist-server/server/. Bundle an explicit
@@ -59,6 +61,7 @@ const ENTRY_POINTS = [
   "drivers/dweb-proxy.ts",
   "drivers/phone-proxy.ts",
   "drivers/image-proxy.ts",
+  "drivers/browser-proxy.ts",
 ];
 
 await build({
@@ -73,6 +76,21 @@ await build({
   allowOverwrite: true,
   logLevel: "info",
   plugins: [yamlEsmPlugin],
+});
+
+// External MCP clients launch this as an independent stdio process. Keep its
+// source under scripts for a pleasant checkout command (`pnpm mcp`), but ship
+// the bundled output beside the packaged harness so release users do not need
+// the repository, TypeScript, pnpm, or node_modules.
+await build({
+  entryPoints: [join(root, "scripts", "mcp-server.ts")],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  outfile: join(root, "dist-server", "mcp-server.js"),
+  allowOverwrite: true,
+  logLevel: "info",
 });
 
 // pi-mcp-extension.ts is NOT an OpenMausBot entry point: it is loaded by the

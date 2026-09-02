@@ -9,6 +9,7 @@ import {
   useStore,
   useStreaming,
   formatTime,
+  openNotificationTarget,
   type Bot,
   type Group,
   type GroupDefaultResponder,
@@ -22,26 +23,30 @@ import { effectiveDefaultResponder, groupResponseHint } from "@/lib/group-routin
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Composer } from "./Composer";
 import { ChatFindBar } from "./ChatFindBar";
+import { GroupTaskPicker } from "./TaskPicker";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
-import { AttachedImageGallery } from "./AttachmentPreview";
+import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
+import { GoalRunCard } from "./GoalRunCard";
+import { AttachedFileChips, AttachedImageGallery } from "./AttachmentPreview";
+import { messageImageSrc } from "@/lib/message-image";
+import { ExpandableImage } from "./Lightbox";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
-import { ReactionBar, ReactionChips } from "./Reactions";
+
 import { ApprovalCard } from "./ApprovalCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
 import { groupActivityRuns } from "@/lib/activity-runs";
 import { ActivityRun } from "./ActivityRun";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
-import { ExpandableImage } from "./Lightbox";
-import { messageImageSrc } from "@/lib/message-image";
-import { splitAttachedImages } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
 import { shortPath } from "@/lib/short-path";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
-import { showWorkingDots } from "@/lib/turn-tail";
+import { useComposerDockPad } from "@/lib/composer-dock";
+import { awaitedMemberId, showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
+import { splitTranscriptAttachments } from "@/lib/composer-attachments";
 import {
   TRANSCRIPT_WINDOW_SIZE,
   expandWindowStart,
@@ -49,6 +54,7 @@ import {
   resolveTranscriptWindow,
   tailWindowStart,
 } from "@/lib/transcript-window";
+import { useReplyDraft } from "@/lib/drafts";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -85,6 +91,7 @@ function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: st
     <div className="mt-1 flex items-center gap-1.5 pl-0.5">
       <MausAvatar
         color={(bot?.color ?? color) as Bot["color"]}
+        bodyId={bot?.mascotBody ?? undefined}
         state={normalizeState(bot?.mascotExpression) ?? "happy"}
         size={16}
         motion="none"
@@ -176,9 +183,13 @@ const Transcript = memo(function Transcript({
         const m = item.message;
         if (m.id === emergingId) return null;
         const user = m.role === "user";
-        const attachedImages = user && m.kind === "text" && m.text ? splitAttachedImages(m.text) : null;
-        const generated = m.kind === "image" ? messageImageSrc(group.threadId, m) : null;
+        const attachments = user && m.text ? splitTranscriptAttachments(m.text) : null;
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || newDay;
+        const routineOwner = m.kind === "routine.run" ? memberOf(m.from?.botId) : undefined;
+        const routineExecutionThreadId = m.routineRun?.executionThreadId;
+        const routineTarget = routineOwner && hasRoutineExecutionTask(routineOwner.tasks, routineExecutionThreadId)
+          ? { botId: routineOwner.id, threadId: routineExecutionThreadId }
+          : undefined;
         const row =
           // a member can hit a permission ask mid-turn; without this the
           // card never rendered here and the bot waited out its timeout.
@@ -193,24 +204,35 @@ const Transcript = memo(function Transcript({
             <div className="flex justify-start">
               <ApprovalCard bot={memberOf(m.from?.botId)} message={m} />
             </div>
-          ) : generated ? (
-            <div className="flex flex-col items-start gap-1">
-              <ExpandableImage
-                src={generated}
-                alt="Image a bot generated"
-                caption={m.path}
-                className="w-fit max-w-[min(42rem,78%)] rounded-2xl border border-hairline/40"
+          ) : m.kind === "goal.run" ? (
+            <div className="flex justify-start">
+              <GoalRunCard message={m} />
+            </div>
+          ) : m.kind === "routine.run" ? (
+            <div className="flex justify-start">
+              <RoutineRunCard
+                message={m}
+                onOpen={routineTarget
+                  ? () => openNotificationTarget(dispatch, routineTarget, state)
+                  : undefined}
               />
-              {m.path && <span className="text-[11px] text-ink-secondary/70">{m.path}</span>}
             </div>
           ) : m.kind === "activity" && m.tool ? (
             m.tool.ok === false || m.tool.name.startsWith("error:") || showToolCalls ? (
               <RoomToolChip message={m} />
             ) : null
-          ) : m.kind === "text" && m.text ? (
+          ) : m.kind === "image" && messageImageSrc(group.threadId, m) ? (
+            <div className="flex justify-start">
+              <ExpandableImage
+                src={messageImageSrc(group.threadId, m)!}
+                alt={m.path?.split(/[\\/]/).pop() ?? "Generated image"}
+                caption={m.path?.split(/[\\/]/).pop()}
+                className="w-fit max-w-[min(42rem,78%)] rounded-2xl border border-hairline/40"
+              />
+            </div>
+          ) : m.kind === "text" && (m.text || m.attachments?.length) ? (
             <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
               <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
-                {user && <ReactionBar threadId={group.threadId} message={m} />}
                 {user && (
                   <>
                     <button
@@ -249,12 +271,28 @@ const Transcript = memo(function Transcript({
                   })()}
                   {user ? (
                     <>
-                      {attachedImages && attachedImages.images.length > 0 && (
-                        <AttachedImageGallery paths={attachedImages.images} />
+                      {attachments && attachments.images.length > 0 && (
+                        <AttachedImageGallery paths={attachments.images} />
                       )}
-                      {attachedImages?.display ?? m.text}
+                      {attachments && attachments.files.length > 0 && (
+                        <AttachedFileChips
+                          files={attachments.files}
+                          className={!attachments.display ? "mb-0" : undefined}
+                        />
+                      )}
+                      {attachments?.display ?? m.text}
                     </>
-                  ) : <ChatMarkdown text={m.text} />}
+                  ) : (
+                    <>
+                      {m.attachments?.length ? (
+                        <AttachedImageGallery
+                          paths={m.attachments.map((attachment) => attachment.path)}
+                          className={m.text ? "justify-start" : "mb-0 justify-start"}
+                        />
+                      ) : null}
+                      {m.text ? <ChatMarkdown text={m.text} /> : null}
+                    </>
+                  )}
                 </div>
                 {!user && (
                   <>
@@ -268,14 +306,12 @@ const Transcript = memo(function Transcript({
                       <MessageSquareReply size={14} />
                     </button>
                     <PinToggle group={group} message={m} />
-                    <ReactionBar threadId={group.threadId} message={m} />
                   </>
                 )}
                 <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
                   {formatTime(m.at)}
                 </span>
               </div>
-              <ReactionChips threadId={group.threadId} message={m} members={members} align={user ? "right" : "left"} />
             </div>
           ) : null;
         if (!row) return null;
@@ -391,7 +427,7 @@ function RoomWorkingFolder({ group }: { group: Group }) {
             {shownCwd ? shortPath(shownCwd, home) : <span className="text-ink-secondary">Each bot's own folder</span>}
           </div>
           <div className="mt-2 text-[12px] text-ink-secondary">
-            Fixed after this channel's first turn. Create a new channel and choose its folder before sending the first message to work somewhere else.
+            Fixed for this task after its first turn. Start a new task to work somewhere else.
           </div>
         </div>
       ) : canPick ? (
@@ -697,6 +733,7 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
                         >
                           <MausAvatar
                             color={member.color}
+                            bodyId={member.mascotBody ?? undefined}
                             state={normalizeState(member.mascotExpression) ?? "happy"}
                             size={24}
                             animated={false}
@@ -816,6 +853,8 @@ export function GroupView({ group }: { group: Group }) {
   const stream = useStreaming();
   const streaming = stream.streaming[group.threadId];
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerDockRef = useRef<HTMLDivElement>(null);
+  const composerDock = useComposerDockPad(composerDockRef);
   const [follow, setFollow] = useState(true);
   const followRef = useRef(true);
   const previousScrollTop = useRef(0);
@@ -825,11 +864,14 @@ export function GroupView({ group }: { group: Group }) {
   const [folderOpen, setFolderOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
-  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const { replyTo, selectReply, clearReply, consumeReply, restoreReply } = useReplyDraft(
+    group.threadId,
+    `group:${group.id}:${group.threadId}`,
+    group.messages,
+  );
   const membersTriggerRef = useRef<HTMLButtonElement>(null);
   const closeMembers = useCallback(() => setMembersOpen(false), []);
   useEffect(() => setFindOpen(false), [group.threadId]);
-  useEffect(() => setReplyTo(null), [group.threadId]);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
@@ -852,9 +894,13 @@ export function GroupView({ group }: { group: Group }) {
   const lastGroupMessage = group.messages.at(-1);
   const toolInFlight = lastGroupMessage?.kind === "activity" && lastGroupMessage.tool?.ok === undefined;
   const activityLabel = liveActivityLabel(lastGroupMessage);
-  const waiting = Boolean(
-    speaker && showWorkingDots(true, undefined, group.messages.at(-1), speaker.id),
+  // A member busy elsewhere takes its turn when free; until then the room
+  // works with no speaker, and the presence row names who it is waiting on.
+  const awaited = members.find(
+    (b) => b.id === awaitedMemberId(group.working, group.busyBotId, lastGroupMessage),
   );
+  const waiting =
+    Boolean(speaker && showWorkingDots(true, group.messages.at(-1), speaker.id)) || awaited !== undefined;
   const wasWaiting = useRef(false);
   const [popping, setPopping] = useState<{ id: string; text: string; botId?: string } | null>(null);
   useEffect(() => {
@@ -882,7 +928,9 @@ export function GroupView({ group }: { group: Group }) {
     lastGroupMessage?.from?.botId,
   ]);
   const presenceVisible = waiting || popping !== null;
-  const presenceSpeaker = speaker ?? members.find((member) => member.id === popping?.botId) ?? members[0];
+  const poppingMessage = popping ? group.messages.find((message) => message.id === popping.id) : undefined;
+  const presenceSpeaker =
+    speaker ?? awaited ?? members.find((member) => member.id === popping?.botId) ?? members[0];
 
   // Windowed transcript, mirroring ChatView: only a tail of the room mounts;
   // the anchored boundary re-tails on a render-phase reset when the room (or
@@ -936,13 +984,14 @@ export function GroupView({ group }: { group: Group }) {
   useEffect(() => setFolderOpen(false), [group.id]);
   useEffect(() => setMembersOpen(false), [group.id]);
   // deps track the FULL messages.length, so expanding the window (which only
-  // changes windowedMessages) can never re-trigger this bottom scrollTo
+  // changes windowedMessages) can never re-trigger this bottom scrollTo.
+  // `follow` is intentionally omitted — see ChatView.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [group.id, group.messages.length, streaming, group.busyBotId, follow]);
+  }, [group.id, group.messages.length, streaming, group.busyBotId, group.working, composerDock.pad]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put
@@ -994,16 +1043,12 @@ export function GroupView({ group }: { group: Group }) {
         group.busyBotId === b.id && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
       )}
     >
-      <MausAvatar color={b.color} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
+      <MausAvatar color={b.color} bodyId={b.mascotBody ?? undefined} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
       {group.busyBotId === b.id && (
         <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full border border-app bg-accent" />
       )}
     </span>
   ));
-
-  const isWin = window.ogb?.platform === "win32";
-  const drag = isWin ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : undefined;
-  const noDrag = isWin ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined;
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
@@ -1017,12 +1062,13 @@ export function GroupView({ group }: { group: Group }) {
           "flex items-center justify-between px-5 py-3",
           // Room for the drawer button, which overlays this corner below md.
           "pl-11 md:pl-5",
-          isWin && "pr-[148px]",
         )}
-        style={drag}
       >
-        <span className="text-[15px] font-semibold text-ink">{group.name}</span>
-        <div className="flex items-center gap-1.5" style={noDrag}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
+          {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
+        </div>
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => setFindOpen((open) => !open)}
@@ -1138,10 +1184,10 @@ export function GroupView({ group }: { group: Group }) {
         );
       })()}
 
-      {/* Transcript */}
+      <div className="relative min-h-0 flex-1">
       <div
         ref={scrollRef}
-        className="flex-1 overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
+        className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
         onWheel={(e) => {
           if (e.deltaY < 0) setBottomFollow(false);
           else if (atEnd()) setBottomFollow(true);
@@ -1172,7 +1218,8 @@ export function GroupView({ group }: { group: Group }) {
           </div>
         ) : (
         <div
-          className="flex w-full flex-col gap-3 pb-4"
+          className="flex w-full flex-col gap-3"
+          style={{ paddingBottom: composerDock.pad }}
           role="log"
           aria-live="polite"
           aria-label={`Room ${group.name}`}
@@ -1184,6 +1231,7 @@ export function GroupView({ group }: { group: Group }) {
                   <MausAvatar
                     key={b.id}
                     color={b.color}
+                    bodyId={b.mascotBody ?? undefined}
                     state="happy"
                     size={44}
                     motion="none"
@@ -1214,7 +1262,7 @@ export function GroupView({ group }: { group: Group }) {
             messages={windowedMessages}
             transcript={group.messages}
             emergingId={popping?.id}
-            onReply={setReplyTo}
+            onReply={selectReply}
           />
           {laterCount > 0 && (
             <div className="flex justify-center">
@@ -1231,7 +1279,7 @@ export function GroupView({ group }: { group: Group }) {
               avatar={
                 <MausAvatar
                   color={presenceSpeaker?.color ?? "green"}
-                  state={toolInFlight ? "working" : "thinking"}
+                  state={toolInFlight && !awaited ? "working" : "thinking"}
                   size={36}
                   forward={false}
                   lookAround={1}
@@ -1244,7 +1292,13 @@ export function GroupView({ group }: { group: Group }) {
             >
               {popping ? (
                 <div className="w-fit max-w-[min(42rem,78%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
-                  <ChatMarkdown text={popping.text} />
+                  {poppingMessage?.attachments?.length ? (
+                    <AttachedImageGallery
+                      paths={poppingMessage.attachments.map((attachment) => attachment.path)}
+                      className={popping.text ? "justify-start" : "mb-0 justify-start"}
+                    />
+                  ) : null}
+                  {popping.text ? <ChatMarkdown text={popping.text} /> : null}
                 </div>
               ) : null}
             </TurnPresence>
@@ -1263,20 +1317,26 @@ export function GroupView({ group }: { group: Group }) {
             });
           }}
           aria-label="Jump to latest messages"
-          className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          className="animate-pop-in absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          style={{ bottom: composerDock.height }}
         >
           <ArrowDown size={13} /> Jump to latest
         </button>
       )}
 
+      <div ref={composerDockRef} className="absolute inset-x-0 bottom-0 z-[2]">
       <Composer
-        key={group.id}
+        key={group.threadId}
         group={group}
         members={members}
         locked={setupPending}
         replyTo={replyTo}
-        onClearReply={() => setReplyTo(null)}
+        onClearReply={clearReply}
+        onConsumeReply={consumeReply}
+        onRestoreReply={restoreReply}
       />
+      </div>
+      </div>
     </main>
   );
 }

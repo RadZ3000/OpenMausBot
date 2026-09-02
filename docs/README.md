@@ -73,7 +73,9 @@ One fact, one file. If a fact already has an owner, edit that file.
 | `electron/` | Desktop shell (platform gates) |
 | `brand/` | Fork overlay. Phase D unset — do not invent `appId` / icons / URLs. |
 | `cloudflare/inference-broker/` | Path C Worker (ours) |
-| `companion/` | LAN companion |
+| `companion/` | LAN companion (desktop pairing / phone setup UI) |
+| `android/` | **Upstream** Android companion. Inherit; do not rewrite. |
+| `android/` / `ios/` | **Upstream** phone companions. Read, do not rewrite. |
 | `.claude/skills/` | Agent skills. Indexed in `AGENTS.md`. |
 | `docs/plans/` | Specs we still act on |
 | `docs/plans/archive/` | Done, superseded, walks, diaries. Git has them. |
@@ -87,7 +89,7 @@ if it disagrees with the diff, the **diff** wins.
 
 | Ours | Theirs — read, do not rewrite |
 |---|---|
-| This map, [`agent-status.md`](agent-status.md), [`plans/README.md`](plans/README.md), [`known-bugs.md`](known-bugs.md), [`local-model-path.md`](local-model-path.md), [`identity-surface.md`](identity-surface.md), [`image-generation.md`](image-generation.md), [`../AGENTS.md`](../AGENTS.md), [`../brand/`](../brand/), [`../cloudflare/inference-broker/`](../cloudflare/inference-broker/) | Repo-root [`../README.md`](../README.md), [`../CONTRIBUTING.md`](../CONTRIBUTING.md), [`releasing.md`](releasing.md), [`superpowers/`](superpowers/), `docs/plans/2026-08-18-*`, product guides (`cursor.md`, `voice-mode.md`, `composio.md`, `ios-*.md`, …) |
+| This map, [`agent-status.md`](agent-status.md), [`plans/README.md`](plans/README.md), [`known-bugs.md`](known-bugs.md), [`local-model-path.md`](local-model-path.md), [`identity-surface.md`](identity-surface.md), [`image-generation.md`](image-generation.md), [`../AGENTS.md`](../AGENTS.md), [`../brand/`](../brand/), [`../cloudflare/inference-broker/`](../cloudflare/inference-broker/) | Repo-root [`../README.md`](../README.md), [`../CONTRIBUTING.md`](../CONTRIBUTING.md), [`releasing.md`](releasing.md), [`superpowers/`](superpowers/), [`../android/`](../android/), `docs/plans/2026-08-18-*`, product guides (`cursor.md`, `voice-mode.md`, `composio.md`, `ios-*.md`, …) |
 
 Product guides and their plans (`agent-harness-upgrades*.md`,
 `opencode-go-integration.md`) stay byte-identical unless we are merging.

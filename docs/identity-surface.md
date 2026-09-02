@@ -27,7 +27,7 @@ skin **foundry**. Those are not locked until `--release` is green.
 | | |
 |---|---|
 | **Set** | `productName`, `companyName`, `defaultSkin`, `teamLibrary: "off"`, `showUpdateDownload: false`, overlay `publish: null`, overlay Linux vendor / extraMetadata `productName` |
-| **Unset (Phase D)** | `appId`, `dataDirectoryName`, protocol display/scheme, `executableName`, helper `.app` names, `httpUserAgent`, homepage/author, `docsBaseUrl`, `composioBrokerUrl`, `companionName`, `emailFromAddress`, `controlPlaneUrl`, `companionHostSuffix`, icons, mascot, iOS strings |
+| **Unset (Phase D)** | `appId`, `dataDirectoryName`, protocol display/scheme, `executableName`, helper `.app` names, `httpUserAgent`, homepage/author, `docsBaseUrl`, `composioBrokerUrl`, `companionName`, `emailFromAddress`, `controlPlaneUrl`, `companionHostSuffix`, icons, mascot, iOS strings, Android strings |
 | **Inherited until D** | Parent `appId` `com.openmausbot.app`, `~/.openmausbot`, `openmausbot://`, Linux binary `openmausbot`, packaged Composio milind fallback, `package.json` homepage/author, license extraResource filenames, taskbar icons in `build/`, wrangler `noreply@openmausbot.com` / `accounts.openmausbot.com` |
 
 ## 1. Brand — may change per distribution
@@ -53,6 +53,8 @@ skin **foundry**. Those are not locked until `--release` is green.
 | Control-plane OTP / Better Auth | `brandProfile.productName` in `cloudflare/control-plane/src/email.ts` and `auth.ts` |
 
 iOS display strings still live in `ios/` until `brand/ios/` is filled.
+Android companion copy lives in `android/` — that tree is upstream's; do not
+rewrite it to paper over brand.
 `--release` scans them. The Worker host (`accounts.openmausbot.com`,
 `noreply@openmausbot.com`) stays until `controlPlaneUrl` /
 `emailFromAddress` / `companionHostSuffix` are plugged. Packaged desktop

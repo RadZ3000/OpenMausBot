@@ -4,10 +4,13 @@
 // in-panel capture. Linux local mode is an automation readiness state and its
 // separate preview remains explicitly user-initiated. Auto never selects a
 // Linux user's desktop.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { z } from "zod";
 import {
-  CalendarDays,
   CalendarClock,
+  CalendarDays,
+  Columns2,
+  Globe,
   Hand,
   Loader2,
   Maximize2,
@@ -19,20 +22,23 @@ import {
   Smartphone,
   X,
 } from "lucide-react";
-import { useStore, type Bot } from "@/state/store";
+import { api, useStore, type Bot } from "@/state/store";
 import type { Routine } from "@/lib/routines";
 import { ApiKeyRow } from "./ApiKeys";
 import { cn } from "@/lib/cn";
-import { distribution } from "@/lib/distribution";
 import { usePageVisible } from "@/lib/page-visible";
 import { CloudBackendPicker } from "./CloudBackendPicker";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { RoutineEditor } from "./RoutinesPage";
 import { AndroidDevicePanel, useAndroidUsbDevices } from "./AndroidDevicePanel";
+import { BrowserPanel } from "./BrowserPanel";
+import { builtInBrowserEnabled } from "@/lib/feature-flags";
+import { transitionComputerControlLease, type ComputerControlAction } from "@/lib/computer-control";
 import { LocalScreenPreview } from "./LocalScreenPreview";
 import { LinuxLocalControl } from "./LinuxLocalControl";
 import { MacLocalControl } from "./MacLocalControl";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
+import { Switch } from "./SettingsPrimitives";
 import {
   autoSelectsLocalComputer,
   instanceSupportsLocalComputer,
@@ -40,15 +46,19 @@ import {
   localComputerDisabledReason,
   localComputerSelectable,
 } from "@/lib/local-computer";
-import { isLocalInjectModelId, localInjectCannotAutoDriveComputer } from "@/lib/computer-routing";
-import { localVmCanResume } from "../../shared/local-vm-lifecycle";
-import { vpsComputerNeedsReplacement, type VpsComputerStatus } from "@/lib/vps-computer";
+import {
+  readComputerPanelView,
+  writeComputerPanelView,
+  type ComputerPanelView,
+} from "@/lib/computer-panel-view";
 
-async function api(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-  return body;
+interface VpsComputerStatus {
+  configured: boolean;
+  imageMatches: boolean;
+  managed: boolean;
+  container: "running" | "stopped" | "missing";
+  ready: boolean;
+  problem: string | null;
 }
 
 type Phase =
@@ -63,6 +73,7 @@ type Phase =
   | "vps-stopped"
   | "local"
   | "local-unavailable"
+  | "browser"
   | "off"
   | "error";
 
@@ -80,9 +91,13 @@ interface LocalVmStatus {
   desktopReady: boolean;
   ready: boolean;
   problem: string | null;
-  desktop_warning: string | null;
   viewer_url: string;
 }
+
+const computerControlSnapshotSchema = z.object({
+  held: z.boolean().optional().default(false),
+  helpReason: z.string().nullable().optional().default(null),
+}).passthrough();
 
 function routineScheduleLabel(routine: Routine) {
   if (routine.schedule.type === "once") {
@@ -112,7 +127,53 @@ function nextRunLabel(at: number | null) {
   return `${sameDay ? "Today" : date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
 
-export function ComputerPanel({ bot }: { bot: Bot }) {
+const PANEL_WIDTH_KEY = "omb-computer-panel-width";
+const PANEL_MIN_WIDTH = 360;
+const PANEL_MAX_WIDTH = 960;
+const PANEL_DEFAULT_WIDTH = 400;
+
+function readPanelWidth(): number {
+  try {
+    const stored = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+    if (Number.isFinite(stored) && stored >= PANEL_MIN_WIDTH && stored <= PANEL_MAX_WIDTH) return stored;
+  } catch {
+    /* storage blocked — default width */
+  }
+  return PANEL_DEFAULT_WIDTH;
+}
+
+export function ComputerPanel({
+  bot,
+  onOpenVmWorkspace,
+  onExpandBrowser,
+}: {
+  bot: Bot;
+  onOpenVmWorkspace?: (botId: string) => void;
+  onExpandBrowser?: (botId: string) => void;
+}) {
+  // The panel is a fixed column by default; a drag handle on its left edge
+  // makes it wide enough to actually read a page in the Browser tab.
+  const [panelWidth, setPanelWidth] = useState(readPanelWidth);
+  const resizeFrom = useRef<{ x: number; width: number } | null>(null);
+  const onResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    resizeFrom.current = { x: event.clientX, width: panelWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const onResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeFrom.current) return;
+    const next = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, resizeFrom.current.width + (resizeFrom.current.x - event.clientX)));
+    setPanelWidth(next);
+  };
+  const onResizeEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeFrom.current) return;
+    resizeFrom.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    try {
+      localStorage.setItem(PANEL_WIDTH_KEY, String(panelWidth));
+    } catch {
+      /* storage blocked — width lives for this session */
+    }
+  };
   const { state, dispatch } = useStore();
   const { capabilities, ready: capabilitiesReady } = useDesktopCapabilities();
   const localAvailable = capabilities.localComputer.available;
@@ -133,29 +194,45 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [vpsStatus, setVpsStatus] = useState<VpsComputerStatus | null>(null);
   const [localFrame, setLocalFrame] = useState<string | null>(null);
   const [pending, setPending] = useState<
-    | "join"
-    | "sleep"
-    | "provision"
-    | "vps-replace"
-    | "vm-create"
-    | "vm-start"
-    | "vm-recreate"
-    | "vm-delete"
-    | null
+    "join" | "sleep" | "provision" | "vps-replace" | "vm-create" | "vm-recreate" | "vm-delete" | null
   >(null);
   const [controlPending, setControlPending] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creatingRoutine, setCreatingRoutine] = useState(false);
-  const [panelView, setPanelView] = useState<"computer" | "android">("computer");
+  const [panelView, setPanelView] = useState<ComputerPanelView>(() => readComputerPanelView(bot.id));
   const androidStatus = useAndroidUsbDevices();
   const androidConnected = androidStatus.devices.length > 0;
+  // the built-in browser: a per-bot switch in Settings, and only the desktop app has one
+  const browserEnabled = builtInBrowserEnabled(state.config) && bot.browser !== false && Boolean(window.ogb?.browser);
   // bumped when a Box API key is saved inline, to re-run the spin-up flow
   const [retry, setRetry] = useState(0);
   const vmReadinessAttempts = useRef(0);
   const selectedInstance = state.instances.find(
     (instance) => instance.instanceId === bot.modelSelection.instanceId,
   );
+  // "Works on: Browser" needs the same things as the browser switch minus
+  // the switch itself — picking it turns the switch on. The box-native
+  // Computer engine runs inside the box, so it has no browser-only mode.
+  const browserSelectable =
+    builtInBrowserEnabled(state.config) &&
+    Boolean(window.ogb?.browser) &&
+    selectedInstance?.capabilities?.browserMcp === true &&
+    selectedInstance.driverKind !== "boxAgent";
+  const browserDisabledReason = !window.ogb?.browser
+    ? "The built-in browser needs the OpenMausBot desktop app"
+    : !builtInBrowserEnabled(state.config)
+      ? "The built-in browser is switched off under App Settings → Experimental"
+      : "This model engine cannot use the built-in browser";
+
+  const selectPanelView = (view: ComputerPanelView) => {
+    setPanelView(view);
+    writeComputerPanelView(bot.id, view);
+  };
+
+  useEffect(() => {
+    setPanelView(readComputerPanelView(bot.id));
+  }, [bot.id]);
 
   // Pause the screenshot poll while this bot's viewer is open; seed from the
   // live viewer so a remount/switch mid-session doesn't wrongly resume it.
@@ -180,8 +257,11 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   }, [bot.id]);
 
   useEffect(() => {
-    if (!androidConnected && panelView === "android") setPanelView("computer");
-  }, [androidConnected, panelView]);
+    if ((!androidConnected && panelView === "android") || (!browserEnabled && panelView === "browser")) {
+      setPanelView("computer");
+      writeComputerPanelView(bot.id, "computer");
+    }
+  }, [androidConnected, bot.id, browserEnabled, panelView]);
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computer]);
@@ -213,6 +293,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         ? "the Local VM"
       : bot.computer === "local"
         ? "this computer"
+      : bot.computer === "browser"
+        ? "the built-in browser"
         : bot.computer === "off"
           ? null
           : phase === "ready"
@@ -222,6 +304,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   // resolve the mode on open; box endpoints are only ever hit on the
   // cloud path, so local/off can never render a JSON error as an image
   useEffect(() => {
+    // Browser and Android own their own live surfaces. Do not provision a VM,
+    // wake a box, or churn preview state behind either tab.
+    if (panelView !== "computer") return;
     let alive = true;
     setPhase("checking");
     setPolledFrame(null);
@@ -233,6 +318,12 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     setError(null);
     if (bot.computer === "off") {
       setPhase("off");
+      return;
+    }
+    // Browser-only bots own no desktop: the Browser tab is their whole
+    // screen, so this tab must not wake a box or start host capture.
+    if (bot.computer === "browser") {
+      setPhase("browser");
       return;
     }
     if (bot.computer === "local") {
@@ -259,7 +350,6 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           if (viewerUrl.startsWith("http")) setVmViewerUrl(viewerUrl);
           if (status.ready) {
             vmReadinessAttempts.current = 0;
-            setError(status.desktop_warning ?? null);
             setPhase("vm");
           } else if (
             status.container === "running" &&
@@ -282,8 +372,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
               status.container === "missing" &&
               status.image &&
               status.create_supported;
-            const canStartHere = localVmCanResume(status);
-            setError(canCreateHere || canStartHere ? null : `${status.problem ?? "The Local VM is not ready"}. Open App Settings → Local VM.`);
+            setError(canCreateHere ? null : `${status.problem ?? "The Local VM is not ready"}. Open App Settings → Local VM.`);
             setPhase("vm-unavailable");
           }
         })
@@ -336,7 +425,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           // a managed container from the previous release. Provision refuses
           // to overwrite it by design, so surface the explicit replacement
           // path instead of automatically issuing a request that can only 409.
-          if (vpsComputerNeedsReplacement(status)) {
+          if (status.managed && status.container !== "missing" && !status.imageMatches) {
             setError(status.problem);
             setPhase("vps-incompatible");
             return;
@@ -421,6 +510,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     cloudSupported,
     vpsSupported,
     state.config?.vps?.sshAlias,
+    panelView,
   ]);
 
   // cloud preview: SSE frames win while the bot works; otherwise poll.
@@ -431,7 +521,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const sseFlowing = Boolean(bot.busy && live);
   const inFlight = useRef(false);
   useEffect(() => {
-    if (phase !== "ready" || sseFlowing || viewerOpen || !pageVisible) return;
+    if (panelView !== "computer" || phase !== "ready" || sseFlowing || viewerOpen || !pageVisible) return;
     let alive = true;
     const shoot = async () => {
       if (inFlight.current) return;
@@ -451,13 +541,13 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [phase, sseFlowing, bot.id, viewerOpen, pageVisible, bot.busy]);
+  }, [panelView, phase, sseFlowing, bot.id, viewerOpen, pageVisible, bot.busy]);
 
   // Local VM preview comes directly from Cua Driver through the harness. It
   // does not use the password-protected noVNC viewer or cloud endpoints.
   const vmInFlight = useRef(false);
   useEffect(() => {
-    if (phase !== "vm" || viewerOpen || !pageVisible) return;
+    if (panelView !== "computer" || phase !== "vm" || viewerOpen || !pageVisible) return;
     let alive = true;
     const shoot = async () => {
       if (vmInFlight.current) return;
@@ -477,7 +567,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [phase, bot.id, viewerOpen, pageVisible, bot.busy]);
+  }, [panelView, phase, bot.id, viewerOpen, pageVisible, bot.busy]);
 
   // local preview: frames from the Electron main process. The FIRST capture
   // attempt is what makes macOS show the Screen Recording prompt (there is
@@ -485,7 +575,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   // the user denied — surface the Settings repair path instead of spinning.
   const [localMisses, setLocalMisses] = useState(0);
   useEffect(() => {
-    if (phase !== "local" || !window.ogb || isLinux || !pageVisible) return;
+    if (panelView !== "computer" || phase !== "local" || !window.ogb || isLinux || !pageVisible) return;
     let alive = true;
     setLocalMisses(0);
     const shoot = async () => {
@@ -505,7 +595,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [phase, isLinux, pageVisible, bot.busy]);
+  }, [panelView, phase, isLinux, pageVisible, bot.busy, bot.id]);
 
   const lastScreenMessage = [...bot.messages].reverse().find((m) => m.kind === "screen" && m.png);
   const cloudFrame =
@@ -531,13 +621,14 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   useEffect(() => {
     let alive = true;
     api(`/api/bots/${bot.id}/computer/control`)
-      .then((snap) => {
+      .then((raw) => {
         if (!alive) return;
+        const snap = computerControlSnapshotSchema.parse(raw);
         dispatch({
           type: "computerControl",
           botId: bot.id,
           held: snap.held === true,
-          helpReason: typeof snap.helpReason === "string" ? snap.helpReason : null,
+          helpReason: snap.helpReason,
         });
       })
       .catch(() => {});
@@ -546,28 +637,59 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bot.id]);
-  const requestControl = async (action: "take" | "release" | "dismiss-help") => {
-    const snap = await api(`/api/bots/${bot.id}/computer/control`, {
+  const requestControl = useCallback(async (action: ComputerControlAction) => {
+    const snap = computerControlSnapshotSchema.parse(await api(`/api/bots/${bot.id}/computer/control`, {
       method: "POST",
       body: JSON.stringify({ action }),
-    });
+    }));
     dispatch({
       type: "computerControl",
       botId: bot.id,
       held: snap.held === true,
-      helpReason: typeof snap.helpReason === "string" ? snap.helpReason : null,
+      helpReason: snap.helpReason,
     });
     return snap;
-  };
+  }, [bot.id, dispatch]);
 
-  const controlAction = (action: "take" | "release" | "dismiss-help") => {
+  const setNativeBrowserControl = useCallback(async (held: boolean): Promise<boolean> => {
+    const setter = window.ogb?.browser?.setHumanControl;
+    if (!setter) return true;
+    const profile = bot.browserProfile === "guest" ? "guest" : bot.browserProfile ?? "";
+    return (await setter(bot.id, held, profile)) === true;
+  }, [bot.browserProfile, bot.id]);
+
+  const transitionControl = useCallback(async (action: ComputerControlAction) => {
+    // BrowserPanel performs the same two-phase transition itself. Every
+    // other computer surface must also gate Electron's direct browser host:
+    // the server hold is bot-wide, and a shell-capable agent can otherwise
+    // bypass the server proxy while the person drives Local VM/Box/VPS.
+    return transitionComputerControlLease({
+      action,
+      syncNativeBrowser: panelView !== "browser",
+      requestControl,
+      setNativeBrowserControl,
+    });
+  }, [panelView, requestControl, setNativeBrowserControl]);
+
+  const controlAction = useCallback(async (action: ComputerControlAction): Promise<boolean> => {
     setControlPending(true);
-    requestControl(action)
-      .catch((e) => setError(e.message))
-      .finally(() => setControlPending(false));
-  };
+    setError(null);
+    try {
+      await transitionControl(action);
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
+    } finally {
+      setControlPending(false);
+    }
+  }, [transitionControl]);
 
-  const openDesktop = async (opts?: { takeWheel?: boolean }) => {
+  const expandBrowser = useCallback(() => {
+    onExpandBrowser?.(bot.id);
+  }, [bot.id, onExpandBrowser]);
+
+  const openDesktop = async () => {
     setPending("join");
     setControlPending(true);
     setError(null);
@@ -580,10 +702,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       if (fallbackTab) fallbackTab.opener = null;
     }
     try {
-      // Take control pauses the bot. Opening the live desktop to watch
-      // while it drives must not steal the wheel.
-      if (opts?.takeWheel && !control.held) {
-        await requestControl("take");
+      if (!control.held) {
+        await transitionControl("take");
         tookControl = true;
       }
 
@@ -596,12 +716,12 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
 
       if (window.ogb?.desktopViewer) {
         const opened = await window.ogb.desktopViewer.open(viewerUrl, `${bot.name}'s live desktop`, bot.id);
-        if (!opened) throw new Error(`${distribution.productName} could not open the live desktop`);
+        if (!opened) throw new Error("OpenMausBot could not open the live desktop");
       } else if (fallbackTab) {
         fallbackTab.location.replace(viewerUrl);
       } else if (window.ogb?.openExternal) {
         const opened = await window.ogb.openExternal(viewerUrl);
-        if (!opened) throw new Error(`${distribution.productName} could not open the live desktop link`);
+        if (!opened) throw new Error("OpenMausBot could not open the live desktop link");
       } else if (!window.open(viewerUrl, "_blank", "noopener")) {
         throw new Error("Your browser blocked the live desktop tab");
       }
@@ -609,7 +729,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       fallbackTab?.close();
       // Release the bot before waiting on best-effort tunnel cleanup. A sick
       // SSH process must never leave the agent paused indefinitely.
-      if (tookControl) await requestControl("release").catch(() => {});
+      if (tookControl) await transitionControl("release").catch(() => {});
       if (phase === "ready" && cloudBackend === "vps") {
         await api(`/api/bots/${bot.id}/computer/viewer-close`, { method: "POST", body: "{}" }).catch(() => {});
       }
@@ -644,29 +764,6 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       .finally(() => setPending(null));
   };
 
-  const runVmStart = async () => {
-    if (!vmStatus) return;
-    setPending("vm-start");
-    setError(null);
-    vmReadinessAttempts.current = 0;
-    const path =
-      vmStatus.mode === "per-bot"
-        ? `/api/bots/${bot.id}/local-computer/start`
-        : "/api/local-computer/start";
-    try {
-      const status: LocalVmStatus = await api(path, { method: "POST", body: "{}" });
-      setVmStatus(status);
-      setPhase(status.ready ? "vm" : "checking");
-      setError(status.ready ? (status.desktop_warning ?? null) : null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPhase("vm-unavailable");
-    } finally {
-      setPending(null);
-      setRetry((n) => n + 1);
-    }
-  };
-
   const runVmAction = async (action: "vm-create" | "vm-recreate" | "vm-delete") => {
     if (
       (action === "vm-recreate" || action === "vm-delete") &&
@@ -694,7 +791,6 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         });
         setVmStatus(status);
         setPhase(status.ready ? "vm" : "checking");
-        setError(status.ready ? (status.desktop_warning ?? null) : null);
       } else {
         setVmStatus((current) => current ? { ...current, container: "missing", ready: false } : current);
         setPhase("vm-unavailable");
@@ -709,7 +805,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   };
 
   const replaceVpsComputer = async () => {
-    if (!window.confirm(`Replace ${bot.name}'s VPS computer with the version required by this ${distribution.productName} update? Files stored only inside the disposable container will be deleted.`)) return;
+    if (!window.confirm(`Replace ${bot.name}'s VPS computer with the version required by this OpenMausBot update? Files stored only inside the disposable container will be deleted.`)) return;
     setPending("vps-replace");
     setError(null);
     try {
@@ -745,19 +841,31 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     starting: "Starting your bot's computer…",
     unconfigured: "No cloud computer configured",
     "vps-unconfigured": "No managed VPS computer is configured for this bot",
-    "vps-incompatible": `This VPS computer belongs to an earlier ${distribution.productName} version`,
+    "vps-incompatible": "This VPS computer belongs to an earlier OpenMausBot version",
     "vps-stopped": "The managed VPS computer is stopped",
     "local-unavailable": localDisabledReason ?? "Local computer control isn't ready.",
-    "vm-unavailable": vmStatus && localVmCanResume(vmStatus)
-      ? "The Local VM is stopped"
-      : "The Local VM isn't available for this bot",
+    "vm-unavailable": "The Local VM isn't available for this bot",
+    browser: "This bot works in the built-in browser — no desktop here",
     off: "This bot's computer is off",
     error: "Couldn't reach the computer",
   } satisfies Record<Exclude<Phase, "ready" | "local" | "vm">, string>;
 
   return (
     <>
-    <aside className="animate-panel-in flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
+    <aside
+      className="animate-panel-in relative flex h-full shrink-0 flex-col border-l border-hairline/40 bg-panel"
+      style={{ width: panelWidth }}
+    >
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize panel"
+        onPointerDown={onResizeStart}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeEnd}
+        onPointerCancel={onResizeEnd}
+        className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-accent/40"
+      />
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3">
         <button
@@ -767,10 +875,10 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         >
           <Settings size={18} />
         </button>
-        {androidConnected ? (
+        {androidConnected || browserEnabled ? (
           <div className="flex overflow-hidden rounded-lg border border-hairline/40">
             <button
-              onClick={() => setPanelView("computer")}
+              onClick={() => selectPanelView("computer")}
               aria-pressed={panelView === "computer"}
               className={cn(
                 "flex items-center gap-1.5 px-2.5 py-1 text-[12.5px]",
@@ -779,8 +887,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             >
               <Monitor size={13} /> Computer
             </button>
+            {androidConnected && (
             <button
-              onClick={() => setPanelView("android")}
+              onClick={() => selectPanelView("android")}
               aria-pressed={panelView === "android"}
               className={cn(
                 "flex items-center gap-1.5 border-l border-hairline/40 px-2.5 py-1 text-[12.5px]",
@@ -789,6 +898,22 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             >
               <Smartphone size={13} /> Android
             </button>
+            )}
+            {browserEnabled && (
+            <button
+              onClick={() => {
+                setError(null);
+                selectPanelView("browser");
+              }}
+              aria-pressed={panelView === "browser"}
+              className={cn(
+                "flex items-center gap-1.5 border-l border-hairline/40 px-2.5 py-1 text-[12.5px]",
+                panelView === "browser" ? "bg-control text-ink" : "text-ink-secondary hover:text-ink",
+              )}
+            >
+              <Globe size={13} /> Browser
+            </button>
+            )}
           </div>
         ) : (
           <span className="text-[15px] font-semibold text-ink">Computer</span>
@@ -801,7 +926,22 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         </button>
       </div>
 
-      {panelView === "android" && androidConnected ? (
+      {panelView === "browser" && browserEnabled ? (
+        <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+          <BrowserPanel
+            bot={bot}
+            control={control}
+            controlPending={controlPending}
+            onControl={controlAction}
+            onExpand={onExpandBrowser ? expandBrowser : undefined}
+          />
+          {error && (
+            <div role="alert" className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
+              {error}
+            </div>
+          )}
+        </div>
+      ) : panelView === "android" && androidConnected ? (
         <div className="flex-1 overflow-y-auto px-4 pt-2">
           <AndroidDevicePanel status={androidStatus} />
         </div>
@@ -871,19 +1011,16 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                   Open Settings
                 </button>
               )}
+              {phase === "browser" && browserEnabled && (
+                <button
+                  onClick={() => selectPanelView("browser")}
+                  className="mt-1 rounded-lg bg-control px-3 py-1.5 text-[12px] text-ink hover:bg-raised-hover"
+                >
+                  Open the Browser tab
+                </button>
+              )}
               {phase === "vm-unavailable" && (
-                vmStatus && localVmCanResume(vmStatus) ? (
-                  <button
-                    onClick={() => void runVmStart()}
-                    disabled={pending !== null}
-                    className="mt-1 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110 disabled:opacity-50"
-                  >
-                    {pending === "vm-start" && (
-                      <Loader2 size={13} className="mr-1.5 inline animate-spin" />
-                    )}
-                    Start Local VM
-                  </button>
-                ) : vmStatus?.mode === "per-bot" && vmStatus.image && vmStatus.create_supported ? (
+                vmStatus?.mode === "per-bot" && vmStatus.image && vmStatus.create_supported ? (
                   <button
                     onClick={() => void runVmAction(vmStatus.container === "missing" ? "vm-create" : "vm-recreate")}
                     disabled={pending !== null}
@@ -938,14 +1075,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         </div>
 
         {error && (
-          <div
-            className={cn(
-              "mt-2 rounded-lg border px-3 py-2 text-[12px]",
-              phase === "vm" && vmStatus?.desktop_warning
-                ? "border-warning/30 bg-warning/10 text-warning"
-                : "border-danger/30 bg-danger/10 text-danger",
-            )}
-          >
+          <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
             {error}
           </div>
         )}
@@ -974,6 +1104,22 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           </div>
         )}
 
+        {phase === "vm" &&
+          vmStatus?.mode === "per-bot" &&
+          window.ogb?.desktopWorkspace &&
+          onOpenVmWorkspace && (
+            <button
+              type="button"
+              onClick={() => onOpenVmWorkspace(bot.id)}
+              disabled={pending !== null}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-accent/30 bg-accent/10 py-2 text-[13px] font-medium text-ink hover:bg-accent/15 disabled:opacity-50"
+              title="Watch two Local VM desktops together without pausing either bot"
+            >
+              <Columns2 size={14} />
+              Open two desktops
+            </button>
+          )}
+
         {/* Who is driving — take the wheel / hand it back */}
         {(phase === "ready" || phase === "vm") && control.helpReason && !control.held && (
           <div className="mt-3 rounded-xl border border-warning/25 bg-warning/10 p-4">
@@ -983,7 +1129,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             <div className="mt-2 flex gap-2">
               <button
                 onClick={() =>
-                  phase === "vm" || phase === "ready" ? void openDesktop({ takeWheel: true }) : controlAction("take")
+                  phase === "vm" || phase === "ready" ? void openDesktop() : controlAction("take")
                 }
                 disabled={controlPending || pending === "join"}
                 className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-accent py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-50"
@@ -1021,12 +1167,12 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             </button>
           </div>
         )}
-        {phase === "vm" && vmViewerUrl && (
+        {phase === "vm" && vmViewerUrl && control.held && (
           <button
-            onClick={() => void openDesktop({ takeWheel: false })}
+            onClick={() => void openDesktop()}
             disabled={pending === "join"}
             className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
-            title={`Open the Local VM's live desktop inside ${distribution.productName}`}
+            title="Open the Local VM's live desktop inside OpenMausBot"
           >
             {pending === "join" ? <Loader2 size={14} className="animate-spin" /> : <Monitor size={14} />}
             Open live desktop
@@ -1034,7 +1180,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         )}
         {phase === "vm" && !control.held && !control.helpReason && (
           <button
-            onClick={() => void openDesktop({ takeWheel: true })}
+            onClick={() => void openDesktop()}
             disabled={controlPending || pending === "join" || !vmViewerUrl}
             className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
             title="Pause the bot's hands and open the Local VM's live desktop"
@@ -1059,7 +1205,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           <div className="mt-3 flex gap-2">
             {!control.held && !control.helpReason && (
               <button
-                onClick={() => void openDesktop({ takeWheel: true })}
+                onClick={() =>
+                  void openDesktop()
+                }
                 disabled={controlPending || pending === "join"}
                 className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
                 title="Pause the bot's hands and drive this computer yourself"
@@ -1070,10 +1218,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             )}
             {control.held && (
               <button
-                onClick={() => void openDesktop({ takeWheel: false })}
+                onClick={() => void openDesktop()}
                 disabled={pending === "join"}
                 className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
-                title={`Open this computer's live desktop inside ${distribution.productName}`}
               >
                 {pending === "join" ? <Loader2 size={14} className="animate-spin" /> : <Monitor size={14} />}
                 Open live desktop
@@ -1099,7 +1246,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
 
         {/* Computer source */}
           <div className="mt-4 rounded-xl bg-card p-4">
-            <div className="text-[15px] font-medium text-ink">Runs on</div>
+            <div className="text-[15px] font-medium text-ink">Works on</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
               {!bot.computer &&
                 (isLinux || !localSelectable
@@ -1109,16 +1256,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                   : cloudBackend === "vps"
                     ? "Auto reuses a ready VPS when one exists, otherwise this computer. "
                     : "Auto uses a cloud box when one exists, otherwise this computer. ")}
-              Pick where this bot's computer lives. <b className="text-ink">Local VM</b> is a Cua Linux
-              sandbox in a container on this machine — not Cowork's host desktop, and not work that continues
-              with the lid shut. Shared mode is one screen for every bot — leftover apps stay while the VM
-              is running, and cookies in the durable workspace are shared. Per-bot mode is isolation. Set it
-              up in App Settings → Local VM.
-              {selectedInstance?.driverKind === "grok" &&
-                " This Grok chat engine has no computer tools. Pick Grok Agent for hands on the Local VM or Cloud."}
-              {isLocalInjectModelId(bot.modelSelection.model) &&
-                bot.computer === "vm" &&
-                " A local model here watches and needs you to approve each click; unsupervised hands are Claude, Codex, or Grok Agent."}
+              Pick where this bot works. <b className="text-ink">Local VM</b> is a Cua-controlled Linux desktop
+              in a container on this machine — free and separate from your own desktop. Set it up in App
+              Settings → Local VM. <b className="text-ink">Browser</b> is the built-in browser tab only; no desktop.
           </div>
           <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
             {(
@@ -1126,6 +1266,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                 ["cloud", "Cloud"],
                 ["vm", "Local VM"],
                 ["local", "This computer"],
+                ["browser", "Browser"],
                 ["off", "Off"],
               ] as const
             ).map(([mode, label], i) => (
@@ -1133,7 +1274,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                 const disabled =
                   (mode === "cloud" && !cloudSupported) ||
                   (mode === "vm" && !vmSupported) ||
-                  (mode === "local" && !localSelectable);
+                  (mode === "local" && !localSelectable) ||
+                  (mode === "browser" && !browserSelectable);
                 const unavailableTitle =
                   mode === "vm" && !vmSupported
                     ? "This model engine cannot use the Local VM"
@@ -1141,6 +1283,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                       ? "This model engine cannot use cloud computer tools"
                       : mode === "local" && !localSelectable
                         ? localDisabledReason ?? "Local computer control isn't ready"
+                        : mode === "browser"
+                          ? browserSelectable ? "The built-in browser tab only; no desktop" : browserDisabledReason
                           : undefined;
                 return (
               <button
@@ -1150,17 +1294,10 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                 onClick={() => {
                   if (mode === bot.computer) return;
                   if (mode === "local" && bot.autoApprove) setLocalAutoWarning(true);
-                  else if (
-                    bot.autoApprove &&
-                    localInjectCannotAutoDriveComputer({
-                      model: bot.modelSelection.model,
-                      computer: mode,
-                      cloudBackend: bot.cloudBackend,
-                      autoApprove: true,
-                    })
-                  ) {
-                    dispatch({ type: "updateBot", botId: bot.id, patch: { computer: mode, autoApprove: false } });
-                  } else dispatch({ type: "updateBot", botId: bot.id, patch: { computer: mode } });
+                  // a browser-only bot must actually have its browser: flip
+                  // the per-bot switch on with the destination
+                  else if (mode === "browser") dispatch({ type: "updateBot", botId: bot.id, patch: { computer: mode, browser: true } });
+                  else dispatch({ type: "updateBot", botId: bot.id, patch: { computer: mode } });
                 }}
                 className={cn(
                   "flex-1 py-1.5 text-[13px]",
@@ -1182,23 +1319,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
               <CloudBackendPicker
                 value={cloudBackend}
                 vpsSupported={vpsSupported}
-                onChange={(backend) => {
-                  if (
-                    bot.autoApprove &&
-                    localInjectCannotAutoDriveComputer({
-                      model: bot.modelSelection.model,
-                      computer: bot.computer ?? "cloud",
-                      cloudBackend: backend,
-                      autoApprove: true,
-                    })
-                  ) {
-                    dispatch({
-                      type: "updateBot",
-                      botId: bot.id,
-                      patch: { cloudBackend: backend, autoApprove: false },
-                    });
-                  } else dispatch({ type: "updateBot", botId: bot.id, patch: { cloudBackend: backend } });
-                }}
+                onChange={(backend) => dispatch({ type: "updateBot", botId: bot.id, patch: { cloudBackend: backend } })}
               />
               {!bot.computer && cloudBackend === "vps" && (
                 <div className="mt-3 flex items-center justify-between gap-4 rounded-lg bg-inset px-3 py-2.5">
@@ -1208,27 +1329,15 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                       Off by default. When enabled, Auto may create or wake this bot's managed container.
                     </div>
                   </div>
-                  <button
-                    role="switch"
-                    aria-checked={Boolean(bot.autoStartVps)}
+                  <Switch
+                    checked={Boolean(bot.autoStartVps)}
                     aria-label="Start VPS automatically"
                     onClick={() => dispatch({
                       type: "updateBot",
                       botId: bot.id,
                       patch: { autoStartVps: !bot.autoStartVps },
                     })}
-                    className={cn(
-                      "relative h-6 w-11 shrink-0 rounded-full transition-colors",
-                      bot.autoStartVps ? "bg-accent" : "bg-control",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "absolute top-[3px] size-[18px] rounded-full bg-white transition-all",
-                        bot.autoStartVps ? "left-[22px]" : "left-[4px]",
-                      )}
-                    />
-                  </button>
+                  />
                 </div>
               )}
             </>

@@ -2,6 +2,11 @@
 // this narrow surface (window.ogb), never Node or ipcRenderer itself.
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
+// Sandboxed preloads receive Electron's restricted `require`, which cannot
+// load sibling CommonJS files. Keep this tiny predicate inline here; main's
+// privileged process uses the shared browser-platform helper.
+const browserSurfaceSupported = process.platform === "darwin" || process.platform === "linux";
+
 let pendingPackageInstallUrl = null;
 const packageInstallListeners = new Set();
 ipcRenderer.on("package:install", (_event, url) => {
@@ -10,7 +15,15 @@ ipcRenderer.on("package:install", (_event, url) => {
   for (const listener of packageInstallListeners) listener(url);
 });
 
-contextBridge.exposeInMainWorld("ogb", {
+// The bridge is built once, then exposed in full only to the local server's
+// UI. A remote server's page (Server menu) gets the safe subset: nothing that
+// captures this screen, touches this computer's files or logins, or runs
+// helpers here. Main enforces the same rule on the sensitive channels.
+const localOrigin = process.argv.find((arg) => arg.startsWith("--omb-local-origin="))?.slice("--omb-local-origin=".length) ?? null;
+const isLocalPage = !localOrigin || location.origin === localOrigin;
+const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "openExternal", "getPathForFile", "permStatus", "environments"]);
+
+const bridge = {
   /** Host platform ("darwin" | "win32" | "linux") — for platform-aware UI. */
   platform: process.platform,
   getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
@@ -28,6 +41,7 @@ contextBridge.exposeInMainWorld("ogb", {
     start: () => ipcRenderer.invoke("companion:start"),
     stop: () => ipcRenderer.invoke("companion:stop"),
     keepAwake: (enabled) => ipcRenderer.invoke("companion:keep-awake", enabled),
+    refreshTailscale: () => ipcRenderer.invoke("companion:refresh-tailscale"),
     pairing: (open, expectedToken) => ipcRenderer.invoke("companion:pairing", open, expectedToken),
     cloudDesktop: (deviceId, allowed) => ipcRenderer.invoke("companion:cloud-desktop", deviceId, allowed),
     revoke: (deviceId) => ipcRenderer.invoke("companion:revoke", deviceId),
@@ -140,6 +154,45 @@ contextBridge.exposeInMainWorld("ogb", {
       return () => ipcRenderer.removeListener("desktop-viewer:state", handler);
     },
   },
+  /** Two sandboxed Local VM viewers embedded in the owning app window. */
+  desktopWorkspace: {
+    open: (input) => ipcRenderer.invoke("desktop-workspace:open", input),
+    layout: (items) => ipcRenderer.invoke("desktop-workspace:layout", items),
+    setInteractive: (contextId) => ipcRenderer.invoke("desktop-workspace:set-interactive", contextId),
+    close: (contextId) => ipcRenderer.invoke("desktop-workspace:close", contextId),
+    onState: (cb) => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("desktop-workspace:state", handler);
+      return () => ipcRenderer.removeListener("desktop-workspace:state", handler);
+    },
+  },
+  /** The built-in browser: a native page view per bot that the Browser tab
+   * positions over its own rectangle. Bots drive it through their tools; the
+   * person drives it by clicking into the view. */
+  browser: browserSurfaceSupported ? {
+    available: () => ipcRenderer.invoke("browser:available"),
+    state: (botId) => ipcRenderer.invoke("browser:state", botId),
+    layout: (botId, bounds, profile, mode, layoutOwner) =>
+      ipcRenderer.invoke("browser:layout", botId, bounds, profile, mode, layoutOwner),
+    navigate: (botId, url, profile) => ipcRenderer.invoke("browser:navigate", botId, url, profile),
+    back: (botId, profile) => ipcRenderer.invoke("browser:back", botId, profile),
+    forward: (botId, profile) => ipcRenderer.invoke("browser:forward", botId, profile),
+    reload: (botId, profile) => ipcRenderer.invoke("browser:reload", botId, profile),
+    setHumanControl: (botId, held, profile) => ipcRenderer.invoke("browser:set-human-control", botId, held, profile),
+    /** Wipe a named profile's logins, storage and cache after it is deleted. */
+    forgetProfile: (partitionId) => ipcRenderer.invoke("browser:forget-profile", partitionId),
+    close: (botId) => ipcRenderer.invoke("browser:close", botId),
+    onState: (cb) => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("browser:state", handler);
+      return () => ipcRenderer.removeListener("browser:state", handler);
+    },
+    onUserInteraction: (cb) => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("browser:user-interaction", handler);
+      return () => ipcRenderer.removeListener("browser:user-interaction", handler);
+    },
+  } : undefined,
   /** Native folder picker for a bot's working folder; null when cancelled. */
   pickFolder: (current) => ipcRenderer.invoke("desktop:pick-folder", current),
   /** Writes the redacted diagnostics report to a user-chosen file; resolves
@@ -180,4 +233,19 @@ contextBridge.exposeInMainWorld("ogb", {
       return () => ipcRenderer.removeListener("update:state", handler);
     },
   },
-});
+
+  /** Saved servers and the active one (Server menu). Switching, adding and
+   * forgetting are local-only: a remote page may read the list but not change
+   * where this window goes. */
+  environments: {
+    state: () => ipcRenderer.invoke("environments:state"),
+    switch: (id) => ipcRenderer.invoke("environments:switch", id),
+    addFromLink: (link) => ipcRenderer.invoke("environments:add-from-link", link),
+    forget: (id) => ipcRenderer.invoke("environments:forget", id),
+  },
+};
+
+contextBridge.exposeInMainWorld(
+  "ogb",
+  isLocalPage ? bridge : Object.fromEntries(Object.entries(bridge).filter(([key]) => REMOTE_SAFE.has(key))),
+);
