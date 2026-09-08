@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-09-08 (Landed `upstream/main` through `81c784e` **0.1.66**. Isolated re-run of the Windows-suite failures passed; full `pnpm test` was not re-run this turn (~40 min). Do not push until asked. Theirs `IMAGE_LAYER_VERSION` stays **"5"**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md). Android companion is **in upstream's tree** (`android/`); we inherit it as theirs. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Hop-on map: [`README.md`](README.md).)
+Last updated: 2026-09-08 (Landed `8930b820` merge of `upstream/main` through `81c784e` **0.1.66**, plus a follow-up for fail-closed link types and Node-safe analytics storage. Isolated known-failure files, brokers, brand, and distribution are green. `pnpm typecheck` green. Full `pnpm test` was not re-run (~40 min). Do not push until asked. Theirs `IMAGE_LAYER_VERSION` stays **"5"**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md). Android companion is **in upstream's tree** (`android/`); we inherit it as theirs. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Hop-on map: [`README.md`](README.md).)
 
 ## Start here
 
@@ -24,12 +24,12 @@ this file; git still has them.
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.27` — this merge (0.1.66) |
-| HEAD | merge of `470e1bf` + `81c784e` (see `git log -1`) |
+| HEAD | `8930b820` merge of `470e1bf` + `81c784e` (0.1.66) |
 | Theirs | `81c784e` — `upstream/main` **0.1.66**, Apache-2.0 |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Catch-up to `upstream/main` `81c784e` (0.1.66) landed this turn. Previous landed catch-up was `4b6adf8` (0.1.49) on 2026-09-02. Whose-file is still `git diff --stat upstream/main`. Isolated green: cli-setup, acp-session (approvalMode fingerprint), cursor spawn argv, check-brand, browser-runtime, mcp-probe, kill-tree, second-server lease, Antigravity agents-MCP, SettingsModal i18n (analytics mock join). Full `pnpm test` leftover.
+Catch-up to `upstream/main` `81c784e` (0.1.66) landed this turn (`8930b820`). Previous landed catch-up was `4b6adf8` (0.1.49) on 2026-09-02. Whose-file is still `git diff --stat upstream/main`. Isolated green: cli-setup, acp-session, cursor spawn argv, check-brand, browser-runtime, mcp-probe, kill-tree, second-server lease, Antigravity agents-MCP, SettingsModal i18n, Codex device-auth, BotIdentityAvatars, Sidebar i18n, SidebarBotListItem, brokers. `pnpm typecheck` green. Full `pnpm test` leftover.
 
 Hermes ACP gold **passed on this NVIDIA box** and **failed on Admin CPU**. Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
@@ -216,7 +216,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Full `pnpm test` leftover** after this 0.1.66 merge. Windows: `OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`, Git `usr\bin` on PATH. The first loaded suite looked like many failures; isolation showed suite-load flake plus two real overlay joins (Path C BYOK strip only on `hostedInference`; SettingsModal i18n analytics mock; ACP fingerprint includes `approvalMode`). Do not `--abort`. Next catch-up is a new fetch **plus** `pnpm check:upstream-license`.
+4. **Full `pnpm test` leftover** after this 0.1.66 merge. Windows: `OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`, Git `usr\bin` on PATH. Isolated files that looked like many failures were suite-load flake plus overlay joins (Path C BYOK strip only on `hostedInference`; SettingsModal i18n analytics mock; ACP fingerprint includes `approvalMode`; fail-closed URLs captured before `openExternalLink`; analytics storage does not require `localStorage` at import). Next catch-up is a new fetch **plus** `pnpm check:upstream-license`.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
 7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs. Path B major-provider paste is in the tree; Windows Local VM health probe (empty Docker `info`, 90s Podman `info`) is in the tree; chooser reopen is still open on 005.

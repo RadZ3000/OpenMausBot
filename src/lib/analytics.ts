@@ -31,12 +31,14 @@ const client: AnalyticsClient = {
   reset: () => posthog.reset(),
 };
 
+const storage = globalThis.localStorage ?? { getItem: () => null, setItem: () => {} };
+
 const analytics = createAnalytics(
   client,
-  localStorage,
+  storage,
   distribution.analyticsKey,
   distribution.analyticsHost,
-  navigator.userAgent.includes("Electron") ? "desktop" : "browser",
+  globalThis.navigator?.userAgent.includes("Electron") ? "desktop" : "browser",
 );
 
 export const analyticsConfigured = () => analytics.configured();
@@ -52,8 +54,8 @@ export const identifyEmail = (email: string) => analytics.identifyEmail(email);
 // only when analytics is both configured and agreed to.
 const GATE_KEY = "omb-email-gate";
 export function emailGateDone(): boolean {
-  return Boolean(localStorage.getItem(GATE_KEY));
+  return Boolean(globalThis.localStorage?.getItem(GATE_KEY));
 }
 export function setEmailGateDone(status: "submitted" | "skipped") {
-  localStorage.setItem(GATE_KEY, status);
+  globalThis.localStorage?.setItem(GATE_KEY, status);
 }

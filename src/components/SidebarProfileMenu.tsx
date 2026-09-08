@@ -195,6 +195,7 @@ export function SidebarProfileMenu() {
 
   const profile = state.config?.profile;
   const name = profileLabel(profile);
+  const helpUrl = HELP_CENTER_URL;
 
   const items: SidebarMenuItem[] = [
     {
@@ -231,12 +232,12 @@ export function SidebarProfileMenu() {
       separatorBefore: true,
       onSelect: () => setAboutOpen(true),
     },
-    ...(HELP_CENTER_URL
+    ...(helpUrl
       ? [{
           key: "help",
           label: t("sidebar.menu.help"),
           icon: <HelpCircle size={18} />,
-          onSelect: () => void openExternalLink(HELP_CENTER_URL),
+          onSelect: () => void openExternalLink(helpUrl),
         }]
       : []),
     {

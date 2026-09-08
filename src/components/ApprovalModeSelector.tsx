@@ -113,6 +113,7 @@ export function ApprovalModeSelector({
     mode,
     trustedModesAvailable,
   );
+  const approvalLevelsUrl = APPROVAL_LEVELS_URL;
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -170,10 +171,10 @@ export function ApprovalModeSelector({
             <div className="text-[14px] font-medium text-ink">
               {t("approvalMode.question", { provider: providerName })}
             </div>
-            {APPROVAL_LEVELS_URL && (
+            {approvalLevelsUrl && (
               <button
                 type="button"
-                onClick={() => void openExternalLink(APPROVAL_LEVELS_URL)}
+                onClick={() => void openExternalLink(approvalLevelsUrl)}
                 className="mt-1 text-[12px] text-ink-secondary underline underline-offset-2 hover:text-ink"
               >
                 {t("approvalMode.learnMore")}
