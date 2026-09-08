@@ -9,6 +9,8 @@ import type {
   AnyProviderDriver,
   InstanceConfigMap,
   InstanceId,
+  ProviderAuthenticationStart,
+  ProviderAuthenticationStatus,
   ProviderInstance,
   ProviderSnapshot,
 } from "../contracts.ts";
@@ -59,6 +61,8 @@ export class ProviderRegistry {
 
   async load(configs: InstanceConfigMap) {
     for (const [instanceId, entry] of Object.entries(configs)) {
+      // Account edits replace only their own process/session state.
+      await this.dispose(instanceId);
       const driver = this.driversByKind.get(entry.driver);
       if (!driver) {
         this.byId.set(instanceId, {
@@ -130,6 +134,44 @@ export class ProviderRegistry {
     return [...this.byId.values()].flatMap((e) => (e.live ? [e.live] : []));
   }
 
+  async refreshModels(instanceId: InstanceId): Promise<boolean> {
+    const instance = this.get(instanceId);
+    if (!instance) return false;
+    await instance.refreshModels?.();
+    return true;
+  }
+
+  async installRuntime(instanceId: InstanceId): Promise<boolean> {
+    const instance = this.get(instanceId);
+    if (!instance?.installRuntime) return false;
+    await instance.installRuntime();
+    return true;
+  }
+
+  async startAuthentication(instanceId: InstanceId): Promise<ProviderAuthenticationStart | null> {
+    const instance = this.get(instanceId);
+    return instance?.startAuthentication ? instance.startAuthentication() : null;
+  }
+
+  async getAuthentication(instanceId: InstanceId, flowId: string): Promise<ProviderAuthenticationStatus | null> {
+    const instance = this.get(instanceId);
+    return instance?.getAuthentication ? instance.getAuthentication(flowId) : null;
+  }
+
+  async completeAuthentication(instanceId: InstanceId, flowId: string, callbackUrl: string): Promise<boolean> {
+    const instance = this.get(instanceId);
+    if (!instance?.completeAuthentication) return false;
+    await instance.completeAuthentication(flowId, callbackUrl);
+    return true;
+  }
+
+  async cancelAuthentication(instanceId: InstanceId): Promise<boolean> {
+    const instance = this.get(instanceId);
+    if (!instance?.cancelAuthentication) return false;
+    await instance.cancelAuthentication();
+    return true;
+  }
+
   /** instance snapshots for the model picker: id, driver, models, health */
   async describe() {
     // Multiple instances may share a driver. Scan each default binary once
@@ -168,7 +210,6 @@ export class ProviderRegistry {
         const inst = entry.live;
         let snapshot: ProviderSnapshot;
         try {
-          await inst.refreshModels?.();
           snapshot = await inst.snapshot();
         } catch (e) {
           snapshot = { state: "unavailable", reason: e instanceof Error ? e.message : String(e) };
@@ -194,6 +235,9 @@ export class ProviderRegistry {
           },
           access: driver?.metadata.access ?? "subscription",
           install: driver?.install,
+          authentication: inst.startAuthentication
+            ? { method: inst.getAuthentication ? "device-code" as const : "browser" as const }
+            : undefined,
           cli: this.cliByInstance.get(inst.instanceId),
           cliDefault: cliDefaultOf(driver),
           // every copy of the driver's default binary on the augmented PATH —
@@ -209,5 +253,12 @@ export class ProviderRegistry {
     await Promise.allSettled(this.instances().map((i) => i.dispose()));
     this.byId.clear();
     this.cliByInstance.clear();
+  }
+
+  async dispose(instanceId: InstanceId) {
+    const entry = this.byId.get(instanceId);
+    this.byId.delete(instanceId);
+    this.cliByInstance.delete(instanceId);
+    await entry?.live?.dispose();
   }
 }

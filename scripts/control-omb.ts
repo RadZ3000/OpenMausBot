@@ -4,7 +4,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 
@@ -260,11 +260,21 @@ export interface VerificationServer {
 export async function launchVerificationServer(
   parentEnv: NodeJS.ProcessEnv = process.env,
   signal?: AbortSignal,
+  localVm?: { binDir: string; host: string; sshKey: string; staticDir: string },
+  browser?: { binaryPath: string; executablePath: string },
 ): Promise<VerificationServer> {
+  if (localVm) {
+    const endpoint = new URL(localVm.host);
+    if (endpoint.protocol !== "ssh:" || endpoint.hostname !== "127.0.0.1" || endpoint.password) {
+      throw new ControlOmbError("Local VM verification requires an explicit loopback Podman machine");
+    }
+  }
   const port = await freePortBlock([0, 1]);
   if (signal?.aborted) throw new ControlOmbError("verification launch cancelled");
   const url = `http://127.0.0.1:${port}`;
-  const dataDir = mkdtempSync(join(tmpdir(), "openmausbot-verify-data-"));
+  // Native browser daemons use UNIX sockets; a macOS temp home can exceed
+  // their path limit. This is still an owned, randomly named fixture only.
+  const dataDir = mkdtempSync(join(browser && process.platform !== "win32" ? "/tmp" : tmpdir(), "openmausbot-verify-data-"));
   const fixtureTemp = join(dataDir, "tmp");
   const fixtureDumpPath = join(dataDir, "fake-claude-dump.json");
   mkdirSync(fixtureTemp, { recursive: true });
@@ -305,7 +315,22 @@ export async function launchVerificationServer(
     OMB_WEBHOOK_PORT: String(port + 1),
     FAKE_CLAUDE_MODE: "happy",
     FAKE_CLAUDE_DUMP: fixtureDumpPath,
-    PATH: "",
+    // Keep the environment hermetic while allowing POSIX to resolve the
+    // fake CLI's `#!/usr/bin/env node` shebang. Windows resolves that same
+    // fixture through spawnCli without a shell.
+    PATH: dirname(process.execPath),
+  });
+  // Opt-in live Local VM fixture: keep the temporary home and fake engine,
+  // granting only the explicitly selected machine connection and static UI.
+  if (localVm) Object.assign(childEnv, {
+    OMB_EXTRA_PATH: [localVm.binDir, ...(process.platform === "win32" ? [join(childEnv.SYSTEMROOT || "C:\\Windows", "System32")] : [])].join(delimiter),
+    CONTAINER_HOST: localVm.host,
+    CONTAINER_SSHKEY: localVm.sshKey,
+    OMB_STATIC_DIR: localVm.staticDir,
+  });
+  if (browser) Object.assign(childEnv, {
+    OMB_AGENT_BROWSER_PATH: browser.binaryPath,
+    AGENT_BROWSER_EXECUTABLE_PATH: browser.executablePath,
   });
   const child = spawn(process.execPath, ["--experimental-strip-types", join(ROOT, "server", "index.ts")], {
     cwd: ROOT,

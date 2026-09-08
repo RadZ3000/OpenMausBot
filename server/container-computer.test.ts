@@ -16,45 +16,41 @@ import {
   IMAGE_LAYER_VERSION,
   MANAGED_LABEL,
   TARGET_LABEL,
-  VM_BROWSER_PROFILES_GUEST,
   VM_WORKSPACE_DIR,
   VM_WORKSPACE_GUEST,
   WORKSPACE_LABEL,
   computerProxyEnv,
   containerComputerAction,
+  containerComputerFrame,
   containerComputerMcp,
   containerComputerScreenshot,
   containerComputerStatus,
   containerRuntimeStatus,
   containerRunArgs,
+  dockerSecurityIsHardened,
+  localVmRecreatableOnDemand,
   managedImageDockerfile,
   perBotLocalVmTarget,
   podmanSecurityIsHardened,
+  SHARED_LOCAL_VM_TARGET,
   setupCommands,
   type CommandRunner,
   type LocalVmTarget,
 } from "./container-computer.ts";
-import { PODMAN_MACHINE_NAME, WINDOWS_PODMAN_INFO_TIMEOUT_MS } from "./podman-setup.ts";
 
 function runner(responses: Record<string, string | Error>) {
   const calls: string[] = [];
-  const timeouts = new Map<string, number | undefined>();
-  const run: CommandRunner = async (command, args, timeout) => {
+  const run: CommandRunner = async (command, args) => {
     const key = [command, ...args].join(" ");
     calls.push(key);
-    timeouts.set(key, timeout);
     const response = responses[key];
     if (response instanceof Error || response === undefined) {
       throw response ?? new Error(`unexpected command: ${key}`);
     }
     return { stdout: response };
   };
-  return { calls, timeouts, run };
+  return { calls, run };
 }
-
-const PODMAN_MACHINE_RUNNING = JSON.stringify([{ State: "running", Resources: { Memory: 6144 } }]);
-const PODMAN_MACHINE_STOPPED = JSON.stringify([{ State: "stopped", Resources: { Memory: 6144 } }]);
-const PODMAN_MACHINE_INSPECT = `podman machine inspect ${PODMAN_MACHINE_NAME}`;
 
 const driverExec =
   `docker exec -u cua -e HOME=/home/cua -e DISPLAY=:1 -e CUA_DRIVER_INSTALL_CHANNEL=python_package ` +
@@ -150,7 +146,6 @@ describe("containerComputerStatus", () => {
     const fake = runner({
       "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
       "where.exe docker": "C:\\Program Files\\Docker\\docker.exe\n",
-      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_RUNNING,
       "podman info --format json": '{"host":{"arch":"amd64"}}\n',
       "docker info --format {{.ServerVersion}}": "29.0.0\n",
     });
@@ -164,54 +159,8 @@ describe("containerComputerStatus", () => {
     });
   });
 
-  it("does not treat a stopped Docker Desktop CLI as a healthy daemon on Windows", async () => {
-    const fake = runner({
-      "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
-      "where.exe docker": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\n",
-      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_STOPPED,
-      // real `docker info --format {{.ServerVersion}}` when Desktop is stopped:
-      // exit 0, stdout a newline, error on stderr
-      "docker info --format {{.ServerVersion}}": "\n",
-    });
-
-    const status = await containerRuntimeStatus(fake.run, "win32");
-
-    expect(status).toEqual({
-      runtime: "podman",
-      available: ["podman", "docker"],
-      daemonUp: false,
-    });
-    expect(fake.calls).not.toContain("podman info --format json");
-  });
-
-  it("does not wait on podman info when the Windows machine is stopped", async () => {
-    const fake = runner({
-      "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
-      "where.exe docker": new Error("missing"),
-      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_STOPPED,
-    });
-
-    const status = await containerRuntimeStatus(fake.run, "win32");
-
-    expect(status.daemonUp).toBe(false);
-    expect(fake.calls).not.toContain("podman info --format json");
-  });
-
-  it("gives Windows Podman long enough to answer info after a WSL wake", async () => {
-    const fake = runner({
-      "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
-      "where.exe docker": new Error("missing"),
-      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_RUNNING,
-      "podman info --format json": '{"host":{"arch":"amd64"}}\n',
-    });
-
-    const status = await containerRuntimeStatus(fake.run, "win32");
-
-    expect(status.daemonUp).toBe(true);
-    expect(fake.timeouts.get("podman info --format json")).toBe(WINDOWS_PODMAN_INFO_TIMEOUT_MS);
-  });
-
-  it("accepts exact Podman-on-Windows hardening and its WSL-translated durable mount", async () => {
+  it.each(["exact", "legacy", "missing-effective", "missing-bounding", "extra-effective", "extra-bounding"])(
+    "checks Podman-on-Windows readiness with %s capabilities and a WSL-translated durable mount", async (caps) => {
     const derived = perBotLocalVmTarget("bot-win");
     const target: LocalVmTarget = {
       ...derived,
@@ -227,15 +176,18 @@ describe("containerComputerStatus", () => {
       UTSMode: "private",
       CgroupnsMode: null,
     };
-    detail.EffectiveCaps = ["CAP_SETGID", "CAP_SETUID"];
-    detail.BoundingCaps = ["CAP_SETGID", "CAP_SETUID"];
+    detail.EffectiveCaps = ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"];
+    detail.BoundingCaps = ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"];
+    if (caps === "legacy" || caps === "missing-effective") detail.EffectiveCaps.pop();
+    if (caps === "legacy" || caps === "missing-bounding") detail.BoundingCaps.pop();
+    if (caps === "extra-effective") detail.EffectiveCaps.push("CAP_SYS_ADMIN");
+    if (caps === "extra-bounding") detail.BoundingCaps.push("CAP_SYS_ADMIN");
     const targetDriverExec =
       `podman exec -u cua -e HOME=/home/cua -e DISPLAY=:1 -e CUA_DRIVER_INSTALL_CHANNEL=python_package ` +
       `-e CUA_DRIVER_RS_TELEMETRY_ENABLED=0 ${target.containerName} ${CUA_EXECUTABLE}`;
     const fake = runner({
       "where.exe podman": "C:\\Program Files\\RedHat\\Podman\\podman.exe\n",
       "where.exe docker": new Error("missing"),
-      [PODMAN_MACHINE_INSPECT]: PODMAN_MACHINE_RUNNING,
       "podman info --format json": '{"host":{"arch":"amd64"}}\n',
       [`podman image inspect ${IMAGE}`]: preparedImageInspect(),
       [`podman inspect ${target.containerName}`]: JSON.stringify([detail]),
@@ -251,6 +203,14 @@ describe("containerComputerStatus", () => {
     });
 
     const status = await containerComputerStatus(fake.run, "win32", target);
+    if (caps !== "exact") {
+      expect(status).toMatchObject({ security: "unsafe", ready: false });
+      expect(status.problem).toContain("recreate");
+      expect(localVmRecreatableOnDemand(status)).toBe(false);
+      expect(fake.calls.some((call) => call.startsWith("podman exec "))).toBe(false);
+      expect(fake.calls.some((call) => /^podman (run|rm|start|stop) /.test(call))).toBe(false);
+      return;
+    }
 
     expect(status).toMatchObject({
       runtime: "podman",
@@ -285,14 +245,31 @@ describe("containerComputerStatus", () => {
     };
     expect(podmanSecurityIsHardened(
       config,
-      ["CAP_SETGID", "CAP_SETUID"],
-      ["CAP_SETGID", "CAP_SETUID"],
+      ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"],
+      ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"],
     )).toBe(true);
+    // Existing two-capability containers must be recreated, not accepted as ready.
+    expect(podmanSecurityIsHardened(
+      config, ["CAP_SETGID", "CAP_SETUID"], ["CAP_SETGID", "CAP_SETUID"],
+    )).toBe(false);
+    for (const mode of ["private", "keep-id:uid=1000,gid=1000", "host", "container:other", "keep-id:uid=0,gid=0", "auto"]) {
+      expect(podmanSecurityIsHardened(
+        { ...config, UsernsMode: mode }, ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"], ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"],
+      )).toBe(mode === "private" || mode === "keep-id:uid=1000,gid=1000");
+    }
     expect(podmanSecurityIsHardened(
       config,
-      ["CAP_NET_RAW", "CAP_SETGID", "CAP_SETUID"],
-      ["CAP_SETGID", "CAP_SETUID"],
+      ["CAP_NET_RAW", "CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"],
+      ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"],
     )).toBe(false);
+  });
+
+  it.each(["no", "unless-stopped"] as const)("does not extend Docker/VPS capabilities with restart policy %s", (restartPolicy) => {
+    const config = JSON.parse(readyInspect())[0].HostConfig;
+    config.RestartPolicy.Name = restartPolicy;
+    expect(dockerSecurityIsHardened(config, { restartPolicy })).toBe(true);
+    config.CapAdd.push("CAP_SYS_CHROOT");
+    expect(dockerSecurityIsHardened(config, { restartPolicy })).toBe(false);
   });
 
   it("keeps per-bot identities, workspaces, and ephemeral viewer ports separate", async () => {
@@ -447,7 +424,6 @@ describe("containerComputerStatus", () => {
       { SecurityOpt: ["seccomp=unconfined"] },
       { DeviceRequests: [{ Driver: "nvidia" }] },
       { RestartPolicy: { Name: "always", MaximumRetryCount: 0 } },
-      { PidsLimit: 0 },
     ]) {
       const fake = runner({
         "/usr/bin/which docker": "docker\n",
@@ -644,7 +620,7 @@ describe("containerComputerStatus", () => {
     expect(fake.calls).not.toContain(readinessProbe);
   });
 
-  it("rejects a lookalike container with a different driver or base-image label", async () => {
+  it("keeps an owned stale container removable without treating it as ready", async () => {
     const fake = runner({
       "/usr/bin/which docker": "docker\n",
       "/usr/bin/which podman": new Error("missing"),
@@ -653,13 +629,20 @@ describe("containerComputerStatus", () => {
       [`docker inspect ${CONTAINER}`]: readyInspect({
         Config: {
           Image: IMAGE,
-          Labels: { [MANAGED_LABEL]: "1", [DRIVER_LABEL]: "0.12.4", [BASE_IMAGE_LABEL]: "wrong" },
+          Labels: {
+            [MANAGED_LABEL]: "1",
+            [DRIVER_LABEL]: "0.12.4",
+            [BASE_IMAGE_LABEL]: "wrong",
+            [IMAGE_LAYER_LABEL]: "old",
+            [WORKSPACE_LABEL]: "1",
+          },
         },
       }),
     });
 
     const status = await containerComputerStatus(fake.run, "linux");
 
+    expect(status.managed).toBe(true);
     expect(status.imageMatches).toBe(false);
     expect(status.ready).toBe(false);
     expect(status.problem).toContain("older desktop or Cua Driver");
@@ -741,24 +724,27 @@ describe("Cua integration", () => {
     expect(dockerfile).toContain("sha256sum -c -");
     expect(dockerfile).toContain(`install -D -m 0755 "$driver_bin" ${CUA_EXECUTABLE}`);
     expect(dockerfile).toContain(`cua-driver ${CUA_DRIVER_VERSION}`);
-    expect(dockerfile).toContain(`serve --socket ${CUA_SOCKET} --permission-mode standard --grant existing-profile`);
+    expect(dockerfile).toContain(`serve --socket ${CUA_SOCKET} --permission-mode standard`);
     expect(dockerfile).toContain("CUA_DRIVER_RS_TELEMETRY_ENABLED=0");
     expect(dockerfile).toContain("prepare-openmausbot-workspace.sh");
     expect(dockerfile).toContain('if ! chmod 0700 "$workspace"');
     expect(dockerfile).toContain('test -r "$directory" && test -w "$directory" && test -x "$directory"');
     expect(dockerfile).toContain("migrate_profile google-chrome");
-    expect(dockerfile).toContain(VM_BROWSER_PROFILES_GUEST);
     expect(dockerfile).toContain("migrate_profile chromium");
-    expect(dockerfile).toContain("apt-get install -y -qq --no-install-recommends chromium");
-    expect(dockerfile).not.toContain("chromium-browser");
-    expect(dockerfile).toContain("/etc/chromium.d/openmausbot-nested");
-    expect(dockerfile).toContain('export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-gpu --force-renderer-accessibility"');
-    expect(dockerfile).not.toContain("$$CHROMIUM_FLAGS");
-    expect(dockerfile).toContain("x-scheme-handler/https=chromium.desktop");
     expect(dockerfile).toContain("SingletonLock");
     expect(dockerfile).toContain(`${IMAGE_LAYER_LABEL}="${IMAGE_LAYER_VERSION}"`);
     expect(dockerfile).toContain("did not become ready within 45 seconds");
     expect(dockerfile).not.toContain("while ! DISPLAY=:1 xset q");
+  });
+
+  it("installs checksum-pinned Japanese fonts and their license before the desktop starts", () => {
+    const dockerfile = managedImageDockerfile();
+    expect(dockerfile).toContain("NotoSansCJKjp-Regular.otf");
+    expect(dockerfile).toContain("68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5");
+    expect(dockerfile).toContain("6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2");
+    expect(dockerfile).toContain("/usr/local/share/licenses/noto-cjk/OFL.txt");
+    expect(dockerfile).toContain("fc-cache -f");
+    expect(IMAGE_LAYER_VERSION).toBe("5");
   });
 
   it("rejects a zero-byte OpenSSL base image before the wheel download needs curl", () => {
@@ -802,9 +788,80 @@ describe("Cua integration", () => {
     expect(fake.calls).toContain(screenshotCall);
     expect(fake.calls.some((call) => /xdotool|scrot|vnc/i.test(call))).toBe(false);
   });
+
+  // The live screen poller broadcasts this shape verbatim to every SSE
+  // client, and the phone renders nothing but those events: a data URL here
+  // would reach it as base64 that decodes to garbage.
+  it("hands the screen poller raw base64 and a bare format, not a data URL", async () => {
+    const png = validPng;
+    const fake = runner({
+      "/usr/bin/which docker": "docker\n",
+      "/usr/bin/which podman": new Error("missing"),
+      "docker info --format {{.ServerVersion}}": "29\n",
+      [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`docker inspect ${CONTAINER}`]: readyInspect(),
+      [versionProbe]: `cua-driver ${CUA_DRIVER_VERSION}\n`,
+      [statusProbe]: "running\n",
+      [healthProbe]: JSON.stringify({ schema_version: "1", overall: "degraded", checks: [] }),
+      [readinessProbe]: "{}\n",
+      [readinessRead]: png.toString("base64"),
+      [`${driverExec} call get_desktop_state {} --socket ${CUA_SOCKET} ` +
+        "--screenshot-out-file /tmp/openmausbot-preview.png"]: "{}\n",
+      [`docker exec ${CONTAINER} base64 -w0 /tmp/openmausbot-preview.png`]: png.toString("base64"),
+    });
+
+    const frame = await containerComputerFrame(fake.run, "linux");
+
+    expect(frame).toEqual({ png: png.toString("base64"), format: "png" });
+    expect(frame.png.startsWith("data:")).toBe(false);
+  });
 });
 
 describe("containerComputerAction", () => {
+  it("never removes an exact-name container without OpenMausBot ownership labels", async () => {
+    const fake = runner({
+      "/usr/bin/which docker": "docker\n",
+      "/usr/bin/which podman": new Error("missing"),
+      "docker info --format {{.ServerVersion}}": "29\n",
+      [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`docker inspect ${CONTAINER}`]: readyInspect({
+        Config: { Image: IMAGE, Labels: {}, Env: [] },
+      }),
+    });
+
+    await expect(containerComputerAction("remove", fake.run, "linux")).rejects.toThrow(
+      new RegExp(`not created by ${PRODUCT_NAME}.*remove it manually`, "i"),
+    );
+    expect(fake.calls).not.toContain(`docker rm -f ${CONTAINER}`);
+  });
+
+  it("removes a verified OpenMausBot container even when its version labels are stale", async () => {
+    const fake = runner({
+      "/usr/bin/which docker": "docker\n",
+      "/usr/bin/which podman": new Error("missing"),
+      "docker info --format {{.ServerVersion}}": "29\n",
+      [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`docker inspect ${CONTAINER}`]: readyInspect({
+        Config: {
+          Image: IMAGE,
+          Labels: {
+            [MANAGED_LABEL]: "1",
+            [DRIVER_LABEL]: "0.12.4",
+            [BASE_IMAGE_LABEL]: "old",
+            [IMAGE_LAYER_LABEL]: "old",
+            [WORKSPACE_LABEL]: "1",
+          },
+          Env: [],
+        },
+      }),
+      [`docker rm -f ${CONTAINER}`]: "",
+    });
+
+    await containerComputerAction("remove", fake.run, "linux");
+
+    expect(fake.calls).toContain(`docker rm -f ${CONTAINER}`);
+  });
+
   it("fails closed instead of giving Apple container an invalid dynamic-port spec", async () => {
     const target = perBotLocalVmTarget("bot-a");
     const fake = runner({
@@ -837,62 +894,16 @@ describe("containerComputerAction", () => {
     expect(fake.calls.some((call) => call.startsWith("docker run "))).toBe(false);
   });
 
-  it("starts a healthy stopped desktop instead of forcing recreate", async () => {
-    let running = false;
-    const calls: string[] = [];
-    const run: CommandRunner = async (command, args) => {
-      const key = [command, ...args].join(" ");
-      calls.push(key);
-      if (key === "/usr/bin/which docker") return { stdout: "docker\n" };
-      if (key === "/usr/bin/which podman") throw new Error("missing");
-      if (key === "docker info --format {{.ServerVersion}}") return { stdout: "29\n" };
-      if (key === `docker image inspect ${IMAGE}`) return { stdout: preparedImageInspect() };
-      if (key === `docker start ${CONTAINER}`) {
-        running = true;
-        return { stdout: "" };
-      }
-      if (key === `docker inspect ${CONTAINER}`) {
-        return { stdout: readyInspect({ State: { Running: running } }) };
-      }
-      if (key === versionProbe) return { stdout: `cua-driver ${CUA_DRIVER_VERSION}\n` };
-      if (key === statusProbe) return { stdout: "running\n" };
-      if (key === healthProbe) {
-        return { stdout: JSON.stringify({ schema_version: "1", overall: "ok", checks: [] }) };
-      }
-      if (key === readinessProbe) return { stdout: "{}\n" };
-      if (key === readinessRead) return { stdout: validPng.toString("base64") };
-      throw new Error(`unexpected command: ${key}`);
-    };
-
-    const after = await containerComputerAction("start", run, "linux");
-    expect(calls).toContain(`docker start ${CONTAINER}`);
-    expect(after.container).toBe("running");
-    expect(after.ready).toBe(true);
-  });
-
-  it("still refuses start when the stopped desktop is on a drifted image", async () => {
+  it("never starts a stopped desktop because its stale X lock makes resume unsafe", async () => {
     const fake = runner({
       "/usr/bin/which docker": "docker\n",
       "/usr/bin/which podman": new Error("missing"),
       "docker info --format {{.ServerVersion}}": "29\n",
       [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
-      [`docker inspect ${CONTAINER}`]: readyInspect({
-        State: { Running: false },
-        Config: {
-          Image: IMAGE,
-          Labels: {
-            [MANAGED_LABEL]: "1",
-            [DRIVER_LABEL]: CUA_DRIVER_VERSION,
-            [BASE_IMAGE_LABEL]: BASE_IMAGE_DIGEST,
-            [IMAGE_LAYER_LABEL]: "4",
-            [WORKSPACE_LABEL]: "1",
-          },
-          Env: ["VNC_PW=secret123"],
-        },
-      }),
+      [`docker inspect ${CONTAINER}`]: readyInspect({ State: { Running: false } }),
     });
 
-    await expect(containerComputerAction("start", fake.run, "linux")).rejects.toThrow("recreate");
+    await expect(containerComputerAction("start", fake.run, "linux")).rejects.toThrow("cannot safely resume");
     expect(fake.calls).not.toContain(`docker start ${CONTAINER}`);
   });
 });
@@ -920,6 +931,9 @@ describe("setupCommands", () => {
     expect(command).toContain(`source=${target.workspaceDir},target=${VM_WORKSPACE_GUEST}`);
     expect(command).toContain("-p 127.0.0.1::6901");
     expect(command).not.toContain("127.0.0.1:6080:6901");
+    expect(args).not.toContain("--userns");
+    expect(args).not.toContain("--user");
+    expect(command).not.toContain("relabel=");
   });
 
   it("does not invent Docker commands when no runtime was detected", () => {
@@ -939,8 +953,8 @@ describe("setupCommands", () => {
     expect(command).toContain("VNC_PW=CHANGE_ME");
   });
 
-  it("publishes docker start so a stopped healthy VM can resume", () => {
-    expect(setupCommands("docker", "linux").start).toBe(`docker start ${CONTAINER}`);
+  it("does not suggest docker start for an image that must be recreated", () => {
+    expect(setupCommands("docker", "linux").start).toBeNull();
   });
 
   it("limits resources and retains only the sandbox supervisor's identity-switch caps", () => {
@@ -960,9 +974,28 @@ describe("setupCommands", () => {
 
   it("asks rootless Podman to map and privately relabel the durable workspace", () => {
     const command = setupCommands("podman", "linux").run!;
+    expect(command).toContain("--cap-add SYS_CHROOT");
+    expect(command).not.toContain("--privileged");
+    expect(command).not.toContain("unconfined");
+    expect(setupCommands("docker", "linux").run).not.toContain("SYS_CHROOT");
     expect(command).toContain(
-      `--mount type=bind,source=${VM_WORKSPACE_DIR},target=${VM_WORKSPACE_GUEST},relabel=private,U=true`,
+      `--mount type=bind,source=${VM_WORKSPACE_DIR},target=${VM_WORKSPACE_GUEST},relabel=private`,
     );
+    expect(command).toContain("--userns keep-id:uid=1000,gid=1000 --user 0:0");
+    expect(command).not.toContain("U=true");
+  });
+
+  it("keeps per-bot Podman workspaces separate without recursively changing their owner", () => {
+    for (const id of ["podman-a", "podman-b"]) {
+      const target = perBotLocalVmTarget(id);
+      const args = containerRunArgs("podman", "secret", target);
+      expect(args.slice(args.indexOf("--userns"), args.indexOf("--userns") + 4))
+        .toEqual(["--userns", "keep-id:uid=1000,gid=1000", "--user", "0:0"]);
+      expect(args[args.indexOf("--mount") + 1]).toBe(
+        `type=bind,source=${target.workspaceDir},target=${VM_WORKSPACE_GUEST},relabel=private`,
+      );
+      expect(args).toContain("127.0.0.1::6901");
+    }
   });
 
   it("shows the pinned base pull while creating the managed derivative through the API", () => {
@@ -984,7 +1017,72 @@ describe("setupCommands", () => {
     expect(commands.run).not.toContain("--memory-swap");
   });
 
-  it("installs the Podman CLI on Windows, not the Desktop GUI", () => {
-    expect(setupCommands(null, "win32").install).toBe("winget install -e --id Podman.CLI");
+  it("offers the supported Podman Desktop installer on Windows", () => {
+    expect(setupCommands(null, "win32").install).toBe("winget install -e --id RedHat.Podman-Desktop");
+  });
+});
+
+describe("localVmRecreatableOnDemand", () => {
+  const linuxPodman = {
+    "/usr/bin/which docker": new Error("missing"),
+    "/usr/bin/which podman": "podman\n",
+    "podman info --format json": '{"host":{"arch":"amd64"}}\n',
+  };
+
+  it("recreates a Local VM the idle timer removed", async () => {
+    const target = SHARED_LOCAL_VM_TARGET;
+    const fake = runner({
+      ...linuxPodman,
+      [`podman image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`podman inspect ${target.containerName}`]: new Error("no such container"),
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux", target);
+
+    expect(status.container).toBe("missing");
+    expect(status.problem).toBe("Create the Local VM");
+    expect(localVmRecreatableOnDemand(status)).toBe(true);
+  });
+
+  it("leaves a stopped container alone, because it is asked to be recreated not started", async () => {
+    const target = SHARED_LOCAL_VM_TARGET;
+    const detail = JSON.parse(readyInspect())[0];
+    detail.State = { Running: false, Status: "exited" };
+    const fake = runner({
+      ...linuxPodman,
+      [`podman image inspect ${IMAGE}`]: preparedImageInspect(),
+      [`podman inspect ${target.containerName}`]: JSON.stringify([detail]),
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux", target);
+
+    expect(status.container).toBe("stopped");
+    expect(localVmRecreatableOnDemand(status)).toBe(false);
+  });
+
+  it("does not create anything when no container runtime is installed", async () => {
+    const fake = runner({
+      "/usr/bin/which docker": new Error("missing"),
+      "/usr/bin/which podman": new Error("missing"),
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux", SHARED_LOCAL_VM_TARGET);
+
+    expect(status.runtime).toBeNull();
+    expect(localVmRecreatableOnDemand(status)).toBe(false);
+  });
+
+  it("does not create anything before the desktop image has been prepared", async () => {
+    const target = SHARED_LOCAL_VM_TARGET;
+    const fake = runner({
+      ...linuxPodman,
+      [`podman image inspect ${IMAGE}`]: new Error("no such image"),
+      [`podman inspect ${target.containerName}`]: new Error("no such container"),
+    });
+
+    const status = await containerComputerStatus(fake.run, "linux", target);
+
+    expect(status.image).toBe(false);
+    expect(localVmRecreatableOnDemand(status)).toBe(false);
   });
 });

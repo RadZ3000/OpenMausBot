@@ -5,13 +5,313 @@ import {
   initialState,
   loadSnapshotBoundary,
   openNotificationTarget,
+  persistBotUpdate,
   reducer,
+  requestConfirmedBotDeletion,
   visibleNotificationThread,
   type Bot,
+  type BotAnnouncement,
   type Group,
   type Message,
 } from "./store";
 import { openLiveEvents, type LiveEventSourceLike, type LiveEventsPlatform } from "../lib/live-events";
+import type { RoutineRun } from "../lib/routines";
+
+describe("keyboard shortcuts dialog state", () => {
+  it("opens and closes without replacing bot settings navigation", () => {
+    expect(initialState.shortcutsOpen).toBe(false);
+    expect(initialState.botSettingsSection).toBe("overview");
+    const state = { ...initialState, botSettingsSection: "soul" as const };
+    const opened = reducer(state, { type: "toggleShortcuts", open: true });
+    expect(opened.shortcutsOpen).toBe(true);
+    expect(opened.botSettingsSection).toBe("soul");
+    const closed = reducer(opened, { type: "toggleShortcuts" });
+    expect(closed.shortcutsOpen).toBe(false);
+    expect(closed.botSettingsSection).toBe("soul");
+  });
+});
+
+describe("trusted approval-mode persistence", () => {
+  const announcement = (approvalMode: Bot["approvalMode"] = "ask") => ({
+    id: "bot-1",
+    threadId: "thread-1",
+    name: "Maus",
+    title: "Helper",
+    description: "",
+    notifications: true,
+    color: "green" as const,
+    unread: false,
+    modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+    approvalMode,
+  });
+
+  it("commits ordinary edits before granting Full through the private bridge", async () => {
+    const order: string[] = [];
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => {
+      order.push("http");
+      return { bot: announcement("ask") };
+    });
+    const setMode = vi.fn(async () => {
+      order.push("private");
+      return announcement("full");
+    });
+
+    await expect(persistBotUpdate(
+      "bot-1",
+      { approvalMode: "full", confirmFullAccess: true, title: "Ops" },
+      new AbortController().signal,
+      request,
+      { setMode },
+    )).resolves.toMatchObject({ approvalMode: "full" });
+
+    expect(order).toEqual(["http", "private"]);
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ title: "Ops" });
+    expect(setMode).toHaveBeenCalledWith("bot-1", "full", { acknowledgeLocalAuto: false });
+  });
+
+  it("never sends a Full confirmation over HTTP after a rapid switch back to Ask", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("ask") }));
+    await persistBotUpdate(
+      "bot-1",
+      { approvalMode: "ask", confirmFullAccess: true },
+      new AbortController().signal,
+      request,
+    );
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ approvalMode: "ask" });
+  });
+
+  it("fails closed when trusted modes have no packaged desktop bridge", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("ask") }));
+    await expect(persistBotUpdate(
+      "bot-1",
+      { approvalMode: "custom" },
+      new AbortController().signal,
+      request,
+      undefined,
+    )).rejects.toThrow("packaged desktop app");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("uses the private bridge to leave Custom instead of the bot-callable HTTP API", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("custom") }));
+    const setMode = vi.fn(async () => announcement("ask"));
+
+    await expect(persistBotUpdate(
+      "bot-1",
+      { approvalMode: "ask" },
+      new AbortController().signal,
+      request,
+      { setMode },
+      announcement("custom"),
+    )).resolves.toMatchObject({ approvalMode: "ask" });
+
+    expect(request).not.toHaveBeenCalled();
+    expect(setMode).toHaveBeenCalledWith("bot-1", "ask", { acknowledgeLocalAuto: false });
+  });
+
+  it("revokes a trusted mode that completes after its save was cancelled", async () => {
+    let finishFull!: (bot: BotAnnouncement) => void;
+    const lateFull = new Promise<BotAnnouncement>((resolve) => {
+      finishFull = resolve;
+    });
+    const calls: string[] = [];
+    const setMode = vi.fn(async (_botId: string, mode: "ask" | "auto" | "full" | "custom") => {
+      calls.push(mode);
+      return mode === "full" ? lateFull : announcement(mode);
+    });
+    const controller = new AbortController();
+    const pending = persistBotUpdate(
+      "bot-1",
+      { approvalMode: "full", confirmFullAccess: true },
+      controller.signal,
+      vi.fn(),
+      { setMode },
+      announcement("ask"),
+    );
+    await Promise.resolve();
+
+    controller.abort();
+    finishFull(announcement("full"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls).toEqual(["full", "ask"]);
+  });
+
+  it("revokes a late Custom-to-Full grant when a newer save supersedes it", async () => {
+    let finishFull!: (bot: BotAnnouncement) => void;
+    const lateFull = new Promise<BotAnnouncement>((resolve) => {
+      finishFull = resolve;
+    });
+    const calls: string[] = [];
+    const setMode = vi.fn(async (_botId: string, mode: "ask" | "auto" | "full" | "custom") => {
+      calls.push(mode);
+      return mode === "full" ? lateFull : announcement(mode);
+    });
+    const controller = new AbortController();
+    const pending = persistBotUpdate(
+      "bot-1",
+      { approvalMode: "full", confirmFullAccess: true },
+      controller.signal,
+      vi.fn(),
+      { setMode },
+      announcement("custom"),
+    );
+    await Promise.resolve();
+
+    controller.abort();
+    finishFull(announcement("full"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls).toEqual(["full", "ask"]);
+  });
+
+  it("leaves Custom before persisting a coalesced non-Codex model switch", async () => {
+    const order: string[] = [];
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => {
+      order.push("http");
+      return {
+        bot: {
+          ...announcement("ask"),
+          modelSelection: { instanceId: "gemini", model: "gemini-3.1-pro" },
+        },
+      };
+    });
+    const setMode = vi.fn(async () => {
+      order.push("private");
+      return announcement("ask");
+    });
+
+    await expect(persistBotUpdate(
+      "bot-1",
+      {
+        approvalMode: "ask",
+        modelSelection: { instanceId: "gemini", model: "gemini-3.1-pro" },
+      },
+      new AbortController().signal,
+      request,
+      { setMode },
+      announcement("custom"),
+    )).resolves.toMatchObject({
+      approvalMode: "ask",
+      modelSelection: { instanceId: "gemini", model: "gemini-3.1-pro" },
+    });
+
+    expect(order).toEqual(["private", "http"]);
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({
+      modelSelection: { instanceId: "gemini", model: "gemini-3.1-pro" },
+    });
+    expect(setMode).toHaveBeenCalledWith("bot-1", "ask", { acknowledgeLocalAuto: false });
+  });
+
+  it("keeps local-computer consent on an ordinary PATCH coalesced with a private mode", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({
+      bot: { ...announcement("auto"), computer: "local" as const },
+    }));
+    const setMode = vi.fn(async () => announcement("full"));
+
+    await persistBotUpdate(
+      "bot-1",
+      {
+        computer: "local",
+        acknowledgeLocalAuto: true,
+        approvalMode: "full",
+        confirmFullAccess: true,
+      },
+      new AbortController().signal,
+      request,
+      { setMode },
+      announcement("auto"),
+    );
+
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({
+      computer: "local",
+      acknowledgeLocalAuto: true,
+    });
+    expect(setMode).toHaveBeenCalledWith("bot-1", "full", { acknowledgeLocalAuto: true });
+  });
+});
+
+describe("server-authoritative bot deletion", () => {
+  const bot = {
+    id: "bot-delete",
+    threadId: "thread-delete",
+    name: "Keeper",
+    messages: [],
+  } as never as Bot;
+
+  const stateWithQueuedWork = () => reducer(
+    reducer(initialState, { type: "botAdded", bot }),
+    { type: "pendingQueued", threadId: bot.threadId, queueId: "queued-1", text: "keep this" },
+  );
+
+  it.each([409, 503])("keeps the bot, selection, and queued work when DELETE is rejected with %s", async (status) => {
+    let state = stateWithQueuedWork();
+    const cancel = vi.fn();
+
+    await expect(requestConfirmedBotDeletion(
+      bot.id,
+      async () => { throw new Error(`${status} computer cleanup required`); },
+      (botId) => {
+        cancel(botId);
+        state = reducer(state, { type: "deleteBot", botId });
+      },
+    )).rejects.toThrow(String(status));
+
+    expect(cancel).not.toHaveBeenCalled();
+    expect(state.selectedId).toBe(bot.id);
+    expect(state.bots.map((candidate) => candidate.id)).toContain(bot.id);
+    expect(state.pendingQueued[bot.threadId]).toEqual([
+      { queueId: "queued-1", text: "keep this" },
+    ]);
+  });
+
+  it("removes the bot only after DELETE succeeds", async () => {
+    let state = stateWithQueuedWork();
+    const cancel = vi.fn();
+    const requestDelete = vi.fn(async () => ({ ok: true }));
+
+    await requestConfirmedBotDeletion(bot.id, requestDelete, (botId) => {
+      cancel(botId);
+      state = reducer(state, { type: "deleteBot", botId });
+    });
+
+    expect(requestDelete).toHaveBeenCalledWith(bot.id);
+    expect(cancel).toHaveBeenCalledWith(bot.id);
+    expect(state.bots).toHaveLength(0);
+  });
+
+  it("coalesces repeated delete clicks while the server request is pending", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const requestDelete = vi.fn(async () => gate);
+    const onConfirmed = vi.fn();
+
+    const first = requestConfirmedBotDeletion(bot.id, requestDelete, onConfirmed);
+    const second = requestConfirmedBotDeletion(bot.id, requestDelete, onConfirmed);
+    expect(requestDelete).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([first, second]);
+
+    expect(onConfirmed).toHaveBeenCalledTimes(1);
+    expect(onConfirmed).toHaveBeenCalledWith(bot.id);
+  });
+
+  it("keeps a visible pending marker until deletion settles or fails", () => {
+    const state = stateWithQueuedWork();
+    const pending = reducer(state, { type: "botDeletionPending", botId: bot.id, on: true });
+
+    expect(pending.bots.map((candidate) => candidate.id)).toContain(bot.id);
+    expect(pending.deletingBots).toEqual({ [bot.id]: true });
+
+    const failed = reducer(pending, { type: "botDeletionPending", botId: bot.id, on: false });
+    expect(failed.bots.map((candidate) => candidate.id)).toContain(bot.id);
+    expect(failed.deletingBots).toEqual({});
+
+    const removed = reducer(pending, { type: "deleteBot", botId: bot.id });
+    expect(removed.bots).toHaveLength(0);
+    expect(removed.deletingBots).toEqual({});
+  });
+});
 
 type SnapshotFrame =
   | { kind: "hello"; resumed: boolean; cursor: string }
@@ -334,6 +634,116 @@ describe("onboarding quiz", () => {
   });
 });
 
+describe("optimistic sent messages", () => {
+  const root: Message = { id: "root", role: "bot", kind: "text", text: "Ready", at: 1 };
+  const bot: Bot = {
+    id: "preview-bot",
+    threadId: "preview-thread",
+    name: "Preview",
+    title: "",
+    description: "",
+    notifications: true,
+    color: "purple",
+    unread: false,
+    modelSelection: { instanceId: "claude", model: "default" },
+    messages: [root],
+    activeLeafId: root.id,
+  };
+
+  it("shows a direct send immediately and replaces it with the canonical server message", () => {
+    const sent = reducer(
+      { ...initialState, bots: [bot] },
+      {
+        type: "send",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-preview",
+        text: "look\n\n<attached-image path=\"/private/photo.png\" />",
+      },
+    );
+    expect(sent.bots[0]?.messages.at(-1)).toMatchObject({
+      id: "optimistic-send-preview",
+      role: "user",
+      sendId: "send-preview",
+    });
+    expect(sent.bots[0]?.activeLeafId).toBe("optimistic-send-preview");
+
+    const canonical: Message = {
+      id: "server-message",
+      role: "user",
+      kind: "text",
+      text: "look\n\n<attached-image path=\"/private/photo.png\" />",
+      at: 2,
+      parentId: root.id,
+      sendId: "send-preview",
+    };
+    const reconciled = reducer(sent, {
+      type: "messageAdded",
+      threadId: bot.threadId,
+      message: canonical,
+    });
+    expect(reconciled.bots[0]?.messages).toEqual([root, canonical]);
+    expect(reconciled.bots[0]?.activeLeafId).toBe(canonical.id);
+  });
+
+  it("removes only the optimistic row when a send queues or fails", () => {
+    const sent = reducer(
+      { ...initialState, bots: [bot] },
+      { type: "send", botId: bot.id, sendId: "send-failed", text: "later" },
+    );
+    const removed = reducer(sent, {
+      type: "optimisticMessageRemoved",
+      threadId: bot.threadId,
+      sendId: "send-failed",
+    });
+    expect(removed.bots[0]?.messages).toEqual([root]);
+    expect(removed.bots[0]?.activeLeafId).toBe(root.id);
+  });
+
+  it("uses the same immediate reconciliation for a channel", () => {
+    const group: Group = {
+      id: "preview-room",
+      threadId: "preview-room-thread",
+      name: "Preview room",
+      memberIds: [bot.id],
+      defaultResponder: { kind: "member", botId: bot.id },
+      bulletin: "",
+      unread: false,
+      createdAt: 1,
+      messages: [],
+    };
+    const sent = reducer(
+      { ...initialState, groups: [group] },
+      {
+        type: "sendGroup",
+        groupId: group.id,
+        threadId: group.threadId,
+        sendId: "room-preview",
+        text: "show this",
+        mode: "chat",
+      },
+    );
+    expect(sent.groups[0]?.messages).toEqual([
+      expect.objectContaining({ id: "optimistic-room-preview", sendId: "room-preview" }),
+    ]);
+
+    const canonical: Message = {
+      id: "server-room-message",
+      role: "user",
+      kind: "text",
+      text: "show this",
+      at: 2,
+      sendId: "room-preview",
+    };
+    const reconciled = reducer(sent, {
+      type: "messageAdded",
+      threadId: group.threadId,
+      message: canonical,
+    });
+    expect(reconciled.groups[0]?.messages).toEqual([canonical]);
+  });
+});
+
 describe("cross-client bot creation", () => {
   it("adds an announced bot before its greeting frames arrive", () => {
     const announced = {
@@ -366,6 +776,51 @@ describe("cross-client bot creation", () => {
     });
 
     expect(greeted.bots[0]?.messages).toEqual([greeting]);
+  });
+});
+
+describe("routine receipt retention", () => {
+  const run = (id: string, scheduledFor: number, status: RoutineRun["status"]): RoutineRun => ({
+    id,
+    routineId: "routine",
+    routineName: "Check inbox",
+    target: "bot",
+    botId: "echo",
+    runOn: "maus",
+    scheduledFor,
+    status,
+    manual: false,
+    createdAt: scheduledFor,
+  });
+
+  it("trims finished history without hiding older active work", () => {
+    const waiting = run("waiting", 0, "waiting");
+    const history = Array.from({ length: 2_000 }, (_, index) =>
+      run(`finished-${index}`, index + 1, "completed"),
+    );
+
+    const hydrated = reducer(initialState, {
+      type: "routinesHydrated",
+      routines: [],
+      runs: [waiting, ...history],
+    });
+    expect(hydrated.routineRuns).toHaveLength(2_000);
+    expect(hydrated.routineRuns).toContainEqual(waiting);
+
+    const running = { ...waiting, status: "running" as const, startedAt: 2_000 };
+    const activePatched = reducer(hydrated, {
+      type: "routineRunPatched",
+      run: running,
+    });
+    expect(activePatched.routineRuns).toContainEqual(running);
+
+    const next = reducer(activePatched, {
+      type: "routineRunPatched",
+      run: run("newest", 2_001, "completed"),
+    });
+    expect(next.routineRuns).toHaveLength(2_000);
+    expect(next.routineRuns).toContainEqual(running);
+    expect(next.routineRuns[0]?.id).toBe("newest");
   });
 });
 
@@ -411,6 +866,23 @@ describe("canonical message races", () => {
     expect(next).toBe(state);
     expect(next.bots[0]?.activeLeafId).toBe(reply.id);
     expect(next.bots[0]?.messages).toEqual([sent, reply]);
+  });
+});
+
+describe("browser profile announcements", () => {
+  it.each([undefined, null, "guest", "another-profile"])("replaces an old shared profile with %s without losing chat", (profile) => {
+    const bot: Bot = {
+      id: "browser-bot", threadId: "browser-thread", name: "Pepper", title: "", description: "",
+      notifications: true, color: "green", unread: false,
+      modelSelection: { instanceId: "codex", model: "default" }, browserProfile: "old-profile",
+      messages: [{ id: "message", role: "user", kind: "text", at: 1, text: "Keep this conversation" }],
+    };
+    const { messages, browserProfile: _oldProfile, ...announcement } = bot;
+    const next = reducer({ ...initialState, bots: [bot] }, {
+      type: "botPatched", bot: { ...announcement, ...(profile === undefined ? {} : { browserProfile: profile }) },
+    });
+    expect(next.bots[0]?.browserProfile).toBe(profile);
+    expect(next.bots[0]?.messages).toBe(messages);
   });
 });
 
@@ -466,6 +938,17 @@ describe("section Chiefs", () => {
     expect(next.bots.find((candidate) => candidate.id === workChief.id)?.chiefOfStaff).toBe(false);
     expect(next.bots.find((candidate) => candidate.id === workCandidate.id)?.chiefOfStaff).toBe(true);
     expect(next.bots.find((candidate) => candidate.id === personalChief.id)?.chiefOfStaff).toBe(true);
+  });
+
+  it("optimistically clears an explicit computer when Auto is selected", () => {
+    const current = { ...bot("cloud-bot", "Work"), computer: "cloud" as const, messages: [] };
+    const next = reducer({ ...initialState, bots: [current] }, {
+      type: "updateBot",
+      botId: current.id,
+      patch: { computer: null },
+    });
+
+    expect(next.bots[0]?.computer).toBeUndefined();
   });
 });
 
@@ -725,5 +1208,119 @@ describe("messageAdded leaf adoption", () => {
     });
     expect(next.bots[0].activeLeafId).toBe("m2"); // the user's message stays the tail
     expect(next.bots[0].messages.map((m) => m.id)).toContain("shot");
+  });
+});
+
+describe("bot settings section", () => {
+  const bot = {
+    id: "test-bot",
+    threadId: "test-thread",
+    name: "Test",
+    title: "",
+    description: "",
+    notifications: true,
+    color: "green",
+    unread: false,
+    modelSelection: { instanceId: "x", model: "y" },
+    messages: [],
+  } as never as Bot;
+
+  it("toggleSettings with a section sets it and opens", () => {
+    const next = reducer(initialState, {
+      type: "toggleSettings",
+      open: true,
+      section: "identity",
+    });
+    expect(next.settingsOpen).toBe(true);
+    expect(next.botSettingsSection).toBe("identity");
+  });
+
+  it("toggleSettings leaves the computer panel and inspector open, closes app settings", () => {
+    const withPanels = { ...initialState, computerOpen: true, inspectorOpen: true, appSettingsOpen: true };
+    const next = reducer(withPanels, { type: "toggleSettings", open: true });
+    expect(next.settingsOpen).toBe(true);
+    expect(next.computerOpen).toBe(true);
+    expect(next.inspectorOpen).toBe(true);
+    expect(next.appSettingsOpen).toBe(false);
+  });
+
+  it("toggleSettings without a section keeps it", () => {
+    const state = reducer(initialState, {
+      type: "toggleSettings",
+      open: true,
+      section: "soul",
+    });
+    const next = reducer(state, {
+      type: "toggleSettings",
+      open: true,
+    });
+    expect(next.botSettingsSection).toBe("soul");
+  });
+
+  it("selecting a different bot resets botSettingsSection to overview", () => {
+    // Add bot A and select it
+    let state = reducer(initialState, {
+      type: "botAdded",
+      bot: { ...bot, id: "bot-a", threadId: "thread-a" },
+    });
+    // Add bot B (becomes selected automatically)
+    state = reducer(state, {
+      type: "botAdded",
+      bot: { ...bot, id: "bot-b", threadId: "thread-b" },
+    });
+    expect(state.selectedId).toBe("bot-b");
+
+    // Set section to "identity" while bot-b is selected
+    state = reducer(state, {
+      type: "toggleSettings",
+      open: true,
+      section: "identity",
+    });
+    expect(state.botSettingsSection).toBe("identity");
+
+    // Select bot A → should reset to "overview" because we're changing bots
+    const next = reducer(state, {
+      type: "select",
+      id: "bot-a",
+    });
+    expect(next.botSettingsSection).toBe("overview");
+  });
+
+  it("re-selecting the same bot keeps botSettingsSection, but selecting a different bot resets it", () => {
+    // Add bot A (becomes selected)
+    let state = reducer(initialState, {
+      type: "botAdded",
+      bot: { ...bot, id: "bot-a", threadId: "thread-a" },
+    });
+    expect(state.selectedId).toBe("bot-a");
+
+    // Open settings with section "soul"
+    state = reducer(state, {
+      type: "toggleSettings",
+      open: true,
+      section: "soul",
+    });
+    expect(state.botSettingsSection).toBe("soul");
+
+    // Re-select bot A (same bot) → section should stay "soul"
+    state = reducer(state, {
+      type: "select",
+      id: "bot-a",
+    });
+    expect(state.botSettingsSection).toBe("soul");
+
+    // Add bot B (becomes selected)
+    state = reducer(state, {
+      type: "botAdded",
+      bot: { ...bot, id: "bot-b", threadId: "thread-b" },
+    });
+    expect(state.selectedId).toBe("bot-b");
+
+    // Select bot A again → should reset to "overview" because we're changing from bot-b to bot-a
+    state = reducer(state, {
+      type: "select",
+      id: "bot-a",
+    });
+    expect(state.botSettingsSection).toBe("overview");
   });
 });

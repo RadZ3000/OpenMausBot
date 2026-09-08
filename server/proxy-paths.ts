@@ -34,6 +34,7 @@ export function resolveProxy(relative: string): string {
  * the smoke test can assert each one actually exists in a packaged layout —
  * the check that would have caught the 0.1.24 breakage. */
 export const SPAWNED_PROXIES = {
+  browser: resolveProxy("browser-proxy"),
   computer: resolveProxy("computer-proxy"),
   permission: resolveProxy("permission-proxy"),
   containerMcp: resolveProxy("container-mcp"),
@@ -45,7 +46,6 @@ export const SPAWNED_PROXIES = {
   connectors: resolveProxy("connector-proxy"),
   phone: resolveProxy("drivers/phone-proxy"),
   imageGen: resolveProxy("drivers/image-proxy"),
-  browser: resolveProxy("drivers/browser-proxy"),
   // Loaded by the external `pi` process via `-e`, not by this server — but
   // resolved through the same single source of truth so the packaged layout
   // check can assert it ships.

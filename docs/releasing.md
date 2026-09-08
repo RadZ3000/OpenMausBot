@@ -1,6 +1,12 @@
 # Releasing
 
-One workflow builds everything: **Actions → Release → Run workflow**. It
+For a normal release, run **Actions → Prepare next release → Run workflow** and
+choose a patch, minor, or custom version. It opens a tiny version-bump PR;
+merging that PR automatically starts **Release** and assembles a draft from the
+exact merge commit. Review and publish the draft when it is ready.
+
+The existing **Actions → Release → Run workflow** button remains available for
+reruns and recovery. It
 builds macOS (arm64 + x64, signed, notarized, stapled), Windows, and Ubuntu
 from a single pinned commit, verifies every artifact the way a user would
 receive it, and assembles the canonical draft in
@@ -16,9 +22,9 @@ published release** workflow
 verifies and publishes its legacy mirror automatically. Never publish only the
 legacy draft.
 
-The workflow refuses to overwrite an already-published version, so the only
-prerequisite per release is that `package.json`'s version is bumped on the
-ref you run it against. A release is rejected if any installer, stable download
+The workflow refuses to overwrite an already-published version. Manual Release
+runs still require `package.json`'s version to be bumped on the selected ref.
+A release is rejected if any installer, stable download
 name, updater feed, blockmap, size, or digest is absent or inconsistent.
 
 GitHub generates the release body from pull requests since the previous
@@ -41,6 +47,11 @@ refreshes it.
 3. README and docs downloads point at the canonical repo, while the legacy
    mirror exists only for installed updater clients and historical releases.
 
+The npm package is published separately and its versioned `.tgz` is attached
+only to the canonical release. It is not a desktop updater artifact; the
+mirror checks permit that one extra file while still verifying the complete,
+byte-identical desktop asset set.
+
 ## Why the gates exist
 
 Each verification step in `release.yml` maps to a real incident from the
@@ -51,9 +62,23 @@ stapling silently invalidating every published hash, and a finished release
 sitting invisible as a draft. Don't remove a gate without reading the comment
 above it.
 
+## Bundled browser gates
+
+Desktop builds also stage a pinned engine and Chromium Headless Shell before
+packaging. Pre-signing checks validate complete resources and upstream hashes;
+native browser smoke tests and macOS signature checks run on the packaged
+output. See [browser packaging](browser-packaging.md) for update ownership,
+license provenance and Linux sandbox constraints. Missing browser resources
+must fail the build, not ship an installer that downloads them on first use.
+
 ## One-time setup: release secrets
 
 Set these in **OpenMausBot → Settings → Secrets and variables → Actions**.
+
+The **Prepare next release** workflow also needs
+**Settings → Actions → General → Workflow permissions → Allow GitHub Actions
+to create and approve pull requests** enabled. The workflow only creates the
+version PR; it never approves or merges it.
 
 ### 1. `MAC_CERT_P12_BASE64` + `MAC_CERT_PASSWORD`
 

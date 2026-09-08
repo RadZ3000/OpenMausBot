@@ -252,7 +252,7 @@ describe("coworker loop family", () => {
   });
 
   it("B-06: a healthy stopped VM resumes; drifted image still recreates; profiles stay in workspace", () => {
-    expect(IMAGE_LAYER_VERSION).toBe("7");
+    expect(IMAGE_LAYER_VERSION).toBe("5");
     expect(VM_BROWSER_PROFILES_GUEST).toBe(`${VM_WORKSPACE_GUEST}/.browser-profiles`);
     const healthyStopped = {
       container: "stopped" as const,

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Menu } from "lucide-react";
 import { StoreProvider, useStore } from "@/state/store";
-import { InstallPathChooser } from "@/components/InstallPathChooser";
 import { Onboarding } from "@/components/Onboarding";
 import { emailGateDone, initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
-import { SettingsPanel } from "@/components/SettingsPanel";
+import { BotSettingsDialog } from "@/components/BotSettingsDialog";
+import { RemoteAgentSettingsPanel } from "@/components/RemoteAgentSettingsPanel";
 import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
+import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { SettingsModal } from "@/components/SettingsModal";
 import { UpdateBanner } from "@/components/UpdateBanner";
@@ -17,20 +18,22 @@ import { DesktopCapabilitiesProvider } from "@/components/DesktopCapabilities";
 import { RoutinesPage } from "@/components/RoutinesPage";
 import { NoEngines } from "@/components/NoEngines";
 import { CommandPalette } from "@/components/CommandPalette";
+import { KeyboardShortcutsModal } from "@/components/KeyboardShortcutsModal";
 import { LightboxProvider } from "@/components/Lightbox";
+import { InstallPathChooser } from "@/components/InstallPathChooser";
 import { LocalVmWorkspace } from "@/components/LocalVmWorkspace";
-import { BrowserWorkspace } from "@/components/BrowserWorkspace";
 import { SkillRecorderPage } from "@/components/SkillRecorderPage";
 import { TeamMapPage } from "@/components/TeamMapPage";
-import { heldComputerControlBotIds } from "@/lib/computer-control";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { setLocale } from "@/lib/i18n";
+import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 
 function Shell() {
   const { state, dispatch } = useStore();
   const unreadCount =
     state.bots.filter((bot) => !bot.hidden && bot.unread).length +
     state.groups.filter((group) => group.unread).length;
+  const remoteClient = window.ogb?.remoteClient?.active === true;
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
   // cancelling them with md:, which would still emit a translate value and
@@ -50,7 +53,6 @@ function Shell() {
   const [localVmWorkspaceBotId, setLocalVmWorkspaceBotId] = useState<string | null>(null);
   // the Browser tab, expanded into the main column (the small preview in
   // the panel hands off to this and back)
-  const [browserWorkspaceBotId, setBrowserWorkspaceBotId] = useState<string | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const previousViewRef = useRef(state.activeView);
   const calendarOriginRef = useRef<"chat" | "team-map" | "skill-recorder">("chat");
@@ -67,10 +69,17 @@ function Shell() {
     state.instances.length > 0 &&
     !state.instances.some((i) => i.snapshot.state === "available");
 
-  // App-wide shortcuts: ⌘N new bot · ⌘1–9 jump to bot · ⌘⇧[ / ⌘⇧] prev/next.
+  // App-wide shortcuts: ⌘N new bot · ⌘1–9 jump to bot · ⌘⇧[ / ⌘⇧] prev/next · ⌘/ or ? shortcuts cheat sheet.
   // Kept deliberately small; every panel already closes on Esc.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || state.shortcutsOpen) return;
+      if (shouldOpenKeyboardShortcuts(e)) {
+        e.preventDefault();
+        dispatch({ type: "toggleShortcuts", open: true });
+        return;
+      }
+
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       const bots = state.bots.filter((b) => !b.hidden);
@@ -94,23 +103,11 @@ function Shell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state.bots, state.selectedId, dispatch]);
+  }, [state.bots, state.selectedId, state.shortcutsOpen, dispatch]);
 
   useEffect(() => {
     window.ogb?.setUnreadCount?.(unreadCount);
   }, [unreadCount]);
-
-  // Re-assert every authoritative positive hold in the process that owns the
-  // native browser. This covers initial hydration, SSE updates from another
-  // computer surface, and renderer reloads. Deliberately never mirror false:
-  // only a trusted two-phase release may open Electron's direct browser gate.
-  useEffect(() => {
-    const setter = window.ogb?.browser?.setHumanControl;
-    if (!setter) return;
-    for (const botId of heldComputerControlBotIds(state.computerControl)) {
-      void setter(botId, true).catch(() => {});
-    }
-  }, [state.computerControl]);
 
   // Warm connected-account state as soon as the local server is available.
   // The modal then opens with the correct Connect/Add account buttons and
@@ -150,19 +147,6 @@ function Shell() {
     dispatch({ type: "toggleComputer", open: false });
     setLocalVmWorkspaceBotId(botId);
   };
-  const openBrowserWorkspace = useCallback((botId: string) => {
-    dispatch({ type: "toggleComputer", open: false });
-    setBrowserWorkspaceBotId(botId);
-  }, [dispatch]);
-  const closeBrowserWorkspace = useCallback(() => {
-    setBrowserWorkspaceBotId(null);
-    dispatch({ type: "toggleComputer", open: true });
-  }, [dispatch]);
-  useEffect(() => {
-    if (browserWorkspaceBotId && (state.activeView !== "chat" || state.selectedId !== browserWorkspaceBotId)) {
-      setBrowserWorkspaceBotId(null);
-    }
-  }, [browserWorkspaceBotId, state.activeView, state.selectedId]);
 
   const openComputerFromWorkspace = (botId: string) => {
     setLocalVmWorkspaceBotId(null);
@@ -251,11 +235,9 @@ function Shell() {
         <TeamMapPage />
       ) : state.activeView === "routines" ? (
         <RoutinesPage onBack={closeCalendar} onOpenRoom={openCalendarRoom} />
-      ) : state.activeView === "skill-recorder" ? (
+      ) : !remoteClient && state.activeView === "skill-recorder" ? (
         <SkillRecorderPage />
-      ) : browserWorkspaceBotId && bot && bot.id === browserWorkspaceBotId ? (
-        <BrowserWorkspace bot={bot} onClose={closeBrowserWorkspace} />
-      ) : localVmWorkspaceBotId ? (
+      ) : !remoteClient && localVmWorkspaceBotId ? (
         <LocalVmWorkspace
           primaryBotId={localVmWorkspaceBotId}
           overlayOpen={nativeViewOverlayOpen}
@@ -281,18 +263,31 @@ function Shell() {
           )}
         </main>
       )}
-      {state.settingsOpen && bot && <SettingsPanel bot={bot} />}
-      {state.computerOpen && bot && (
-        <ComputerPanel
-          key={bot.id}
-          bot={bot}
-          onOpenVmWorkspace={openLocalVmWorkspace}
-          onExpandBrowser={openBrowserWorkspace}
-        />
+      {state.settingsOpen && bot && (
+        remoteClient
+          ? <RemoteAgentSettingsPanel bot={bot} />
+          : <BotSettingsDialog key={bot.id} bot={bot} />
       )}
-      {state.inspectorOpen && bot && <InspectorPanel bot={bot} />}
+      {state.computerOpen && bot && (
+        remoteClient ? (
+          <RemoteDesktopPanel key={bot.id} bot={bot} />
+        ) : (
+          <ComputerPanel
+            key={bot.id}
+            bot={bot}
+            onOpenVmWorkspace={openLocalVmWorkspace}
+          />
+        )
+      )}
+      {!remoteClient && state.inspectorOpen && bot && <InspectorPanel bot={bot} />}
       {state.appSettingsOpen && <SettingsModal />}
       {state.pluginsOpen && <PluginsPanel />}
+      {state.shortcutsOpen && (
+        <KeyboardShortcutsModal
+          open={state.shortcutsOpen}
+          onClose={() => dispatch({ type: "toggleShortcuts", open: false })}
+        />
+      )}
       {/* mounted after the modals: same z-50 tier, so DOM order keeps the
           palette on top when one of them is open underneath */}
       <CommandPalette onOpenChange={setPaletteOpen} />
@@ -302,7 +297,7 @@ function Shell() {
 }
 
 export default function App() {
-  const [gated, setGated] = useState(() => !emailGateDone());
+  const [gated, setGated] = useState(() => window.ogb?.remoteClient?.active !== true && !emailGateDone());
   useEffect(() => {
     initAnalytics();
   }, []);

@@ -72,6 +72,34 @@ class DecodingTest {
     }
 
     @Test
+    fun intervalRoutineScheduleDecodesItsCadenceAndAnchor() {
+        val schedule = CompanionJson.decodeFromString<RoutineSchedule>(
+            """{"type":"interval","everyMinutes":5,"anchorAt":1700000000000}""",
+        )
+
+        assertEquals(RoutineSchedule.Kind.INTERVAL, schedule.type)
+        assertEquals(5, schedule.everyMinutes)
+        assertEquals(1_700_000_000_000L, schedule.anchorAt)
+    }
+
+    @Test
+    fun routineTimeoutIsOptionalForOlderDesktopPayloads() {
+        val base = """{
+            "id":"routine-1","name":"Brief","prompt":"Summarize","botId":"bot-1",
+            "runOn":"maus","enabled":true,
+            "schedule":{"type":"daily","time":"09:00","weekdays":[1]},
+            "durationMinutes":30,"createdAt":1,"updatedAt":2
+        }""".trimIndent()
+
+        assertNull(CompanionJson.decodeFromString<Routine>(base).timeoutMinutes)
+        val guarded = base.replace(
+            "\"durationMinutes\":30",
+            "\"durationMinutes\":30,\"timeoutMinutes\":45",
+        )
+        assertEquals(45, CompanionJson.decodeFromString<Routine>(guarded).timeoutMinutes)
+    }
+
+    @Test
     fun decodesTheCloudBackendAndItsAbsence() {
         val fleet = CompanionJson.decodeFromString<Fleet>(
             """{"bots":[
@@ -405,5 +433,14 @@ class DecodingTest {
                 """{"id":"m1","role":"bot","at":1,"text":"missing discriminator"}""",
             )
         }
+    }
+
+    @Test
+    fun decodesTheBotOverview() {
+        val overview = decodeFixture<BotOverview>("bot-overview")
+        assertEquals("Kiwi", overview.who.name)
+        assertEquals("File bugs.", overview.who.soulLead)
+        assertTrue(overview.does.isNotEmpty())
+        assertTrue(overview.wont.isNotEmpty())
     }
 }

@@ -12,7 +12,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, normalize } from "node:path";
 
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { PRODUCT_NAME } from "../distribution.ts";
@@ -49,23 +49,88 @@ import { SPAWNED_PROXIES } from "../proxy-paths.ts";
  * backends over time. Presence checks also accept stale credentials. The CLI's
  * own machine-readable auth command is the source of truth for every backend.
  */
-export function claudeSignedIn(
+function claudeAuthStatus(
+  cli: string,
+  env: NodeJS.ProcessEnv,
+  run: typeof execCli = execCli,
+): Promise<{ authenticated: boolean; account?: ProviderSnapshot["account"] }> {
+  return new Promise((resolve) => {
+    run(cli, ["auth", "status", "--json"], { timeout: 8000, maxBuffer: 65_536, env }, (_error, stdout) => {
+      try {
+        const status: unknown = JSON.parse(stdout);
+        if (!status || typeof status !== "object" || !("loggedIn" in status) || status.loggedIn !== true) {
+          return resolve({ authenticated: false });
+        }
+        // Only display identity fields, never the CLI's full auth response.
+        const identity = status as { email?: unknown; orgName?: unknown };
+        const boundedText = (value: unknown, max: number): string | undefined =>
+          typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\p{Cc}\p{Cf}]/u.test(value)
+            ? value.trim() : undefined;
+        const candidateEmail = boundedText(identity.email, 254);
+        const email = candidateEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateEmail) ? candidateEmail : undefined;
+        const organization = boundedText(identity.orgName, 160);
+        resolve({
+          authenticated: true,
+          ...(email || organization ? { account: { ...(email ? { email } : {}), ...(organization ? { organization } : {}) } } : {}),
+        });
+      } catch {
+        resolve({ authenticated: false });
+      }
+    });
+  });
+}
+
+export async function claudeSignedIn(
   cli: string,
   env: NodeJS.ProcessEnv,
   run: typeof execCli = execCli,
 ): Promise<boolean> {
-  return new Promise((resolve) => {
-    run(cli, ["auth", "status", "--json"], { timeout: 8000, env }, (_error, stdout) => {
-      try {
-        const status: unknown = JSON.parse(stdout);
-        resolve(
-          typeof status === "object" && status !== null && "loggedIn" in status && status.loggedIn === true,
-        );
-      } catch {
-        resolve(false);
-      }
-    });
-  });
+  return (await claudeAuthStatus(cli, env, run)).authenticated;
+}
+
+/** Parent-session credentials/routing that a named account must not inherit.
+ * Shared with terminal sign-in instructions so login and turns select alike. */
+export const CLAUDE_ACCOUNT_ENV_KEYS = [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+] as const;
+
+/** Resolve the CLI's config location without changing HOME or Keychain. */
+export function resolveClaudeConfigDir(configDir?: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const configured = configDir?.trim() || env.CLAUDE_CONFIG_DIR?.trim() || join(home, ".claude");
+  const expanded = configured === "~" ? home : configured.startsWith("~/") ? join(home, configured.slice(2)) : configured;
+  if (!isAbsolute(expanded) || /[\p{Cc}\p{Cf}]/u.test(expanded)) {
+    throw new Error("claude: configDir must be an absolute path or start with ~/");
+  }
+  return normalize(expanded);
+}
+
+/** Whether a stream frame is the CLI reporting that it has no login.
+ *
+ * The CLI flags its own api-error frames (`error`, `is_api_error_message`);
+ * a model reply never carries them. Requiring that flag first is what keeps
+ * an answer that merely discusses being logged out from being read as a
+ * failure — the text classifier runs only once the CLI has already called
+ * the frame an error, and covers CLI builds that flag the frame without
+ * naming the reason.
+ */
+export function claudeAuthFailure(
+  frame: { error?: unknown; is_api_error_message?: unknown },
+  text: string,
+): boolean {
+  if (frame.is_api_error_message !== true && typeof frame.error !== "string") return false;
+  return frame.error === "authentication_failed" || classifyError({ text }).reason === "auth";
 }
 
 /** The CLI environment shared by auth probes and real turns.
@@ -78,8 +143,22 @@ export function claudeSignedIn(
 function claudeEnvironment(
   model?: string | null,
   source: NodeJS.ProcessEnv = process.env,
+  configDir?: string,
+  instanceEnvironment: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
+  if (configDir?.trim()) {
+    env.CLAUDE_CONFIG_DIR = resolveClaudeConfigDir(configDir, env);
+    for (const key of CLAUDE_ACCOUNT_ENV_KEYS) {
+      // Explicit custom endpoint settings still work; subscription OAuth
+      // always belongs to this account's CLI-managed login, never its parent.
+      if (key.startsWith("CLAUDE_CODE_OAUTH_") || key.endsWith("_FILE_DESCRIPTOR") || !Object.hasOwn(instanceEnvironment, key)) {
+        delete env[key];
+      }
+    }
+  } else if (env.CLAUDE_CONFIG_DIR) {
+    env.CLAUDE_CONFIG_DIR = resolveClaudeConfigDir(undefined, env);
+  }
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   // The harness process may hold workspace credentials (xai/box/voice keys,
@@ -94,6 +173,8 @@ const DRIVER_KIND = "claudeAgent";
 
 export interface ClaudeConfig {
   cli: string;
+  /** Separate CLI-managed login/settings. Empty uses the normal CLI account. */
+  configDir?: string;
   permissionMode: "acceptEdits" | "auto" | "bypassPermissions";
   /** Available Claude built-ins. An empty list passes `--tools ""`. */
   tools?: string[];
@@ -128,11 +209,6 @@ async function resolveClaudeTurnModel(
   return resolveInjectId(model, await probeLocalInjects(env)) ?? model;
 }
 
-function claudeConfigDir(env: Record<string, string | undefined>): string {
-  if (env.CLAUDE_CONFIG_DIR) return env.CLAUDE_CONFIG_DIR;
-  return join(env.HOME || env.USERPROFILE || homedir(), ".claude");
-}
-
 function extrasFromUnknown(value: unknown): Array<{ id: string; label: string }> {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
@@ -156,7 +232,7 @@ function extrasFromUnknown(value: unknown): Array<{ id: string; label: string }>
 export function readClaudeModelCatalog(env: Record<string, string | undefined> = process.env) {
   let settings: Record<string, unknown> = {};
   try {
-    settings = JSON.parse(readFileSync(join(claudeConfigDir(env), "settings.json"), "utf8")) as Record<string, unknown>;
+    settings = JSON.parse(readFileSync(join(resolveClaudeConfigDir(undefined, env), "settings.json"), "utf8")) as Record<string, unknown>;
   } catch {
     return STATIC_CLAUDE_MODELS;
   }
@@ -491,8 +567,12 @@ function decodeConfig(raw: unknown): ClaudeConfig {
   }
   const tools = decodeToolList(o.tools, "tools");
   const disallowedTools = decodeToolList(o.disallowedTools, "disallowedTools");
+  if (o.configDir !== undefined && typeof o.configDir !== "string") throw new Error("claude: configDir must be a string");
+  const configDir = typeof o.configDir === "string" ? o.configDir.trim() : undefined;
+  if (configDir) resolveClaudeConfigDir(configDir);
   return {
     cli: typeof o.cli === "string" ? o.cli : "claude",
+    ...(configDir ? { configDir } : {}),
     permissionMode: (mode as ClaudeConfig["permissionMode"]) ?? "acceptEdits",
     ...(tools !== undefined ? { tools } : {}),
     ...(disallowedTools !== undefined ? { disallowedTools } : {}),
@@ -508,6 +588,58 @@ function firstText(content: unknown): string {
       .join("");
   }
   return "";
+}
+
+type ClaudeImage = NonNullable<SendTurnInput["images"]>[number];
+type ClaudeUserContent =
+  | { type: "image"; source: { type: "base64"; media_type: ClaudeImage["mime"]; data: string } }
+  | { type: "text"; text: string };
+type ClaudeUserMessage = {
+  type: "user";
+  message: { role: "user"; content: string | ClaudeUserContent[] };
+};
+
+/** Claude's stream-json input accepts the same image source blocks as the
+ * Anthropic Messages API. Keep the old string form for text-only turns so a
+ * CLI update cannot disturb the overwhelmingly common path. */
+function claudeUserMessage(
+  text: string,
+  images: readonly ClaudeImage[] | undefined,
+): ClaudeUserMessage {
+  if (!images?.length) return { type: "user", message: { role: "user", content: text } };
+  const content: ClaudeUserContent[] = images.map((image) => ({
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: image.mime,
+      data: readFileSync(image.path).toString("base64"),
+    },
+  }));
+  if (text) content.push({ type: "text", text });
+  return { type: "user", message: { role: "user", content } };
+}
+
+/** Native traces are routinely attached to bug reports. Preserve the image
+ * block's shape and size for debugging, but never persist its base64 bytes. */
+function diagnosticClaudeUserMessage(message: ClaudeUserMessage): ClaudeUserMessage {
+  if (!Array.isArray(message.message.content)) return message;
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: message.message.content.map((block) =>
+        block.type === "image"
+          ? {
+              ...block,
+              source: {
+                ...block.source,
+                data: `[image data: ${block.source.data.length} base64 chars]`,
+              },
+            }
+          : block,
+      ),
+    },
+  };
 }
 
 export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
@@ -531,7 +663,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
   async create(input: DriverCreateInput<ClaudeConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
-    const catalogEnv: Record<string, string | undefined> = { ...process.env, ...input.environment };
+    const environment = (model?: string | null) =>
+      claudeEnvironment(model, { ...process.env, ...input.environment }, config.configDir, input.environment);
+    const catalogEnv = environment();
     let models = STATIC_CLAUDE_MODELS;
     const refreshModels = async () => {
       try {
@@ -564,7 +698,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       /** the CLI's session id from `init`, what --resume takes later */
       sessionId: string | null;
       /** the running turn, or null between turns */
-      turn: { turnId: string; settled: boolean; sawStreamDelta: boolean } | null;
+      turn: { turnId: string; settled: boolean; sawStreamDelta: boolean; authFailed?: boolean } | null;
       idleTimer: ReturnType<typeof setTimeout> | null;
       closing: boolean;
       stderr: string;
@@ -604,14 +738,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       s.idleTimer = setTimeout(() => closeSession(threadId, "idle"), SESSION_IDLE_MS);
       s.idleTimer.unref?.();
     };
-    const writeUser = (s: Session, threadId: string, text: string): Promise<boolean> => {
-      const promptMsg = { type: "user", message: { role: "user", content: text } };
+    const writeUser = (s: Session, threadId: string, promptMsg: ClaudeUserMessage): Promise<boolean> => {
       if (!s.child.stdin.writable || s.child.stdin.destroyed) return Promise.resolve(false);
       return new Promise((resolve) => {
         try {
           s.child.stdin.write(JSON.stringify(promptMsg) + "\n", (error) => {
             if (error) return resolve(false);
-            appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: promptMsg });
+            appendNative(threadId, {
+              dir: "out",
+              source: "claude.sdk.message",
+              msg: diagnosticClaudeUserMessage(promptMsg),
+            });
             resolve(true);
           });
         } catch {
@@ -637,10 +774,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+      // A bot-level mode is authoritative for this turn. In particular, an
+      // old provider instance may still be configured with
+      // `bypassPermissions`; Ask/Auto must restore Claude's interactive
+      // broker instead of inheriting that silent bypass. Calls without a
+      // per-turn mode keep the legacy adapter behavior.
+      const permissionMode = turn.approvalMode === undefined
+        ? config.permissionMode
+        : turn.approvalMode === "full" ? "bypassPermissions"
+          : turn.approvalMode === "auto" ? "auto" : "default";
       const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
-      if (controlsHost && config.permissionMode === "bypassPermissions") {
+      if (controlsHost && permissionMode === "bypassPermissions" && turn.approvalMode !== "full") {
         throw new Error("local computer control requires the interactive approval broker");
       }
+      // Materialize before creating a broker or process. A missing/corrupt
+      // attachment must fail this call without leaving a live session behind.
+      const promptMsg = claudeUserMessage(turn.text, turn.images);
       const turnId = newId();
       const retryAbort = new AbortController();
       const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
@@ -660,13 +809,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // token-level streaming: content_block_delta events between the
         // whole-message frames, so the bubble grows as the model writes
         "--include-partial-messages",
-        "--permission-mode", config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
+        "--permission-mode", permissionMode,
       ];
       if (config.tools !== undefined) args.push("--tools", config.tools.join(","));
       if (config.disallowedTools?.length) {
         args.push("--disallowedTools", config.disallowedTools.join(","));
       }
-      const turnEnvironment: NodeJS.ProcessEnv = { ...process.env, ...input.environment };
+      const turnEnvironment = environment();
       const turnModel = await resolveClaudeTurnModel(turn.model, turnEnvironment);
       const injected = applyClaudeInject({ ...turnEnvironment }, turnModel);
       if (injected.model) args.push("--model", injected.model);
@@ -710,7 +859,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // agentsIntegration(); pre-allowing matters doubly here, or the CLI's
       // own ListAgents look-alike shadows it and "@Bot" asks go nowhere
       if (turn.integrations?.agents) {
-        mcpServers.agents = { ...turn.integrations.agents };
+        // Coordination is foundational, not an optional deferred lookup.
+        // Claude waits for always-loaded tools before building the prompt.
+        mcpServers.agents = { ...turn.integrations.agents, alwaysLoad: true };
         allowed.push("mcp__agents");
       }
       if (turn.integrations?.phone) {
@@ -747,17 +898,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (name in mcpServers) continue;
         mcpServers[name] = { ...server };
       }
-      // permission broker: anything acceptEdits would silently deny becomes
-      // an Allow/Deny card in chat, and the agent gets ask_user. Skipped in
-      // bypassPermissions (fullAuto) — nothing would ever ask.
+      // Keep ask_user available even in Full access. Native bypass skips
+      // permission prompts, not questions requiring a person's answer.
       let broker: Awaited<ReturnType<typeof createPermissionBroker>> | undefined;
-      let socketPath: string | null = null;
-      if (config.permissionMode !== "bypassPermissions") {
-        socketPath = permissionSocketPath(threadId);
+      const socketPath = permissionSocketPath(threadId);
+      if (permissionMode !== "bypassPermissions") {
         args.push("--permission-prompt-tool", "mcp__ogb__approve");
-        mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
-        allowed.push("mcp__ogb");
       }
+      mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG }, alwaysLoad: true };
+      allowed.push("mcp__ogb");
       // The MCP config carries credentials — a Composio consumer key in a
       // header, the box token in the computer proxy's env, the comms token in
       // the agents proxy's env. On argv every one of those is world-readable
@@ -771,7 +920,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         args.push("--allowedTools", allowed.join(","));
       }
 
-      const env = claudeEnvironment(turnModel, turnEnvironment);
+      const env = environment(turnModel);
+      // Our approvals and browser credentials expire at the user-turn
+      // boundary. Native background workers cannot outlive that boundary;
+      // parallel bot work must use the harness's durable delegate_bot path.
+      env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
       const cwd = turn.cwd ?? homedir();
       // Everything that shapes the process, minus session/turn-specific temp
       // paths. Their contents are represented directly in the key instead.
@@ -784,6 +937,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         cwd,
         model: injected.model ?? null,
         base: env.ANTHROPIC_BASE_URL ?? null,
+        configDir: env.CLAUDE_CONFIG_DIR ?? null,
       });
 
       // Reuse the live process when it is idle, unchanged, and is the session
@@ -793,9 +947,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (live && !live.turn && !live.closing && live.child.exitCode === null && live.argsKey === argsKey && (!sessionId || sessionId === live.sessionId)) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
         live.turn = { turnId, settled: false, sawStreamDelta: false };
-        active.set(threadId, { stop: () => killCliTree(live.child), turnId, broker: live.broker });
+        active.set(threadId, { stop: () => {
+          closeSession(threadId, "interrupted");
+          killCliTree(live.child);
+        }, turnId, broker: live.broker });
         emit({ ...base(threadId, turnId), type: "turn.started" });
-        const written = await writeUser(live, threadId, turn.text);
+        const written = await writeUser(live, threadId, promptMsg);
         if (!written) {
           active.delete(threadId);
           live.turn = null;
@@ -891,7 +1048,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           // the base path: the nonce is not part of the spawn contract, and a
           // retained session keeps its own broker object anyway.
           if (broker.socketPath !== socketPath && mcpConfigPath) {
-            mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, broker.socketPath], env: { ...NODE_ENV_FLAG } };
+            mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, broker.socketPath], env: { ...NODE_ENV_FLAG }, alwaysLoad: true };
           }
         }
 
@@ -1002,6 +1159,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           case "assistant": {
             const msg = o.message ?? {};
             const text = firstText(msg.content);
+            // An unauthenticated turn comes back as an api-error frame whose
+            // only content is the CLI's own "run /login" instruction — a
+            // command this app has no terminal to run, so relaying it as a
+            // reply strands the user. Every other engine reports this as a
+            // setup error; that is what routes them to the sign-in card.
+            if (claudeAuthFailure(o, text)) {
+              if (session.turn) session.turn.authFailed = true;
+              emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: text, setup: true });
+              break;
+            }
             if (text.trim()) {
               // fallback delta for CLIs/paths that never streamed the block
               if (!session.turn?.sawStreamDelta) {
@@ -1036,6 +1203,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
             break;
           case "result":
+            // A synthetic background completion is not the result of the
+            // submitted user turn. Settling it would revoke browser access
+            // and deny approvals while that user turn is still running.
+            if (o.origin?.kind === "task-notification") break;
             // result.usage is this invocation's total — one process per turn,
             // so it is the turn's figure. cache reads count as input: they
             // are billed (at the cache rate) and they fill the window — but
@@ -1043,7 +1214,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // of the figure was context re-read rather than new text.
             settle(
               o.is_error !== true,
-              o.stop_reason ?? o.terminal_reason ?? null,
+              session.turn?.authFailed ? "auth_required" : o.stop_reason ?? o.terminal_reason ?? null,
               o.total_cost_usd ?? null,
               o.usage
                 ? {
@@ -1187,6 +1358,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       });
 
       const stop = () => {
+        // taskkill is asynchronous on Windows. Retire steering and approvals
+        // now, before a still-connected child can submit more work.
+        closeSession(threadId, "interrupted");
         retry.cancelled = true;
         retryAbort.abort();
         killCliTree(child);
@@ -1197,7 +1371,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // prompt over stdin as a stream-json message — never argv (ARG_MAX).
       // stdin stays OPEN: that is what keeps the session alive for a
       // mid-turn steer or the next turn; closeSession() ends it.
-      if (!(await writeUser(session, threadId, turn.text))) {
+      if (!(await writeUser(session, threadId, promptMsg))) {
         settle(false, "stdin_write_failed");
         closeSession(threadId, "stdin write failed");
       }
@@ -1210,22 +1384,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const steer = async (threadId: string, text: string): Promise<boolean> => {
       const s = sessions.get(threadId);
       if (!s || !s.turn || s.turn.settled || s.closing || s.child.exitCode !== null) return false;
-      return writeUser(s, threadId, text);
+      return writeUser(s, threadId, claudeUserMessage(text, undefined));
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const env = claudeEnvironment(undefined, { ...process.env, ...input.environment });
+      const env = environment();
       const version = await new Promise<string | null>((resolve) => {
         execCli(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout) =>
           resolve(err ? null : stdout.trim()),
         );
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
-      const authenticated = await claudeSignedIn(config.cli, env);
+      const auth = await claudeAuthStatus(config.cli, env);
       // claudeEnvironment strips ANTHROPIC_API_KEY, so turns run on the
       // CLI's own login (Pro/Max): the cost it reports is what the call
       // WOULD bill, not a charge
-      return { state: "available", version, authenticated, billing: "subscription" };
+      return { state: "available", version, ...auth, billing: "subscription" };
     };
 
     /** One-shot Claude call with the prompt on stdin, never argv. Approval
@@ -1239,7 +1413,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           ["-p", "--model", "claude-haiku-4-5", "--output-format", "text"],
           {
             stdio: ["pipe", "pipe", "pipe"],
-            env: claudeEnvironment("claude-haiku-4-5", { ...process.env, ...input.environment }),
+            env: environment("claude-haiku-4-5"),
           },
         );
         let stdout = "";
@@ -1308,9 +1482,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           browserMcp: true,
           imageGenMcp: true,
           images: true,
+          nativeImageInput: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],
           queueing: true,
-          localComputerMcp: config.permissionMode !== "bypassPermissions",
+          // Harness turns reassert a per-bot mode and restore the broker even
+          // when an old instance was configured with bypassPermissions.
+          localComputerMcp: true,
         },
         sendTurn,
         steer,

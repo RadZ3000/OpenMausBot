@@ -1,6 +1,6 @@
 import { track } from "@/lib/analytics";
 import { distribution, teamLibraryEnabled } from "@/lib/distribution";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -23,10 +23,8 @@ import {
   Pin,
   PinOff,
   Plus,
-  RefreshCw,
   Search,
   Sparkles,
-  Settings,
   Puzzle,
   Trash2,
   Users,
@@ -36,14 +34,17 @@ import { api, useStore, formatTime, visibleMessages, type Bot, type Group } from
 
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
-import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
+import { t } from "@/lib/i18n";
+import type { LocaleKey } from "@/locales";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { WorkingDots } from "./WorkingIndicator";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { nextRename } from "@/lib/rename";
 import { downloadAllBots } from "@/lib/team-files";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { MIN_QUERY, SearchResults } from "./SearchResults";
-import { TeamLibraryPanel, type TeamImportResult } from "./TeamLibraryPanel";
+import { TeamLibraryPanel } from "./TeamLibraryPanel";
 import { RenameTitle } from "./RenameTitle";
 import { BotPickerList } from "./BotPickerList";
 import {
@@ -77,110 +78,36 @@ import {
   type SectionDropPlace,
 } from "@/lib/sidebar-layout";
 import { sidebarSectionAttention } from "@/lib/sidebar-attention";
+import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
 import { SidebarMoreMenu } from "./SidebarMoreMenu";
+import { profileInitials, SidebarProfileMenu } from "./SidebarProfileMenu";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 
-/** "Milind Soni" → "MS", "milind" → "M", "you@x.dev" → "Y", unset → "?" */
-function profileInitials(profile?: { name?: string; email?: string }): string {
-  const name = profile?.name?.trim();
-  if (name) {
-    const words = name.split(/\s+/);
-    return words
-      .slice(0, 2)
-      .map((w) => w[0]!.toUpperCase())
-      .join("");
-  }
-  const email = profile?.email?.trim();
-  return email ? email[0]!.toUpperCase() : "?";
-}
+const SECTION_LABEL_KEYS: Record<string, LocaleKey> = {
+  [PINNED_SECTION_ID]: "sidebar.section.pinned",
+  [CHANNELS_SECTION_ID]: "sidebar.section.channels",
+  [BOT_CHATS_SECTION_ID]: "sidebar.section.botChats",
+  [BOTS_SECTION_ID]: "sidebar.section.bots",
+};
 
-/** Manual update check, next to the settings gear. Packaged app only (no
- * bridge in dev/browser). One button, state-dependent: check → download →
- * restart, with a brief "up to date" tick when a check finds nothing so a
- * click is never silent. The bottom-left popup handles the loud cases. */
-function UpdateButton() {
-  const s = useUpdaterState();
-  const [checkedAt, setCheckedAt] = useState(0);
-  const updater = window.ogb?.updater;
-  const status = s?.status ?? "idle";
-  // download and install both round-trip through main before the status
-  // changes — spin on the click itself, and let the new status clear it
-  const [pending, setPending] = useState(false);
-  useEffect(() => setPending(false), [status]);
-  // a check that found nothing lands back on idle — acknowledge it for 3s
-  const upToDate = Boolean(checkedAt) && (!s || s.status === "idle") && Date.now() - checkedAt < 3000;
-  useEffect(() => {
-    if (!upToDate) return;
-    const timer = setTimeout(() => setCheckedAt(0), 3000);
-    return () => clearTimeout(timer);
-  }, [upToDate]);
-  if (!updater) return null;
-
-  const working =
-    pending || status === "checking" || status === "downloading" || status === "installing";
-  const label =
-    status === "available"
-      ? `Version ${s?.version ?? ""} available — download`
-      : status === "downloading"
-        ? s?.percent == null
-          ? "Starting download…"
-          : `Downloading… ${Math.round(s.percent)}%`
-        : status === "downloaded"
-          ? `Version ${s?.version ?? ""} ready — restart to update`
-          : status === "installing"
-            ? "Restarting to update…"
-            : status === "checking"
-              ? "Checking for updates…"
-              : upToDate
-                ? "You're up to date"
-                : "Check for updates";
-
-  return (
-    <button
-      onClick={() => {
-        if (status === "downloaded") {
-          setPending(true);
-          return void updater.install();
-        }
-        if (status === "available") {
-          setPending(true);
-          return void updater.download();
-        }
-        setCheckedAt(Date.now());
-        void updater.check();
-      }}
-      disabled={working}
-      title={label}
-      aria-label={label}
-      className="relative flex size-10 items-center justify-center rounded-md text-accent hover:bg-raised disabled:opacity-60"
-    >
-      {working ? (
-        <Loader2 size={18} className="animate-spin" />
-      ) : upToDate ? (
-        <Check size={18} />
-      ) : status === "available" ? (
-        <ArrowDownToLine size={18} />
-      ) : (
-        <RefreshCw size={18} />
-      )}
-      {status === "downloaded" && (
-        <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-accent" />
-      )}
-    </button>
-  );
+/** The four built-in section names come from the catalog; a section someone
+ * named themselves is their text and stays exactly as typed. */
+function sectionLabel(id: string): string {
+  const key = SECTION_LABEL_KEYS[id];
+  return key ? t(key) : sidebarSectionLabel(id);
 }
 
 function preview(bot: Bot): string {
-  if (bot.activity === "waiting-on-you") return "Waiting for you…";
-  if (bot.busy) return "Working…";
+  if (bot.activity === "waiting-on-you") return t("sidebar.preview.waiting");
+  if (bot.busy) return t("sidebar.preview.working");
   // the visible branch's tail — bot.messages holds every fork, so its last
   // entry can belong to a version the user switched away from
   const last = visibleMessages(bot).at(-1);
   if (!last) return "";
   if (last.kind === "options" && last.card) return last.card.title;
   if (last.kind === "activity" && last.tool) return last.tool.name;
-  if (last.kind === "screen") return "Screen frame";
+  if (last.kind === "screen") return t("sidebar.preview.screenFrame");
   return last.text ?? "";
 }
 
@@ -192,17 +119,19 @@ interface MenuState {
 
 function groupPreview(group: Group, bots: Bot[]): string {
   if (group.busyBotId) {
-    return `${bots.find((b) => b.id === group.busyBotId)?.name ?? "A bot"} is working…`;
+    return t("sidebar.preview.botWorking", {
+      name: bots.find((b) => b.id === group.busyBotId)?.name ?? t("sidebar.preview.aBot"),
+    });
   }
-  if (group.working) return "The team is working…";
+  if (group.working) return t("sidebar.preview.teamWorking");
   const last = group.messages.at(-1);
-  if (!last) return "No messages yet";
+  if (!last) return t("sidebar.preview.noMessages");
   const text = last.kind === "activity" && last.tool
     ? last.tool.name
     : last.kind === "goal.run" && last.goalRun
       ? sidebarGoalRunPreview(last.goalRun)
       : (last.text ?? "");
-  if (last.role === "user") return `You: ${text}`;
+  if (last.role === "user") return t("sidebar.preview.you", { text });
   return last.from ? `${last.from.name}: ${text}` : text;
 }
 
@@ -304,6 +233,7 @@ function RoomContextMenu({
   onMoveToSection: (groupId: string) => void;
 }) {
   const { state, dispatch } = useStore();
+  const remoteClient = window.ogb?.remoteClient?.active === true;
   const group = state.groups.find((g) => g.id === menu.groupId);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(group?.name ?? "");
@@ -335,16 +265,17 @@ function RoomContextMenu({
   return createPortal(
     <div
       data-room-menu
+      data-sidebar
       style={{ top, left }}
       className="fixed z-40 w-[228px] overflow-hidden rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60"
     >
-      {renaming ? (
+      {!remoteClient && (renaming ? (
         <div className="flex items-center gap-1 px-2 py-1">
           <input
             autoFocus
             value={draft}
             maxLength={100}
-            aria-label={`Rename ${group.name}`}
+            aria-label={t("sidebar.room.renameAria", { name: group.name })}
             onFocus={(event) => event.currentTarget.select()}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -362,8 +293,8 @@ function RoomContextMenu({
           <button
             type="button"
             onClick={saveRename}
-            aria-label={isBotChat ? "Save chat name" : "Save channel name"}
-            title="Save"
+            aria-label={isBotChat ? t("sidebar.room.saveChatName") : t("sidebar.room.saveChannelName")}
+            title={t("common.save")}
             className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink"
           >
             <Check size={15} />
@@ -371,8 +302,8 @@ function RoomContextMenu({
           <button
             type="button"
             onClick={onClose}
-            aria-label={isBotChat ? "Cancel chat rename" : "Cancel channel rename"}
-            title="Cancel"
+            aria-label={isBotChat ? t("sidebar.room.cancelChatRename") : t("sidebar.room.cancelChannelRename")}
+            title={t("common.cancel")}
             className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink"
           >
             <X size={15} />
@@ -387,10 +318,10 @@ function RoomContextMenu({
           className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
         >
           <Pencil size={16} className="text-ink-secondary" />
-          {isBotChat ? "Rename chat" : "Rename Channel"}
+          {isBotChat ? t("sidebar.room.renameChat") : t("sidebar.room.renameChannel")}
         </button>
-      )}
-      {!isBotChat && (
+      ))}
+      {!remoteClient && !isBotChat && (
         <button
           onClick={() => {
             onClose();
@@ -399,7 +330,7 @@ function RoomContextMenu({
           className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
         >
           <FolderPlus size={16} className="text-ink-secondary" />
-          Move to context
+          {t("sidebar.section.moveToContext")}
         </button>
       )}
       <button
@@ -410,9 +341,9 @@ function RoomContextMenu({
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
       >
         <ClipboardCopy size={16} className="text-ink-secondary" />
-        Copy conversation ID
+        {t("sidebar.copyConversationId")}
       </button>
-      <button
+      {!remoteClient && <button
         onClick={() => {
           dispatch({ type: "deleteGroup", groupId: group.id });
           onClose();
@@ -420,8 +351,8 @@ function RoomContextMenu({
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger hover:bg-raised/70"
       >
         <Trash2 size={16} />
-        {isBotChat ? "Delete chat" : "Delete Channel"}
-      </button>
+        {isBotChat ? t("sidebar.room.deleteChat") : t("sidebar.room.deleteChannel")}
+      </button>}
     </div>,
     document.body,
   );
@@ -458,7 +389,7 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="w-[340px] rounded-2xl border border-hairline/50 bg-card p-4 shadow-2xl">
-        <div className="mb-3 text-[15px] font-semibold text-ink">New Channel</div>
+        <div className="mb-3 text-[15px] font-semibold text-ink">{t("sidebar.newChannel.title")}</div>
         <input
           autoFocus
           maxLength={100}
@@ -468,7 +399,7 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
             if (e.key === "Enter") create();
             if (e.key === "Escape") onClose();
           }}
-          placeholder="Channel name (for example, Website launch)"
+          placeholder={t("sidebar.newChannel.name")}
           className="mb-3 w-full rounded-lg bg-raised/70 px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <input
@@ -479,22 +410,26 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
             if (e.key === "Enter") create();
             if (e.key === "Escape") onClose();
           }}
-          placeholder="Context (optional): Work, Personal, Client…"
-          aria-label="Channel context"
+          placeholder={t("sidebar.newChannel.context")}
+          aria-label={t("sidebar.newChannel.contextAria")}
           className="mb-3 w-full rounded-lg bg-raised/70 px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <BotPickerList
           bots={bots}
           picked={picked}
           onToggle={toggle}
-          emptyHint="Create a bot first — channels are made of bots."
+          emptyHint={t("sidebar.newChannel.emptyHint")}
         />
         <button
           onClick={create}
           disabled={!picked.size}
           className="mt-3 w-full rounded-lg bg-accent py-2 text-[14px] font-medium text-white hover:brightness-110 disabled:opacity-40"
         >
-          Create Channel{picked.size ? ` · ${picked.size} ${picked.size === 1 ? "bot" : "bots"}` : ""}
+          {picked.size === 0
+            ? t("sidebar.newChannel.create")
+            : picked.size === 1
+              ? t("sidebar.newChannel.createOne")
+              : t("sidebar.newChannel.createMany", { count: picked.size })}
         </button>
       </div>
     </div>
@@ -561,7 +496,7 @@ function SectionPicker({
       className="fixed z-40 w-[236px] overflow-hidden rounded-xl border border-hairline/50 bg-card py-2 shadow-2xl shadow-black/60"
     >
       <div className="px-3.5 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
-        Move to context
+        {t("sidebar.section.moveToContext")}
       </div>
       {sections.length > 0 && (
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
@@ -593,8 +528,8 @@ function SectionPicker({
           maxLength={60}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="New context…"
-          aria-label="New context name"
+          placeholder={t("sidebar.section.newContext")}
+          aria-label={t("sidebar.section.newContextAria")}
           className="w-full rounded-lg bg-raised/70 px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <button
@@ -605,7 +540,7 @@ function SectionPicker({
             trimmed ? "bg-accent text-panel" : "bg-raised/70 text-ink-secondary",
           )}
         >
-          Add
+          {t("common.add")}
         </button>
       </form>
       {current && (
@@ -616,7 +551,7 @@ function SectionPicker({
             className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[13px] text-danger hover:bg-raised/70"
           >
             <FolderMinus size={15} />
-            Remove from context
+            {t("sidebar.section.removeFromContext")}
           </button>
         </>
       )}
@@ -628,14 +563,17 @@ function BotContextMenu({
   menu,
   onClose,
   onArchive,
+  onDelete,
   onMoveToSection,
 }: {
   menu: MenuState;
   onClose: () => void;
   onArchive: (bot: Bot) => void;
+  onDelete: (bot: Bot) => void;
   onMoveToSection: (botId: string) => void;
 }) {
   const { state, dispatch } = useStore();
+  const remoteClient = window.ogb?.remoteClient?.active === true;
   const bot = state.bots.find((b) => b.id === menu.botId);
 
   useEffect(() => {
@@ -654,14 +592,15 @@ function BotContextMenu({
   }, [onClose]);
 
   if (!bot) return null;
+  const deleting = state.deletingBots[bot.id] === true;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
   const visibleBotCount = state.bots.filter((candidate) => !candidate.hidden).length;
   const archiveBlocked = Boolean(bot.chiefOfStaff) || visibleBotCount <= 1;
   const archiveHint = bot.chiefOfStaff
-    ? "Choose another Chief of Staff first"
+    ? t("sidebar.bot.archiveBlockedChief")
     : visibleBotCount <= 1
-      ? "Keep at least one active bot"
+      ? t("sidebar.bot.archiveBlockedLast")
       : undefined;
   // keep the menu on-screen near the click
   const top = Math.max(8, Math.min(menu.y, window.innerHeight - 380));
@@ -699,59 +638,124 @@ function BotContextMenu({
       style={{ top, left }}
       className="fixed z-40 w-[228px] overflow-hidden rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60"
     >
-      {[
+      {remoteClient ? [
+        item(<FolderPlus size={16} className="text-ink-secondary" />, t("sidebar.bot.moveToSection"), () => {
+          onClose();
+          onMoveToSection(bot.id);
+        }),
+        item(<Pencil size={16} className="text-ink-secondary" />, t("sidebar.bot.editProfile"), () => {
+          dispatch({ type: "select", id: bot.id });
+          dispatch({ type: "toggleSettings", open: true });
+        }),
+        item(<ClipboardCopy size={16} className="text-ink-secondary" />, t("sidebar.copyConversationId"), () => {
+          void navigator.clipboard?.writeText(bot.threadId);
+        }),
+      ] : [
         item(
           bot.pinned ? <PinOff size={16} className="text-ink-secondary" /> : <Pin size={16} className="text-ink-secondary" />,
-          bot.pinned ? "Unpin" : "Pin",
+          bot.pinned ? t("sidebar.bot.unpin") : t("sidebar.bot.pin"),
           () => dispatch({ type: "updateBot", botId: bot.id, patch: { pinned: !bot.pinned } }),
         ),
         item(
           <Crown size={16} className={bot.chiefOfStaff ? "text-accent" : "text-ink-secondary"} />,
-          bot.chiefOfStaff ? "Remove Chief of Staff" : "Make Chief of Staff",
+          bot.chiefOfStaff ? t("sidebar.bot.removeChief") : t("sidebar.bot.makeChief"),
           () => dispatch({ type: "updateBot", botId: bot.id, patch: { chiefOfStaff: !bot.chiefOfStaff } }),
           {
             disabled: !bot.chiefOfStaff && !canCoordinate,
-            hint: !bot.chiefOfStaff && !canCoordinate ? "Choose a Claude or ACP engine first" : undefined,
+            hint: !bot.chiefOfStaff && !canCoordinate ? t("sidebar.bot.chiefNeedsEngine") : undefined,
           },
         ),
-        item(<FolderPlus size={16} className="text-ink-secondary" />, "Move to section", () => {
+        item(<FolderPlus size={16} className="text-ink-secondary" />, t("sidebar.bot.moveToSection"), () => {
           onClose();
           onMoveToSection(bot.id);
         }),
-        item(<BellDot size={16} className="text-ink-secondary" />, "Mark as Unread", () =>
+        item(<BellDot size={16} className="text-ink-secondary" />, t("sidebar.bot.markUnread"), () =>
           dispatch({ type: "markUnread", botId: bot.id }),
         ),
         divider("d1"),
-        item(<Pencil size={16} className="text-ink-secondary" />, "Edit Profile", () => {
+        item(<Pencil size={16} className="text-ink-secondary" />, t("sidebar.bot.editProfile"), () => {
           dispatch({ type: "select", id: bot.id });
-          dispatch({ type: "toggleSettings", open: true });
+          dispatch({ type: "toggleSettings", open: true, section: "identity" });
         }),
-        item(<Copy size={16} className="text-ink-secondary" />, "Duplicate", () =>
+        item(<Copy size={16} className="text-ink-secondary" />, t("sidebar.bot.duplicate"), () =>
           dispatch({ type: "duplicateBot", botId: bot.id }),
         ),
         divider("d2"),
-        item(<ClipboardCopy size={16} className="text-ink-secondary" />, "Copy conversation ID", () => {
+        item(<ClipboardCopy size={16} className="text-ink-secondary" />, t("sidebar.copyConversationId"), () => {
           void navigator.clipboard?.writeText(bot.threadId);
         }),
         divider("d3"),
         item(
           <Archive size={16} className="text-ink-secondary" />,
-          "Archive",
+          t("sidebar.bot.archive"),
           () => onArchive(bot),
           {
             disabled: archiveBlocked,
             hint: archiveHint,
           },
         ),
-        item(<Trash2 size={16} />, "Delete", () => dispatch({ type: "deleteBot", botId: bot.id }), {
-          danger: true,
-        }),
+        <BotDeleteMenuItem
+          key="delete"
+          deleting={deleting}
+          onClick={() => {
+            onClose();
+            onDelete(bot);
+          }}
+        />,
       ]}
     </div>
   );
 }
 
-function BotListItem({
+export type BotConfirmKind = "archive" | "delete";
+
+/** A confirmation may span live fleet updates; never authorize from its snapshot. */
+export function currentArchivableBot(bots: readonly Bot[], id: string): Bot | undefined {
+  const active = bots.filter((candidate) => !candidate.hidden);
+  if (active.length <= 1) return undefined;
+  return active.find((candidate) => candidate.id === id && !candidate.chiefOfStaff);
+}
+
+/** Copy for the archive / delete confirmation dialogs. Archiving keeps
+ * everything and is reversible from Archived bots; deleting is not — the
+ * server drops every task transcript, the workspace (files + memory), and
+ * staged skill state with the bot. */
+export function botConfirmCopy(kind: BotConfirmKind, name: string) {
+  return kind === "archive"
+    ? {
+        title: t("sidebar.confirm.archiveTitle", { name }),
+        body: t("sidebar.confirm.archiveBody", { name }),
+        confirmLabel: t("sidebar.bot.archive"),
+        tone: "neutral" as const,
+      }
+    : {
+        title: t("sidebar.confirm.deleteTitle", { name }),
+        body: t("sidebar.confirm.deleteBody", { name }),
+        confirmLabel: t("common.delete"),
+        tone: "danger" as const,
+      };
+}
+
+export function BotDeleteMenuItem({ deleting, onClick }: { deleting: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      disabled={deleting}
+      aria-busy={deleting || undefined}
+      onClick={onClick}
+      title={deleting ? t("sidebar.bot.deleteCheckingTitle") : undefined}
+      className={cn(
+        "flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger",
+        deleting ? "cursor-default opacity-40" : "hover:bg-raised/70",
+      )}
+    >
+      {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+      {deleting ? t("sidebar.bot.deleteChecking") : t("common.delete")}
+    </button>
+  );
+}
+
+export function BotListItem({
   bot,
   density,
   onMenu,
@@ -765,8 +769,10 @@ function BotListItem({
   archiveDisabled: boolean;
 }) {
   const { state, dispatch } = useStore();
+  const remoteClient = typeof window !== "undefined" && window.ogb?.remoteClient?.active === true;
   const [renaming, setRenaming] = useState(false);
   const selected = state.activeView === "chat" && state.selectedId === bot.id;
+  const deleting = state.deletingBots[bot.id] === true;
   const mascotMotion = selected && state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const iconOnly = density === "icons";
   useEffect(() => {
@@ -776,6 +782,10 @@ function BotListItem({
   // the visible branch, so a version switch changes the row with the chat
   const visible = visibleMessages(bot);
   const last = visible.at(-1);
+  // the role from Bot Settings → Title. A badge or tooltip beside the name
+  // (#866, #871) always traded the name's width against the title's; its own
+  // line above the name lets both truncate independently instead.
+  const title = bot.title.trim();
   const rowClass = cn(
     "flex w-full items-center rounded-xl border text-left",
     iconOnly
@@ -783,36 +793,66 @@ function BotListItem({
       : density === "compact"
         ? "gap-2 px-2 py-1.5 pr-12"
         : "gap-3 px-3 py-2.5 pr-12",
-    bot.chiefOfStaff
-      ? selected
-        ? "border-accent/40 bg-accent/15"
-        : "border-accent/25 bg-accent/5 hover:bg-accent/10"
-      : selected
-        ? "border-transparent bg-raised"
-        : "border-transparent hover:bg-raised/50",
+    // Chief of Staff is called out by the crown label below, not by tinting
+    // the whole row — an accent border + fill read as "selected" even when
+    // another bot was active.
+    selected ? "border-transparent bg-raised" : "border-transparent hover:bg-raised/50",
   );
+  const working = Boolean(bot.busy) && bot.activity !== "waiting-on-you";
   const body = (
     <>
-      <BotAvatar
-        bot={bot}
-        state={stateForBot({ ...bot, messages: visible })}
-        size={avatarSize}
-        motion={mascotMotion?.kind ?? "none"}
-        motionKey={mascotMotion?.nonce ?? 0}
-        // Motion means something is happening. A resting bot holds a resting
-        // pose — N idle rows bobbing at display rate was most of the app's
-        // visible-idle CPU (states are keyword-derived, so "working" can be
-        // decorative; busy/unread/motion are the real signals).
-        animated={Boolean(bot.busy) || Boolean(bot.unread) || (mascotMotion?.kind ?? "none") !== "none"}
-      />
+      {/* flex, not inline: an inline wrapper adds a baseline gap under the
+          avatar and makes the row taller than before the presence dot */}
+      <span className="relative flex shrink-0">
+        <BotAvatar
+          bot={bot}
+          state={stateForBot({ ...bot, messages: visible })}
+          size={avatarSize}
+          motion={mascotMotion?.kind ?? "none"}
+          motionKey={mascotMotion?.nonce ?? 0}
+          // Motion means something is happening. A resting bot holds a resting
+          // pose — N idle rows bobbing at display rate was most of the app's
+          // visible-idle CPU (states are keyword-derived, so "working" can be
+          // decorative; busy/unread/motion are the real signals).
+          animated={Boolean(bot.busy) || Boolean(bot.unread) || (mascotMotion?.kind ?? "none") !== "none"}
+        />
+        {working && (
+          // presence dot: green while the bot is working, ringed in the row's
+          // ground so it reads on both a photo and the mascot. Also the only
+          // activity signal in icons-only density, where the text is hidden.
+          <span
+            data-testid="working-dot"
+            className={cn(
+              "absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-success",
+              // scale with the avatar: 56px comfortable, 40/44px compact + icons
+              density === "comfortable" ? "size-3.5" : "size-3",
+            )}
+          />
+        )}
+      </span>
       <div className={cn("min-w-0 flex-1", iconOnly && "hidden")}>
+        {title && !renaming && (
+          // Its own line above the name: a badge or tooltip beside the name
+          // (#866, #871) always traded the name's width against the title's —
+          // stacking the two removes the competition entirely, so both can
+          // truncate independently against the full row width.
+          <div className="truncate text-[11px] font-medium leading-4 text-ink-secondary">{title}</div>
+        )}
         <div className="flex items-baseline justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-[15px] font-semibold text-ink">
+          <span className="flex min-w-0 grow items-center gap-1.5 truncate text-[15px] font-semibold text-ink">
             {bot.pinned && <Pin size={12} className="shrink-0 text-ink-secondary" />}
             <RenameTitle
               key={iconOnly ? "icons" : "expanded"}
               value={bot.name}
-              onCommit={(name) => dispatch({ type: "updateBot", botId: bot.id, patch: { name } })}
+              onCommit={(name) => {
+                if (remoteClient) {
+                  void api(`/api/bots/${bot.id}/profile`, { method: "PATCH", body: JSON.stringify({ name }) })
+                    .then(({ bot: updated }) => dispatch({ type: "botPatched", bot: updated }))
+                    .catch((cause) => dispatch({ type: "error", message: cause instanceof Error ? cause.message : String(cause) }));
+                } else {
+                  dispatch({ type: "updateBot", botId: bot.id, patch: { name } });
+                }
+              }}
               onEditingChange={setRenaming}
               className="truncate"
               inputClassName="w-full rounded bg-inset px-1 py-0.5 text-[15px] font-semibold"
@@ -824,16 +864,33 @@ function BotListItem({
             </span>
           )}
         </div>
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] text-ink-secondary">
-            {bot.chiefOfStaff && (
-              <span className="flex shrink-0 items-center gap-1 text-[11.5px] font-medium text-accent">
-                <Crown size={11} /> Chief of Staff
-              </span>
-            )}
-            {bot.chiefOfStaff && preview(bot) && <span className="shrink-0 text-ink-secondary/60">·</span>}
-            <span className="truncate">{preview(bot)}</span>
+        {bot.chiefOfStaff && !renaming && (
+          // Chief of Staff gets its own line under the name so a long name
+          // and the title badge keep the full width of the name line.
+          <span className="flex items-center gap-1 text-[11.5px] font-medium leading-4 text-accent">
+            <Crown size={11} className="shrink-0" /> {t("sidebar.bot.chiefOfStaff")}
           </span>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          {deleting ? (
+            <span role="status" className="flex min-w-0 items-center gap-1.5 truncate text-[13px] text-ink-secondary">
+              <Loader2 size={12} className="shrink-0 animate-spin" />
+              {t("sidebar.bot.deletingRow")}
+            </span>
+          ) : (
+            <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] text-ink-secondary">
+              {bot.busy && bot.activity !== "waiting-on-you" ? (
+                // the same typing dots as the chat header; sized to the text's
+                // line box so the row does not jump when work starts or ends
+                <span className="flex h-[1.5em] items-center" role="status">
+                  <WorkingDots size={3.5} />
+                  <span className="sr-only">{t("sidebar.preview.working")}</span>
+                </span>
+              ) : (
+                <span className="truncate">{preview(bot)}</span>
+              )}
+            </span>
+          )}
           {bot.unread && (
             <span className="size-2 shrink-0 rounded-full bg-accent" />
           )}
@@ -845,25 +902,35 @@ function BotListItem({
     event.preventDefault();
     onMenu({ botId: bot.id, x: event.clientX, y: event.clientY });
   };
-
-  // Keep the rename <input> out of role="button" — a button's descendants
-  // are presentational, which hides the field from assistive tech.
-  if (renaming) {
-    return (
-      <div className={rowClass} onContextMenu={onContextMenu}>
-        {body}
-      </div>
-    );
-  }
+  const onSelect = (event: React.MouseEvent) => {
+    if (renaming) return;
+    const insideRenameInput = event.target instanceof HTMLInputElement;
+    if (botListItemPointerIntent(event.type, insideRenameInput) === "select") {
+      dispatch({ type: "select", id: bot.id });
+    }
+  };
 
   return (
     <div className="group relative" title={iconOnly ? bot.name : undefined}>
+      {/* Keep this wrapper mounted while RenameTitle swaps its label for an
+          input. Replacing the wrapper tree remounts RenameTitle, loses its
+          editing state, and leaves the row stuck in rename mode. Omitting
+          role=button also keeps the input visible to assistive technology. */}
       <div
-        role="button"
-        tabIndex={0}
-        aria-label={iconOnly ? bot.name : undefined}
-        onClick={() => dispatch({ type: "select", id: bot.id })}
+        role={renaming ? undefined : "button"}
+        tabIndex={renaming ? undefined : 0}
+        aria-label={
+          !renaming && iconOnly
+            ? deleting
+              ? t("sidebar.bot.deletingAria", { name: bot.name })
+              : bot.name
+            : undefined
+        }
+        aria-busy={deleting || undefined}
+        data-sidebar-bot-row={bot.id}
+        onClick={onSelect}
         onKeyDown={(event) => {
+          if (renaming) return;
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             dispatch({ type: "select", id: bot.id });
@@ -874,22 +941,22 @@ function BotListItem({
       >
         {body}
       </div>
-      {iconOnly && bot.unread && (
+      {!renaming && iconOnly && bot.unread && (
         <span className="pointer-events-none absolute bottom-1.5 right-1.5 size-2 rounded-full border border-panel bg-accent" />
       )}
-      {!iconOnly && <button
+      {deleting && iconOnly && (
+        <span className="pointer-events-none absolute bottom-1 right-1 rounded-full bg-card p-1 text-ink-secondary">
+          <Loader2 size={12} className="animate-spin" />
+        </span>
+      )}
+      {/* Disabled buttons still own their pixels in Chromium, even at zero
+          opacity. Omit the unavailable action so the entire row stays live. */}
+      {!remoteClient && !renaming && !deleting && !iconOnly && !archiveDisabled && !bot.chiefOfStaff && <button
         type="button"
-        disabled={archiveDisabled}
         onClick={() => onArchive(bot)}
-        aria-label={`Archive ${bot.name}`}
-        title={
-          bot.chiefOfStaff
-            ? "Choose another Chief of Staff first"
-            : archiveDisabled
-              ? "Keep at least one active bot"
-              : `Archive ${bot.name}`
-        }
-        className="absolute right-1 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-lg bg-card/90 text-ink-secondary opacity-0 shadow-sm transition hover:bg-raised hover:text-ink focus:opacity-100 disabled:cursor-default disabled:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100"
+        aria-label={t("sidebar.bot.archiveAria", { name: bot.name })}
+        title={t("sidebar.bot.archiveAria", { name: bot.name })}
+        className="absolute right-1 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-lg bg-card/90 text-ink-secondary opacity-0 shadow-sm transition hover:bg-raised hover:text-ink focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100"
       >
         <Archive size={14} />
       </button>}
@@ -931,7 +998,7 @@ function ArchivedBotsPanel({
       });
       dispatch({ type: "botPatched", bot: response.bot });
       dispatch({ type: "select", id: bot.id });
-      onRestored(`${bot.name} restored`);
+      onRestored(t("sidebar.archived.restored", { name: bot.name }));
       if (bots.length === 1) onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -955,7 +1022,11 @@ function ArchivedBotsPanel({
       for (const response of responses) dispatch({ type: "botPatched", bot: response.bot });
       const first = bots[0];
       if (first) dispatch({ type: "select", id: first.id });
-      onRestored(`${bots.length} ${bots.length === 1 ? "bot" : "bots"} restored`);
+      onRestored(
+        bots.length === 1
+          ? t("sidebar.archived.restoredOne")
+          : t("sidebar.archived.restoredMany", { count: bots.length }),
+      );
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -979,8 +1050,8 @@ function ArchivedBotsPanel({
       >
         <header className="flex items-start justify-between gap-4 px-6 pb-4 pt-6 sm:px-8 sm:pt-7">
           <div>
-            <h2 id="archived-bots-title" className="text-[22px] font-semibold tracking-[-0.01em] text-ink">Archived bots</h2>
-            <p className="mt-1 text-[13px] text-ink-secondary">Conversations are kept until you choose to delete a bot.</p>
+            <h2 id="archived-bots-title" className="text-[22px] font-semibold tracking-[-0.01em] text-ink">{t("sidebar.archived.title")}</h2>
+            <p className="mt-1 text-[13px] text-ink-secondary">{t("sidebar.archived.subtitle")}</p>
           </div>
           <div className="flex items-center gap-1">
             {bots.length > 1 && (
@@ -990,28 +1061,28 @@ function ArchivedBotsPanel({
                 className="flex items-center gap-1.5 rounded-full bg-raised px-3.5 py-2 text-[12.5px] text-ink hover:bg-raised-hover disabled:opacity-40"
               >
                 {restoringAll && <Loader2 size={13} className="animate-spin" />}
-                Restore all
+                {t("sidebar.archived.restoreAll")}
               </button>
             )}
             <button
               onClick={onClose}
               disabled={restoringAll || Boolean(busyId)}
               className="flex size-10 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
-              aria-label="Close archived bots"
+              aria-label={t("sidebar.archived.close")}
             >
               <X size={21} />
             </button>
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-7 pt-3 sm:px-8">
-          <div className="mb-3 text-[12px] font-medium text-ink-secondary">{bots.length} archived</div>
+          <div className="mb-3 text-[12px] font-medium text-ink-secondary">{t("sidebar.archived.count", { count: bots.length })}</div>
           <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
             {bots.map((bot) => (
               <div key={bot.id} className="flex min-h-[82px] items-center gap-3 border-b border-hairline/35 px-1 py-3">
                 <BotAvatar bot={bot} state="happy" size={42} animated={false} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[14px] font-medium text-ink">{bot.name}</div>
-                  <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary">{bot.title || "Bot"}</div>
+                  <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary">{bot.title || t("sidebar.archived.botFallback")}</div>
                 </div>
                 <button
                   onClick={() => void restore(bot)}
@@ -1019,7 +1090,7 @@ function ArchivedBotsPanel({
                   className="flex min-w-[78px] items-center justify-center gap-1.5 rounded-full bg-raised px-3.5 py-2 text-[12.5px] text-ink hover:bg-raised-hover disabled:opacity-40"
                 >
                   {busyId === bot.id && <Loader2 size={13} className="animate-spin" />}
-                  Restore
+                  {t("sidebar.archived.restore")}
                 </button>
               </div>
             ))}
@@ -1034,8 +1105,12 @@ function ArchivedBotsPanel({
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { state, dispatch } = useStore();
+  const remoteClient = window.ogb?.remoteClient?.active === true;
   const { capabilities } = useDesktopCapabilities();
   const importReturnRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const [confirm, setConfirm] = useState<{ kind: BotConfirmKind; bot: Bot } | null>(null);
+  const cancelConfirm = useCallback(() => setConfirm(null), []);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [sectionPicker, setSectionPicker] = useState<MenuState | null>(null);
   const [roomMenu, setRoomMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
@@ -1049,7 +1124,6 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const [teamFeedback, setTeamFeedback] = useState<{
     error: boolean;
     text: string;
-    undo?: TeamImportResult;
     restoreBot?: { id: string; name: string };
   } | null>(null);
   const [query, setQuery] = useState("");
@@ -1092,13 +1166,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   // New Room panel can be open on top of it, so the same Escape press closes
   // them together. Fine, since both directions are "get me out of here."
   useEffect(() => {
-    if (!open) return;
+    if (!open || confirm) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [open, onClose]);
+  }, [open, onClose, confirm]);
 
   useEffect(() => {
     if (!densityOpen) return;
@@ -1110,11 +1184,12 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   }, [densityOpen]);
 
   useEffect(() => {
+    if (remoteClient) return;
     return window.ogb?.onPackageInstall?.((url) => {
       setTeamInstallUrl(url);
       setTeamLibraryOpen(true);
     });
-  }, []);
+  }, [remoteClient]);
 
   useEffect(() => {
     if (!teamFeedback) return;
@@ -1127,8 +1202,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     setTeamFeedback(null);
     try {
       const exported = await downloadAllBots();
-      track("team_exported", { members: exported.members, scope: "all_visible" });
-      setTeamFeedback({ error: false, text: `${exported.members} bots exported` });
+      track("team_exported", { members: exported.members, scope: "backup" });
+      setTeamFeedback({
+        error: false,
+        text: [
+          t("sidebar.backup.downloaded", { members: exported.members }),
+          exported.warnings.length ? t("sidebar.backup.notes", { count: exported.warnings.length }) : "",
+          t("sidebar.backup.private"),
+        ]
+          .filter(Boolean)
+          .join(" "),
+      });
     } catch (cause) {
       setTeamFeedback({
         error: true,
@@ -1139,63 +1223,18 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     }
   };
 
-  const undoTeamLoad = async (result: TeamImportResult) => {
-    setTeamFeedback(null);
-    try {
-      await Promise.all([
-        ...result.importedRoutineIds.map((routineId) =>
-          api(`/api/routines/${routineId}`, { method: "DELETE" }).then(() =>
-            dispatch({ type: "routineDeleted", routineId }),
-          ),
-        ),
-        ...result.importedGroupIds.map((groupId) =>
-          api(`/api/groups/${groupId}`, { method: "DELETE" }).then(() =>
-            dispatch({ type: "groupDeleted", groupId }),
-          ),
-        ),
-      ]);
-      const archiveNew = await Promise.all(
-        result.importedBotIds.map((botId) =>
-          api(`/api/bots/${botId}`, {
-            method: "PATCH",
-            body: JSON.stringify({ hidden: true, chiefOfStaff: false }),
-          }),
-        ),
-      );
-      for (const response of archiveNew) dispatch({ type: "botPatched", bot: response.bot });
 
-      const previousChiefs = result.archived.filter((bot) => bot.chiefOfStaff);
-      const restoreOthers = await Promise.all(
-        result.archived
-          .filter((bot) => !bot.chiefOfStaff)
-          .map((bot) =>
-            api(`/api/bots/${bot.id}`, {
-              method: "PATCH",
-              body: JSON.stringify({ hidden: false }),
-            }),
-          ),
-      );
-      for (const response of restoreOthers) dispatch({ type: "botPatched", bot: response.bot });
-      const restoredChiefs = await Promise.all(
-        previousChiefs.map((previousChief) =>
-          api(`/api/bots/${previousChief.id}`, {
-            method: "PATCH",
-            body: JSON.stringify({ hidden: false, chiefOfStaff: true }),
-          }),
-        ),
-      );
-      for (const response of restoredChiefs) dispatch({ type: "botPatched", bot: response.bot });
-      const first = result.archived[0];
-      if (first) dispatch({ type: "select", id: first.id });
-      setTeamFeedback({ error: false, text: "Previous team restored" });
-    } catch (cause) {
-      setTeamFeedback({ error: true, text: cause instanceof Error ? cause.message : String(cause) });
-    }
+  // One pending confirmation at a time: archive (inline button or context
+  // menu) and delete (context menu) both open the same dialog.
+  const requestArchive = (bot: Bot) => {
+    const current = currentArchivableBot(state.bots, bot.id);
+    if (current) setConfirm({ kind: "archive", bot: current });
   };
 
-  const archiveBot = async (bot: Bot) => {
+  const archiveBot = async ({ id }: Pick<Bot, "id">) => {
+    const bot = currentArchivableBot(state.bots, id);
+    if (!bot) return;
     const activeBots = state.bots.filter((candidate) => !candidate.hidden);
-    if (bot.chiefOfStaff || activeBots.length <= 1) return;
     setTeamFeedback(null);
     try {
       const response = await api(`/api/bots/${bot.id}`, {
@@ -1209,7 +1248,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       }
       setTeamFeedback({
         error: false,
-        text: `${bot.name} archived`,
+        text: t("sidebar.bot.archived", { name: bot.name }),
         restoreBot: { id: bot.id, name: bot.name },
       });
     } catch (cause) {
@@ -1226,7 +1265,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       });
       dispatch({ type: "botPatched", bot: response.bot });
       dispatch({ type: "select", id: bot.id });
-      setTeamFeedback({ error: false, text: `${bot.name} restored` });
+      setTeamFeedback({ error: false, text: t("sidebar.archived.restored", { name: bot.name }) });
     } catch (cause) {
       setTeamFeedback({ error: true, text: cause instanceof Error ? cause.message : String(cause) });
     }
@@ -1313,7 +1352,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     const position = visibleOrder.indexOf(id);
     if (position < 0) return;
     setReorderAnnouncement(
-      `${sidebarSectionLabel(id)} moved to position ${position + 1} of ${visibleOrder.length}`,
+      t("sidebar.section.moved", {
+        name: sectionLabel(id),
+        position: position + 1,
+        count: visibleOrder.length,
+      }),
     );
   };
 
@@ -1359,13 +1402,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   };
   const activeBotCount = state.bots.filter((bot) => !bot.hidden).length;
   const archivedBots = state.bots.filter((bot) => bot.hidden);
-  const pendingTeamUndo = teamFeedback?.undo;
   const pendingBotUndo = teamFeedback?.restoreBot;
 
   return (
     <aside
-      aria-label="Bots and navigation"
+      ref={sidebarRef}
+      tabIndex={-1}
+      aria-label={t("sidebar.aria")}
       data-native-view-overlay
+      data-sidebar
       className={cn(
         "flex h-full shrink-0 flex-col border-r border-hairline/40 bg-panel transition-[width] duration-200",
         density === "icons" ? "w-[80px]" : density === "compact" ? "w-[272px]" : "w-[320px]",
@@ -1402,9 +1447,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           <button
             type="button"
             onClick={toggleCollapsed}
-            aria-label={density === "icons" ? "Expand sidebar" : "Collapse sidebar to avatars"}
+            aria-label={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapseAria")}
             className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
-            title={density === "icons" ? "Expand sidebar" : "Collapse to avatars"}
+            title={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapse")}
           >
             {density === "icons" ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
           </button>
@@ -1412,10 +1457,10 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             <button
               type="button"
               onClick={() => setDensityOpen((value) => !value)}
-              aria-label="Choose sidebar density"
+              aria-label={t("sidebar.density.chooseAria")}
               aria-expanded={densityOpen}
               className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
-              title="Sidebar density"
+              title={t("sidebar.density.title")}
             >
               <span aria-hidden="true" className="flex size-5 flex-col items-center justify-center gap-[3px]">
                 <span className="h-px w-3.5 rounded-full bg-current" />
@@ -1436,11 +1481,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                       type="button"
                       onClick={() => setDensity(option)}
                       className={cn(
-                        "flex w-full items-center justify-between px-3 py-2 text-left text-[13px] capitalize hover:bg-raised/70",
+                        "flex w-full items-center justify-between px-3 py-2 text-left text-[13px] hover:bg-raised/70",
                         density === option ? "text-accent" : "text-ink",
                       )}
                     >
-                      {option === "icons" ? "Avatars only" : option}
+                      {option === "icons"
+                        ? t("sidebar.density.iconsOnly")
+                        : option === "compact"
+                          ? t("sidebar.density.compact")
+                          : t("sidebar.density.comfortable")}
                       {density === option && <Check size={14} />}
                     </button>
                   ))}
@@ -1451,9 +1500,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           <button
             ref={importReturnRef}
             onClick={() => setPlusOpen((o) => !o)}
-            aria-label="New or share"
+            aria-label={remoteClient ? t("sidebar.new") : t("sidebar.newOrShare")}
             className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
-            title="New or share"
+            title={remoteClient ? t("sidebar.new") : t("sidebar.newOrShare")}
           >
             <Plus size={20} strokeWidth={2} />
           </button>
@@ -1473,7 +1522,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                 >
                   <BotIcon size={16} className="text-ink-secondary" />
-                  New Bot
+                  {t("sidebar.newBot")}
                 </button>
                 <button
                   onClick={() => {
@@ -1483,18 +1532,20 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                 >
                   <Users size={16} className="text-ink-secondary" />
-                  New Channel
+                  {t("sidebar.newChannel.title")}
                 </button>
+                {!remoteClient && <>
                 <button
                   onClick={() => {
                     setPlusOpen(false);
                     void exportAllBots();
                   }}
                   disabled={exportingTeam}
+                  title={t("sidebar.backup.hint")}
                   className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                 >
                   {exportingTeam ? <Loader2 size={16} className="animate-spin text-ink-secondary" /> : <ArrowDownToLine size={16} className="text-ink-secondary" />}
-                  {exportingTeam ? "Exporting…" : "Export all bots"}
+                  {exportingTeam ? t("sidebar.backup.exporting") : t("sidebar.backup.export")}
                 </button>
                 {teamLibraryEnabled(distribution) && (
                 <button
@@ -1505,7 +1556,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                 >
                   <Library size={16} className="text-ink-secondary" />
-                  Teams
+                  {t("sidebar.teamLibrary")}
                 </button>
                 )}
                 {archivedBots.length > 0 && (
@@ -1517,10 +1568,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                     className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                   >
                     <Archive size={16} className="text-ink-secondary" />
-                    <span className="flex-1">Archived bots</span>
+                    <span className="flex-1">{t("sidebar.archived.title")}</span>
                     <span className="text-[11.5px] text-ink-secondary">{archivedBots.length}</span>
                   </button>
                 )}
+                </>}
               </div>
             </>
           )}
@@ -1535,8 +1587,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setQuery("")}
-            placeholder="Search"
-            aria-label="Search bots and messages"
+            placeholder={t("sidebar.search")}
+            aria-label={t("sidebar.searchAria")}
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
         </div>
@@ -1546,7 +1598,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       <div className="flex-1 overflow-y-auto px-2">
         <div className="flex flex-col gap-0.5">
           {matchingBots.length === 0 && visibleGroups.length === 0 && q && q.length < MIN_QUERY && (
-            <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">Nothing matches “{query}”</div>
+            <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">{t("sidebar.noMatch", { query })}</div>
           )}
           {unsectionedChief && (
             <div className="mb-1.5">
@@ -1554,7 +1606,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                 bot={unsectionedChief}
                 density={density}
                 onMenu={setMenu}
-                onArchive={(bot) => void archiveBot(bot)}
+                onArchive={requestArchive}
                 archiveDisabled
               />
             </div>
@@ -1603,7 +1655,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                 )}
                 {density !== "icons" && (
                   <SidebarSectionHeader
-                    name={sidebarSectionLabel(id)}
+                    name={sectionLabel(id)}
                     collapsed={collapsed}
                     attention={attention}
                     onToggle={layoutInteractive ? () => toggleSection(id) : undefined}
@@ -1628,7 +1680,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                         bot={bot}
                         density={density}
                         onMenu={setMenu}
-                        onArchive={(candidate) => void archiveBot(candidate)}
+                        onArchive={requestArchive}
                         archiveDisabled
                       />
                     ))}
@@ -1646,7 +1698,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                         bot={bot}
                         density={density}
                         onMenu={setMenu}
-                        onArchive={(candidate) => void archiveBot(candidate)}
+                        onArchive={requestArchive}
                         archiveDisabled={activeBotCount <= 1}
                       />
                     ))}
@@ -1669,10 +1721,10 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       <div className={cn("pb-3 pt-2", density === "icons" ? "px-2" : "px-3")}>
         {density === "icons" && (
           <>
-        <button
+          <button
             onClick={() => dispatch({ type: "showTeamMap" })}
-            aria-label={density === "icons" ? "Team map" : undefined}
-            title={density === "icons" ? "Team map" : undefined}
+            aria-label={density === "icons" ? t("sidebar.nav.teamMap") : undefined}
+            title={density === "icons" ? t("sidebar.nav.teamMap") : undefined}
             className={cn(
               "flex min-h-10 w-full items-center rounded-xl py-2 text-left transition-colors",
               density === "icons" ? "justify-center px-2" : "gap-3 px-3",
@@ -1680,13 +1732,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             )}
           >
             <Network size={20} className={state.activeView === "team-map" ? "text-accent" : "text-ink-secondary"} />
-            <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>Team map</span>
+            <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>{t("sidebar.nav.teamMap")}</span>
           </button>
-          {skillRecorderEnabled(state.config) && (
+          {!remoteClient && skillRecorderEnabled(state.config) && (
             <button
               onClick={() => dispatch({ type: "showSkillRecorder" })}
-              aria-label={density === "icons" ? "Teach a skill" : undefined}
-              title={density === "icons" ? "Teach a skill" : undefined}
+              aria-label={density === "icons" ? t("sidebar.nav.teachSkill") : undefined}
+              title={density === "icons" ? t("sidebar.nav.teachSkill") : undefined}
               className={cn(
                 "flex min-h-10 w-full items-center rounded-xl py-2 text-left transition-colors",
                 density === "icons" ? "justify-center px-2" : "gap-3 px-3",
@@ -1694,13 +1746,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               )}
             >
               <Sparkles size={20} className={state.activeView === "skill-recorder" ? "text-accent" : "text-ink-secondary"} />
-              <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>Teach a skill</span>
+              <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>{t("sidebar.nav.teachSkill")}</span>
             </button>
           )}
           <button
             onClick={() => dispatch({ type: "showRoutines" })}
-            aria-label={density === "icons" ? "Automations" : undefined}
-            title={density === "icons" ? "Automations" : undefined}
+            aria-label={density === "icons" ? t("sidebar.nav.automations") : undefined}
+            title={density === "icons" ? t("sidebar.nav.automations") : undefined}
             className={cn(
               "flex min-h-10 w-full items-center rounded-xl py-2 text-left transition-colors",
               density === "icons" ? "justify-center px-2" : "gap-3 px-3",
@@ -1708,7 +1760,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             )}
           >
             <CalendarDays size={20} className={state.activeView === "routines" ? "text-accent" : "text-ink-secondary"} />
-            <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>Automations</span>
+            <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>{t("sidebar.nav.automations")}</span>
             {state.routineRuns.some((run) => ["failed", "missed"].includes(run.status) && !run.seenAt) && (
               <span className="size-2 rounded-full bg-danger" />
             )}
@@ -1716,11 +1768,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           <button
             onClick={() => dispatch({ type: "togglePlugins", open: true })}
             className={cn("flex min-h-10 w-full items-center rounded-xl py-2 text-left hover:bg-raised/50", density === "icons" ? "justify-center px-2" : "gap-3 px-3")}
-            aria-label={density === "icons" ? "Connected apps" : undefined}
-            title={density === "icons" ? "Connected apps" : undefined}
+            aria-label={density === "icons" ? t("sidebar.nav.connectedApps") : undefined}
+            title={density === "icons" ? t("sidebar.nav.connectedApps") : undefined}
           >
             <Puzzle size={20} className="text-ink-secondary" />
-            <span className={cn("text-[14px] text-ink", density === "icons" && "hidden")}>Connected apps</span>
+            <span className={cn("text-[14px] text-ink", density === "icons" && "hidden")}>{t("sidebar.nav.connectedApps")}</span>
           </button>
           </>
         )}
@@ -1735,16 +1787,16 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             items={[
               {
                 key: "team-map",
-                label: "Team map",
+                label: t("sidebar.nav.teamMap"),
                 icon: <Network size={18} />,
                 active: state.activeView === "team-map",
                 onSelect: () => dispatch({ type: "showTeamMap" }),
               },
-              ...(skillRecorderEnabled(state.config)
+              ...(!remoteClient && skillRecorderEnabled(state.config)
                 ? [
                     {
                       key: "skill-recorder",
-                      label: "Teach a skill",
+                      label: t("sidebar.nav.teachSkill"),
                       icon: <Sparkles size={18} />,
                       active: state.activeView === "skill-recorder",
                       onSelect: () => dispatch({ type: "showSkillRecorder" }),
@@ -1753,7 +1805,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                 : []),
               {
                 key: "routines",
-                label: "Automations",
+                label: t("sidebar.nav.automations"),
                 icon: <CalendarDays size={18} />,
                 active: state.activeView === "routines",
                 // folded away, this dot would otherwise vanish with the row
@@ -1764,56 +1816,77 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               },
               {
                 key: "plugins",
-                label: "Connected apps",
+                label: t("sidebar.nav.connectedApps"),
                 icon: <Puzzle size={18} />,
                 onSelect: () => dispatch({ type: "togglePlugins", open: true }),
               },
             ]}
           />
         )}
-        <div className={cn("flex items-center", density === "icons" && "justify-center")}>
-          <button
-            onClick={() => dispatch({ type: "toggleAppSettings" })}
-            className={cn("flex min-w-0 items-center rounded-xl py-2 text-left hover:bg-raised/50", density === "icons" ? "justify-center px-2" : "flex-1 gap-3 px-3")}
-            aria-label={density === "icons" ? "App settings" : undefined}
-            title={density === "icons" ? (state.config?.profile?.name?.trim() || "App settings") : undefined}
-          >
-            <InitialsAvatar initials={profileInitials(state.config?.profile)} size={28} />
-            <span className={cn("truncate text-[14px] text-ink", density === "icons" && "hidden")}>
-              {state.config?.profile?.name?.trim() || state.config?.profile?.email?.trim() || "You"}
-            </span>
-          </button>
-          {density !== "icons" && (
-            <SidebarPhoneButton
-              density={density}
-              onOpen={() => dispatch(phoneSettingsAction())}
-            />
-          )}
-          {density !== "icons" && <UpdateButton />}
-          {density !== "icons" && <button
-            onClick={() => dispatch({ type: "toggleAppSettings" })}
-            className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
-            title="App settings"
-          >
-            <Settings size={18} />
-          </button>}
-        </div>
+        {density === "icons" ? (
+          <div className="flex items-center justify-center">
+            <button
+              onClick={() => dispatch({ type: "toggleAppSettings" })}
+              className="flex min-w-0 items-center justify-center rounded-xl px-2 py-2 text-left hover:bg-raised/50"
+              aria-label={t("sidebar.appSettings")}
+              title={state.config?.profile?.name?.trim() || t("sidebar.appSettings")}
+            >
+              <InitialsAvatar initials={profileInitials(state.config?.profile)} size={28} />
+            </button>
+          </div>
+        ) : (
+          // The Tools row and the profile row are two different kinds of
+          // thing — places to go, versus who you are and what the app is —
+          // so they get clear space between them. A hairline lived here
+          // briefly and made it worse: full-bleed, it ran within a few pixels
+          // of the profile row's rounded hover pill, and the two hover states
+          // read as one crowded block rather than two rows.
+          <div className="mt-3">
+            <SidebarProfileMenu />
+          </div>
+        )}
       </div>
 
       {menu && (
         <BotContextMenu
           menu={menu}
           onClose={() => setMenu(null)}
-          onArchive={(bot) => void archiveBot(bot)}
+          onArchive={requestArchive}
+          onDelete={(bot) => setConfirm({ kind: "delete", bot })}
           onMoveToSection={(botId) => setSectionPicker({ botId, x: menu.x, y: menu.y })}
         />
       )}
+      <ConfirmDialog
+        open={confirm !== null}
+        {...(confirm ? botConfirmCopy(confirm.kind, confirm.bot.name) : botConfirmCopy("archive", ""))}
+        icon={confirm?.kind === "delete" ? <Trash2 size={18} /> : <Archive size={18} />}
+        onCancel={cancelConfirm}
+        returnFocusRef={sidebarRef}
+        onConfirm={() => {
+          if (!confirm) return;
+          const { kind, bot } = confirm;
+          setConfirm(null);
+          if (kind === "archive") void archiveBot(bot);
+          else dispatch({ type: "deleteBot", botId: bot.id });
+        }}
+      />
       {sectionPicker && (
         <SectionPicker
           current={state.bots.find((b) => b.id === sectionPicker.botId)?.section}
           anchor={sectionPicker}
           onClose={() => setSectionPicker(null)}
-          onAssign={(section) => dispatch({ type: "updateBot", botId: sectionPicker.botId, patch: { section } })}
+          onAssign={(section) => {
+            if (!remoteClient) {
+              dispatch({ type: "updateBot", botId: sectionPicker.botId, patch: { section } });
+              return;
+            }
+            void api("/api/sidebar-sections", {
+              method: "POST",
+              body: JSON.stringify({ name: section, botIds: [sectionPicker.botId] }),
+            })
+              .then(({ bots }) => bots.forEach((bot: Bot) => dispatch({ type: "botPatched", bot })))
+              .catch((cause) => dispatch({ type: "error", message: cause instanceof Error ? cause.message : String(cause) }));
+          }}
         />
       )}
       {roomMenu && (
@@ -1835,14 +1908,14 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         />
       )}
       {newRoom && <NewRoomPanel onClose={() => setNewRoom(false)} />}
-      {archivedBotsOpen && (
+      {!remoteClient && archivedBotsOpen && (
         <ArchivedBotsPanel
           bots={archivedBots}
           onClose={() => setArchivedBotsOpen(false)}
           onRestored={(message) => setTeamFeedback({ error: false, text: message })}
         />
       )}
-      {teamLibraryOpen && (
+      {!remoteClient && teamLibraryOpen && (
         <TeamLibraryPanel
           returnFocusRef={importReturnRef}
           initialUrl={teamInstallUrl ?? undefined}
@@ -1853,18 +1926,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           onImported={(result) => {
             setTeamLibraryOpen(false);
             setTeamInstallUrl(null);
-            setTeamFeedback(
-              result.archived.length > 0
-                ? {
-                    error: false,
-                    text: `${result.name} loaded · ${result.members} ${result.members === 1 ? "bot" : "bots"}`,
-                    undo: result,
-                  }
-                : {
-                    error: false,
-                    text: `${result.name} loaded · ${result.members} ${result.members === 1 ? "bot" : "bots"}`,
-                  },
-            );
+            setTeamFeedback({
+              error: false,
+              text:
+                result.members === 1
+                  ? t("sidebar.teamImportedOne")
+                  : t("sidebar.teamImportedMany", { count: result.members }),
+            });
           }}
         />
       )}
@@ -1881,20 +1949,12 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           >
             <div className="flex items-center gap-3">
               <span>{teamFeedback.text}</span>
-              {pendingTeamUndo && (
-                <button
-                  onClick={() => void undoTeamLoad(pendingTeamUndo)}
-                  className="rounded-md px-1.5 py-0.5 font-medium text-accent hover:bg-raised"
-                >
-                  Undo
-                </button>
-              )}
               {pendingBotUndo && (
                 <button
                   onClick={() => void undoBotArchive(pendingBotUndo)}
                   className="rounded-md px-1.5 py-0.5 font-medium text-accent hover:bg-raised"
                 >
-                  Undo
+                  {t("common.undo")}
                 </button>
               )}
             </div>

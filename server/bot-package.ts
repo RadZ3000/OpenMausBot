@@ -5,6 +5,7 @@ import { schemaIssue, type JsonValue } from "./schema.ts";
 import { PRODUCT_NAME } from "./distribution.ts";
 import type { MausColor } from "./store.ts";
 import type { TeamManifestMember } from "./team-manifest.ts";
+import { BOT_PROFILE_LIMITS } from "../shared/bot-profile.ts";
 
 export const BOT_PACKAGE_FORMAT = "openmaus.package" as const;
 export const BOT_PACKAGE_VERSION = 1 as const;
@@ -36,6 +37,7 @@ const optionalText = (max: number) =>
 const key = requiredText(64).regex(/^[a-z0-9][a-z0-9_-]*$/, {
   message: "may only contain lowercase letters, numbers, - and _",
 });
+const MAX_DATE_MS = 8_640_000_000_000_000;
 
 const packageSchema = z.object({
   format: z.literal(BOT_PACKAGE_FORMAT, { error: `This is not a ${PRODUCT_NAME} package` }),
@@ -68,6 +70,9 @@ const packageSchema = z.object({
       name: requiredText(100),
       title: optionalText(200),
       description: optionalText(4_000),
+      soul: z.string().refine((value) => Buffer.byteLength(value, "utf8") <= BOT_PROFILE_LIMITS.soul, {
+        error: "standing instructions must be at most 24000 bytes",
+      }).optional(),
       appearance: z.object({
         color: z.enum(COLORS, { error: "is not supported" }),
         mascotExpression: optionalText(80),
@@ -100,8 +105,14 @@ const packageSchema = z.object({
           time: requiredText(5).regex(/^([01]\d|2[0-3]):[0-5]\d$/, { message: "must use HH:MM" }),
           weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
         }),
+        z.object({
+          type: z.literal("interval"),
+          everyMinutes: z.number().int().min(5).max(1_440),
+          anchorAt: z.number().int().nonnegative().max(MAX_DATE_MS),
+        }),
       ]),
       durationMinutes: z.number().int().min(5).max(240),
+      timeoutMinutes: z.number().int().min(5).max(240).optional(),
       enabledAfterInstall: z.literal(false),
     })).max(50).optional(),
     playbooks: z.array(z.object({
@@ -225,7 +236,14 @@ export function renderBotPackageMarkdown(document: ParsedBotPackage): string {
   const routines = (pkg.routines ?? []).map((routine) => [
     `### ${routine.name}`,
     `**Owner:** \`${routine.agent}\`  `,
-    `**Schedule:** ${routine.schedule.type === "daily" ? `${routine.schedule.time} on weekdays ${routine.schedule.weekdays.join(", ")}` : `once at ${routine.schedule.at}`}  `,
+    `**Schedule:** ${
+      routine.schedule.type === "daily"
+        ? `${routine.schedule.time} on weekdays ${routine.schedule.weekdays.join(", ")}`
+        : routine.schedule.type === "interval"
+          ? `every ${routine.schedule.everyMinutes} minutes from ${new Date(routine.schedule.anchorAt).toISOString()}`
+          : `once at ${routine.schedule.at}`
+    }  `,
+    `**Run limit:** ${routine.timeoutMinutes === undefined ? "none" : `${routine.timeoutMinutes} minutes`}  `,
     "**Initial state:** paused — the user must enable it",
     "",
     routine.prompt,
@@ -262,6 +280,7 @@ export function packageAgentAsMember(agent: BotPackageAgent): TeamManifestMember
     name: agent.name,
     title: agent.title ?? "",
     description: agent.description ?? "",
+    ...(agent.soul !== undefined ? { soul: agent.soul } : {}),
     appearance: {
       color: agent.appearance.color,
       ...(agent.appearance.mascotExpression ? { mascotExpression: agent.appearance.mascotExpression } : {}),

@@ -48,8 +48,8 @@ describe("fingerprint", () => {
     });
     expect(left).toEqual(["agents", "image"]);
     expect(right).toEqual(["agents", "image"]);
-    expect(acpSessionFingerprint({ cwd: "/w", model: "m", mcpNames: left })).toBe(
-      acpSessionFingerprint({ cwd: "/w", model: "m", mcpNames: right }),
+    expect(acpSessionFingerprint({ cwd: "/w", model: "m", mcpNames: left, approvalMode: "" })).toBe(
+      acpSessionFingerprint({ cwd: "/w", model: "m", mcpNames: right, approvalMode: "" }),
     );
   });
 
@@ -67,6 +67,15 @@ describe("fingerprint", () => {
     expect(acpFingerprintFromTurn({ threadId: "t", text: "hi", model: "qwen", cwd: "/desk" })).toBe(
       fingerprintTurn({ threadId: "t", text: "hi", model: "qwen", cwd: "/desk" }, "/desk", "qwen"),
     );
+  });
+
+  it("does not reuse a parked child across Ask/Auto/Full spawn flags", () => {
+    const ask = acpFingerprintFromTurn({ threadId: "t", text: "hi", approvalMode: "ask" });
+    const auto = acpFingerprintFromTurn({ threadId: "t", text: "hi", approvalMode: "auto" });
+    const full = acpFingerprintFromTurn({ threadId: "t", text: "hi", approvalMode: "full" });
+    expect(ask).not.toBe(auto);
+    expect(auto).not.toBe(full);
+    expect(full).not.toBe(ask);
   });
 });
 

@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { resolveCuaDesktopStatus } from "./cua-desktop-status.ts";
-import { augmentedPath } from "./env-path.ts";
+import { augmentedPath, resolveCliSpawn } from "./env-path.ts";
 import { DATA_DIR } from "./config.ts";
 import { PRODUCT_NAME } from "./distribution.ts";
 import {
@@ -22,7 +22,6 @@ import {
   podmanMachineSnapshot,
 } from "./podman-setup.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
-import { localVmCanResume } from "../shared/local-vm-lifecycle.ts";
 
 const run = promisify(execFile);
 const SCREENSHOT_STATUS_TTL_MS = 10_000;
@@ -46,7 +45,7 @@ export const BASE_IMAGE = `${BASE_IMAGE_REPOSITORY}@${BASE_IMAGE_DIGEST}`;
 // Image and container labels below remain the authoritative compatibility
 // check, not the mutable tag.
 export const IMAGE_REPOSITORY = "localhost/openmausbot/cua-local-vm";
-export const IMAGE_LAYER_VERSION = "7";
+export const IMAGE_LAYER_VERSION = "5";
 export const IMAGE_LAYER_LABEL = "com.openmausbot.image-layer";
 export const IMAGE = `${IMAGE_REPOSITORY}:driver-${CUA_DRIVER_VERSION}-v${IMAGE_LAYER_VERSION}`;
 export const CONTAINER = "openmausbot-computer";
@@ -160,11 +159,22 @@ RUN set -eux; \\
     install -D -m 0755 "$driver_bin" ${CUA_EXECUTABLE}; \\
     install -d -o cua -g cua -m 0700 ${VM_WORKSPACE_GUEST}; \\
     test "$(${CUA_EXECUTABLE} --version)" = "cua-driver ${CUA_DRIVER_VERSION}"
+# Install before XFCE starts so the panel and window manager see the font too.
+# Noto Sans CJK JP is distributed under the SIL Open Font License 1.1.
+RUN set -eux; \\
+    install -d -m 0755 /usr/local/share/fonts; \\
+    curl -fsSL 'https://raw.githubusercontent.com/notofonts/noto-cjk/165c01b46ea533872e002e0785ff17e44f6d97d8/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf' -o /usr/local/share/fonts/NotoSansCJKjp-Regular.otf; \\
+    echo '68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5  /usr/local/share/fonts/NotoSansCJKjp-Regular.otf' | sha256sum -c -; \\
+    chmod 0644 /usr/local/share/fonts/NotoSansCJKjp-Regular.otf; \\
+    install -d -m 0755 /usr/local/share/licenses/noto-cjk; \\
+    curl -fsSL 'https://raw.githubusercontent.com/notofonts/noto-cjk/165c01b46ea533872e002e0785ff17e44f6d97d8/LICENSE' -o /usr/local/share/licenses/noto-cjk/OFL.txt; \\
+    echo '6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2  /usr/local/share/licenses/noto-cjk/OFL.txt' | sha256sum -c -; \\
+    fc-cache -f
 RUN printf '%s\\n' \\
       '#!/bin/sh' \\
       'set -eu' \\
       'workspace=${VM_WORKSPACE_GUEST}' \\
-      'profiles="${VM_BROWSER_PROFILES_GUEST}"' \\
+      'profiles="$workspace/.browser-profiles"' \\
       'mkdir -p "$profiles/google-chrome" "$profiles/chromium" "$HOME/.config"' \\
       'if ! chmod 0700 "$workspace" "$profiles" "$profiles/google-chrome" "$profiles/chromium" 2>/dev/null; then' \\
       '  for directory in "$workspace" "$profiles" "$profiles/google-chrome" "$profiles/chromium"; do' \\
@@ -195,20 +205,9 @@ RUN printf '%s\\n' \\
       '  if [ "$attempt" -ge 45 ]; then echo "X display :1 did not become ready within 45 seconds" >&2; exit 1; fi' \\
       '  sleep 1' \\
       'done' \\
-      'exec env CUA_DRIVER_INSTALL_CHANNEL=python_package CUA_DRIVER_RS_TELEMETRY_ENABLED=0 ${CUA_EXECUTABLE} serve --socket ${CUA_SOCKET} --permission-mode standard --grant existing-profile' \\
+      'exec env CUA_DRIVER_INSTALL_CHANNEL=python_package CUA_DRIVER_RS_TELEMETRY_ENABLED=0 ${CUA_EXECUTABLE} serve --socket ${CUA_SOCKET} --permission-mode standard' \\
       > /usr/local/bin/start-openmausbot-cua-driver.sh \\
     && chmod 0755 /usr/local/bin/start-openmausbot-cua-driver.sh
-RUN set -eux; \\
-    apt-get update -qq; \\
-    apt-get install -y -qq --no-install-recommends chromium; \\
-    rm -rf /var/lib/apt/lists/*; \\
-    printf '%s\\n' 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-gpu --force-renderer-accessibility"' > /etc/chromium.d/openmausbot-nested; \\
-    install -d -o cua -g cua -m 0755 /home/cua/.config /home/cua/.config/xfce4; \\
-    printf '%s\\n' '[Default Applications]' 'text/html=chromium.desktop' 'x-scheme-handler/http=chromium.desktop' 'x-scheme-handler/https=chromium.desktop' > /home/cua/.config/mimeapps.list; \\
-    if [ -f /home/cua/.config/xfce4/helpers.rc ]; then grep -v '^WebBrowser=' /home/cua/.config/xfce4/helpers.rc > /tmp/openmausbot-helpers.rc; fi; \\
-    printf '%s\\n' 'WebBrowser=chromium' >> /tmp/openmausbot-helpers.rc; \\
-    mv /tmp/openmausbot-helpers.rc /home/cua/.config/xfce4/helpers.rc; \\
-    chown -R cua:cua /home/cua/.config
 RUN printf '%s\\n' \\
       '' \\
       '[program:openmausbot-cua-driver]' \\
@@ -229,7 +228,8 @@ LABEL ${MANAGED_LABEL}="1" \\
 }
 
 async function sh(cmd: string, args: string[], timeout = 8000): Promise<{ stdout: string }> {
-  const { stdout } = await run(cmd, args, {
+  const resolved = resolveCliSpawn(cmd, args);
+  const { stdout } = await run(resolved.command, resolved.args, {
     timeout,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -381,6 +381,31 @@ function emptyStatus(platform: NodeJS.Platform, target: LocalVmTarget): Containe
   };
 }
 
+/** Whether a turn may recreate this Local VM itself instead of failing.
+ *
+ * True for exactly one state: the container is gone, and a plain `run` is all
+ * that is needed to bring it back. That is what `LocalVmIdleTimer` leaves
+ * behind — it removes an unused Local VM rather than pausing it — so a turn
+ * arriving after an idle period should not have to send the person to App
+ * Settings for a container the app itself deleted.
+ *
+ * Every other problem in `statusProblem` stays the person's call and returns
+ * false here: no runtime, daemon down, image never prepared, `create_supported`
+ * false, and any existing container — stale image, unmanaged, unsafe network,
+ * security or persistence. A stopped container is excluded deliberately, since
+ * `statusProblem` says this desktop image cannot safely resume and asks for a
+ * recreate rather than a start.
+ */
+export function localVmRecreatableOnDemand(
+  status: ContainerComputerStatus,
+): status is ContainerComputerStatus & { runtime: Runtime } {
+  return Boolean(status.runtime)
+    && status.daemonUp
+    && status.image
+    && status.container === "missing"
+    && status.create_supported;
+}
+
 function statusProblem(status: ContainerComputerStatus): string | null {
   if (!status.runtime) return "Install a supported container runtime first";
   if (!status.daemonUp) return `Start ${status.runtime} first`;
@@ -411,12 +436,15 @@ export function imageLabelsMatch(labels: Record<string, string> | undefined): bo
   );
 }
 
-function containerLabelsMatch(
+/** Ownership is intentionally independent of the current image/driver
+ * versions. An older OpenMausBot container must stay removable (and eligible
+ * for idle cleanup), while imageMatches keeps readiness version-strict. */
+function containerOwnershipLabelsMatch(
   labels: Record<string, string> | undefined,
   target: LocalVmTarget,
 ): boolean {
   return (
-    imageLabelsMatch(labels) &&
+    labels?.[MANAGED_LABEL] === "1" &&
     labels?.[WORKSPACE_LABEL] === "1" &&
     (target.key === SHARED_LOCAL_VM_TARGET.key
       ? labels?.[TARGET_LABEL] === undefined || labels?.[TARGET_LABEL] === target.label
@@ -542,7 +570,7 @@ export async function containerComputerStatus(
           : null;
       status.imageMatches =
         appleImage === IMAGE && status.image_id !== null && appleImageId === status.image_id;
-      status.managed = containerLabelsMatch(detail?.configuration?.labels, target);
+      status.managed = containerOwnershipLabelsMatch(detail?.configuration?.labels, target);
       status.persistence = appleWorkspaceMountIsSafe(detail?.configuration?.mounts, platform, target.workspaceDir)
         ? "durable"
         : "unsafe";
@@ -579,7 +607,7 @@ export async function containerComputerStatus(
         imageLabelsMatch(detail?.Config?.Labels) &&
         status.image_id !== null &&
         normalizeImageId(detail?.Image) === status.image_id;
-      status.managed = containerLabelsMatch(detail?.Config?.Labels, target);
+      status.managed = containerOwnershipLabelsMatch(detail?.Config?.Labels, target);
       status.persistence = dockerWorkspaceMountIsSafe(
         detail?.Mounts,
         platform,
@@ -809,14 +837,14 @@ export interface DockerHardeningConfig {
 /** One hardening contract for both managed containers (Local VM here, the
  * BYO-VPS backend in vps-computer.ts): exact resource limits, no privilege,
  * no host namespaces or devices, no disabled security profiles. The only
- * knob the callers legitimately disagree on is the restart policy — the VPS
- * container must survive a reboot nobody is watching ("unless-stopped").
- * The Local VM stays "no": an 8-hour idle stop must not come back by itself,
- * and a host reboot should not surprise-start the desktop. Explicit
- * `docker`/`podman start` of a healthy stopped container is allowed. */
+ * runtime-specific capability exception is Podman's Firefox sandbox chroot.
+ * Callers also differ on restart policy — the VPS
+ * container must survive a reboot nobody is watching ("unless-stopped"),
+ * while the Local VM must NOT auto-resume: its desktop leaves a stale X lock
+ * on stop, so a restarted container is a broken one. */
 export function dockerSecurityIsHardened(
   config: DockerHardeningConfig | undefined,
-  options: { restartPolicy?: "no" | "unless-stopped" } = {},
+  options: { restartPolicy?: "no" | "unless-stopped"; podmanBrowserSandbox?: boolean } = {},
 ): boolean {
   if (!config) return false;
   const capDrop = (config.CapDrop ?? []).map((cap) => cap.toLowerCase());
@@ -835,7 +863,7 @@ export function dockerSecurityIsHardened(
     (config.NanoCpus ?? 0) === NANO_CPUS &&
     pidsLimitIsHardened(config.PidsLimit) &&
     capDrop.includes("all") &&
-    capAdd.join(",") === "setgid,setuid" &&
+    capAdd.join(",") === (options.podmanBrowserSandbox ? "setgid,setuid,sys_chroot" : "setgid,setuid") &&
     config.Privileged === false &&
     !config.PidMode &&
     config.IpcMode === "private" &&
@@ -855,7 +883,7 @@ export function dockerSecurityIsHardened(
 /** Podman normalizes HostConfig capability and namespace fields when it
  * serializes inspect output. Validate its authoritative effective/bounding
  * sets, then normalize only those known representation differences through
- * the unchanged Docker hardening contract. */
+ * the shared hardening contract with the Podman-only chroot exception. */
 export function podmanSecurityIsHardened(
   config: DockerHardeningConfig | undefined,
   effectiveCaps: string[] | undefined,
@@ -865,7 +893,7 @@ export function podmanSecurityIsHardened(
   const normalizeCaps = (caps: string[] | undefined) => (caps ?? [])
     .map((cap) => cap.toLowerCase().replace(/^cap_/, ""))
     .sort();
-  const exactCaps = "setgid,setuid";
+  const exactCaps = "setgid,setuid,sys_chroot";
   if (normalizeCaps(effectiveCaps).join(",") !== exactCaps) return false;
   if (normalizeCaps(boundingCaps).join(",") !== exactCaps) return false;
   return dockerSecurityIsHardened({
@@ -874,8 +902,12 @@ export function podmanSecurityIsHardened(
     CapAdd: effectiveCaps,
     PidMode: config.PidMode === "private" ? "" : config.PidMode,
     UTSMode: config.UTSMode === "private" ? "" : config.UTSMode,
+    // Rootless keep-id maps the workspace owner to the guest cua account.
+    // Do not accept arbitrary user namespace sharing or host namespaces.
+    UsernsMode: config.UsernsMode === "private" || config.UsernsMode === "keep-id:uid=1000,gid=1000"
+      ? "" : config.UsernsMode,
     CgroupnsMode: config.CgroupnsMode || "private",
-  });
+  }, { podmanBrowserSandbox: true });
 }
 
 export function containerRunArgs(
@@ -887,6 +919,11 @@ export function containerRunArgs(
     throw new Error("Per-bot Local VMs require Docker or Podman because Apple container requires a fixed host port");
   }
   const common = ["run", "-d", "--name", target.containerName];
+  if (runtime === "podman") {
+    // The supervisor starts as namespace-root then drops to cua (1000).
+    // Preserve the host workspace owner instead of :U chowning it to root.
+    common.push("--userns", "keep-id:uid=1000,gid=1000", "--user", "0:0");
+  }
   common.push(
     "--label",
     `${MANAGED_LABEL}=1`,
@@ -947,10 +984,13 @@ export function containerRunArgs(
       "512m",
     );
   }
+  // Podman's default seccomp profile gates chroot on this capability.
+  // Firefox uses chroot inside its own namespace to establish its sandbox.
+  if (runtime === "podman") common.push("--cap-add", "SYS_CHROOT");
   common.push(
     "--mount",
     runtime === "podman"
-      ? `type=bind,source=${target.workspaceDir},target=${VM_WORKSPACE_GUEST},relabel=private,U=true`
+      ? `type=bind,source=${target.workspaceDir},target=${VM_WORKSPACE_GUEST},relabel=private`
       : `type=bind,source=${target.workspaceDir},target=${VM_WORKSPACE_GUEST}`,
     "-e",
     `VNC_PW=${password}`,
@@ -1001,23 +1041,22 @@ export async function containerComputerAction(
     throw Object.assign(new Error(before.problem ?? "This runtime cannot create a per-bot Local VM"), { status: 409 });
   }
   if (action === "start") {
-    if (before.container === "running") {
-      throw Object.assign(new Error("The Local VM is already running"), { status: 409 });
-    }
-    if (before.container === "missing") {
-      throw Object.assign(new Error(before.problem ?? "Create the Local VM first"), { status: 409 });
-    }
-    if (!localVmCanResume(before)) {
-      throw Object.assign(
-        new Error(before.problem ?? "This Local VM cannot safely resume; remove and recreate it"),
-        { status: 409 },
-      );
-    }
+    throw Object.assign(new Error("This desktop image cannot safely resume; remove and recreate the Local VM"), {
+      status: 409,
+    });
   }
   if (action === "stop" && before.container !== "running") {
     throw Object.assign(new Error("The Local VM is not running"), { status: 409 });
   }
   if (action === "remove" && before.container === "missing") return before;
+  if (action === "remove" && !before.managed) {
+    throw Object.assign(
+      new Error(
+        `The existing container named ${target.containerName} was not created by ${PRODUCT_NAME}; remove it manually in ${runtime}`,
+      ),
+      { status: 409 },
+    );
+  }
 
   if (action === "pull") {
     await prepareManagedImage(runtime, runner);
@@ -1069,11 +1108,14 @@ export function wholeScreenshot(bytes: Buffer): ScreenshotCheck {
   };
 }
 
-export async function containerComputerScreenshot(
+/** The raw frame, in the shape the live screen poller broadcasts to every
+ * client (server/index.ts). The web panel wants a data URL instead, so
+ * containerComputerScreenshot below wraps this one. */
+export async function containerComputerFrame(
   runner: CommandRunner = sh,
   platform: NodeJS.Platform = process.platform,
   target: LocalVmTarget = SHARED_LOCAL_VM_TARGET,
-): Promise<string> {
+): Promise<{ png: string; format: "png" | "jpeg" }> {
   const cacheable = runner === sh && platform === process.platform;
   const now = Date.now();
   const cached = screenshotStatusCache.get(target.key);
@@ -1111,11 +1153,20 @@ export async function containerComputerScreenshot(
     if (!checked.ok) {
       throw Object.assign(new Error("Cua Driver returned an incomplete screenshot"), { status: 502 });
     }
-    return `data:${checked.mime};base64,${data}`;
+    return { png: data, format: checked.mime === "image/jpeg" ? "jpeg" : "png" };
   } catch (error) {
     if (cacheable) screenshotStatusCache.delete(target.key);
     throw error;
   }
+}
+
+export async function containerComputerScreenshot(
+  runner: CommandRunner = sh,
+  platform: NodeJS.Platform = process.platform,
+  target: LocalVmTarget = SHARED_LOCAL_VM_TARGET,
+): Promise<string> {
+  const { png, format } = await containerComputerFrame(runner, platform, target);
+  return `data:image/${format};base64,${png}`;
 }
 
 const screenshotStatusCache = new Map<
@@ -1158,18 +1209,11 @@ export function setupCommands(
   platform: NodeJS.Platform = process.platform,
   target: LocalVmTarget = SHARED_LOCAL_VM_TARGET,
 ) {
-  // The CLI, not Podman Desktop: this module drives the runtime itself and
-  // serves its own viewer, so the ~227MB container-management GUI is weight
-  // nobody here uses. The identifier moved when Podman 6.0 joined the CNCF —
-  // RedHat.Podman is deprecated and frozen at 5.8.x, so it silently installs an
-  // old version. Prefer Podman over Docker Desktop deliberately: Docker's terms
-  // require a paid subscription above 250 employees or $10M revenue, which is
-  // the customer this fork is sold to.
   const install =
     platform === "darwin"
       ? "brew install podman; podman machine init; podman machine start"
       : platform === "win32"
-        ? "winget install -e --id Podman.CLI"
+        ? "winget install -e --id RedHat.Podman-Desktop"
         : null;
   const runtimeStart =
     runtime === "container"
@@ -1205,7 +1249,7 @@ export function setupCommands(
       runtime === "container" && target.key !== SHARED_LOCAL_VM_TARGET.key
         ? null
         : command(containerRunArgs(runtime, "CHANGE_ME", target)),
-    start: command(["start", target.containerName]),
+    start: null,
     stop: command(["stop", target.containerName]),
     remove: command(["rm", runtime === "container" ? "--force" : "-f", target.containerName]),
     view: target.viewerPort ? `http://127.0.0.1:${target.viewerPort}/vnc.html` : "",

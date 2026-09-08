@@ -46,7 +46,7 @@ const READABLE = new Set([".ts", ".tsx", ".mjs", ".cjs", ".js", ".jsx", ".yml", 
 const ACCEPTED = [
   {
     file: "electron-builder.yml",
-    count: 3,
+    count: 2,
     reason: "publish feed (12-15) and the Linux .deb maintainer (152) are upstream's",
     blocks: "decision 3 (where releases live) and decision 4 (signing identity)",
   },
@@ -61,6 +61,18 @@ const ACCEPTED = [
       count: 1,
       reason: "packaged builds fall back to upstream's Composio Worker, on upstream's key",
       blocks: "deploying our own Worker from cloudflare/composio-broker/",
+    },
+    {
+      file: "server/browser-engine-release.ts",
+      count: 1,
+      reason: "Windows browser-engine pin still downloads from their GitHub releases",
+      blocks: "mirroring the hashed agent-browser asset on our own feed",
+    },
+    {
+      file: "server/browser-engine.test.ts",
+      count: 1,
+      reason: "the pin test quotes their GitHub URL",
+      blocks: "mirroring the hashed agent-browser asset on our own feed",
     },
 ];
 

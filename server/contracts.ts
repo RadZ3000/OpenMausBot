@@ -5,6 +5,8 @@
 // Stream. The shapes and names are kept so the two codebases stay mutually
 // readable.
 
+import type { ApprovalMode } from "../shared/approval-mode.ts";
+
 export type DriverKind = string;
 export type InstanceId = string;
 export type ThreadId = string;
@@ -47,6 +49,15 @@ export interface ModelSelection {
   model: string;
   /** Optional: no effort means no flag, and the CLI keeps its own default. */
   effort?: EffortLevel;
+}
+
+/** An image already admitted to OpenMausBot's private attachment store.
+ * Drivers receive this structured value instead of learning a host path from
+ * prompt text. The harness validates the path and size before constructing it. */
+export interface TurnImageInput {
+  path: string;
+  mime: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  bytes: number;
 }
 
 // ── instance configuration envelope ────────────────────────────────────
@@ -123,6 +134,9 @@ export type RuntimeEvent = RuntimeEventBase &
         summary: string;
         choices?: string[];
         approvalScope?: "local-computer";
+        /** Provider asks to widen its configured sandbox. Only explicit Full
+         * access may answer this automatically; Auto/remembered grants may not. */
+        requiresExplicitApproval?: boolean;
       }
     | {
         type: "request.resolved";
@@ -155,6 +169,13 @@ export type RequestOutcome = "allowed-once" | "rejected" | "answered" | "unavail
 export interface SendTurnInput {
   threadId: ThreadId;
   text: string;
+  /** Per-bot approval policy, reasserted by providers on every turn so a
+   * resumed native session cannot retain a stale, more permissive mode. */
+  approvalMode?: ApprovalMode;
+  /** Images attached to this user turn only. They are deliberately kept out
+   * of replay transcripts: the provider's native session owns earlier image
+   * context, while a fresh replay retains the visible attachment marker. */
+  images?: TurnImageInput[];
   model?: string;
   effort?: EffortLevel;
   resumeCursor?: unknown;
@@ -254,6 +275,10 @@ export interface ProviderAdapter {
      * attachment an engine cannot open (a bot told it has an image it
      * cannot read burns the turn). */
     images?: boolean;
+    /** True only when sendTurn consumes `images` as structured provider
+     * input. Image-capable legacy drivers may instead read the attachment
+     * path kept in `text`; central dispatch strips that tag only here. */
+    nativeImageInput?: boolean;
     /** Effort levels this driver can pass to its CLI, ascending. Absent =
      * the driver cannot set effort, so the app never offers the control —
      * same rule as computerMcp: never show a knob the driver cannot turn. */
@@ -303,7 +328,16 @@ export interface ProviderSnapshot {
   state: "available" | "unavailable";
   reason?: string;
   authenticated?: boolean;
+  /** Vetted display identity from the provider CLI, never credentials. */
+  account?: { email?: string; organization?: string };
   version?: string | null;
+  /** A non-blocking provider update that unlocks newer capabilities. The
+   * engine remains usable; renderer surfaces the exact terminal command. */
+  update?: {
+    title: string;
+    message: string;
+    command: string;
+  };
   /** How this instance is paid for, when the driver can tell: a reported
    * cost on a subscription is notional and the UI labels it as such. */
   billing?: "metered" | "subscription";
@@ -329,6 +363,26 @@ export interface EngineInstall {
   signInCommand?: string;
   /** `command` needs npm on PATH, so the UI can say so when Node is absent. */
   needsNode?: boolean;
+  /** The app downloads and verifies a pinned provider runtime itself. */
+  managed?: {
+    label: string;
+    downloadBytes: number;
+  };
+}
+
+export interface ProviderAuthenticationStart {
+  phase: "waiting" | "succeeded";
+  flowId: string | null;
+  authorizationUrl: string | null;
+  expiresAt: string | null;
+  /** A short-lived code to enter only at the provider's authorization URL. */
+  userCode?: string;
+}
+
+export interface ProviderAuthenticationStatus extends Omit<ProviderAuthenticationStart, "phase"> {
+  phase: "waiting" | "succeeded" | "failed" | "expired" | "cancelled";
+  /** Safe, actionable copy; never unfiltered CLI output or credentials. */
+  message?: string;
 }
 
 // ── driver SPI (upstream ProviderDriver — a plain record, not a service) ─
@@ -369,6 +423,12 @@ export interface ProviderInstance {
   readonly models: ModelCatalog;
   /** Refresh a live catalog without recreating the provider instance. */
   readonly refreshModels?: () => Promise<void>;
+  /** Optional first-party runtime installation and account setup. */
+  readonly installRuntime?: () => Promise<void>;
+  readonly startAuthentication?: () => Promise<ProviderAuthenticationStart>;
+  readonly getAuthentication?: (flowId: string) => Promise<ProviderAuthenticationStatus>;
+  readonly completeAuthentication?: (flowId: string, callbackUrl: string) => Promise<void>;
+  readonly cancelAuthentication?: () => Promise<void>;
   readonly adapter: ProviderAdapter;
   snapshot(): Promise<ProviderSnapshot>;
   /** Cheap one-shot text call (upstream TextGeneration) — titles, summaries. */

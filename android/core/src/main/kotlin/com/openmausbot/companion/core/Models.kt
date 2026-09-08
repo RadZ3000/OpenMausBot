@@ -157,6 +157,17 @@ data class Message(
     val hasImage: Boolean? = null,
     val png: String? = null,
     val mime: String? = null,
+    /**
+     * A user line the engine took INTO the turn that was already running,
+     * rather than one that started a turn of its own.
+     */
+    val steered: Boolean? = null,
+    /**
+     * The steer-queue entry this user line drained from. It is how a client
+     * showing the held message knows which row to retire when the real line
+     * finally lands.
+     */
+    val queueId: String? = null,
 ) {
     @Serializable(with = MessageKindSerializer::class)
     enum class Kind { TEXT, OPTIONS, ACTIVITY, SCREEN, UNKNOWN }
@@ -195,7 +206,17 @@ object MessageRoleSerializer : KSerializer<Message.Role> {
 }
 
 @Serializable
-data class ModelSelection(val instanceId: String, val model: String)
+data class ModelSelection(
+    val instanceId: String,
+    val model: String,
+    /**
+     * Optional reasoning effort passed through to engines that support it.
+     * Older computers omit this field, which means the engine default — and a
+     * null here is *omitted* on the wire, never sent as `null`, so an old
+     * server's validator does not see a field it does not know.
+     */
+    val effort: String? = null,
+)
 
 @Serializable
 data class BotTask(val threadId: String, val title: String, val createdAt: Double)
@@ -220,6 +241,8 @@ data class Bot(
     /** Desktop sidebar section. Missing or blank means the built-in Bots area. */
     val section: String? = null,
     val chiefOfStaff: Boolean? = null,
+    /** ask, auto, full, or custom; null when paired to an older harness. */
+    val approvalMode: String? = null,
     val autoApprove: Boolean? = null,
     val alwaysAllow: List<String>? = null,
     val computer: String? = null,
@@ -227,6 +250,11 @@ data class Bot(
     val speakReplies: Boolean? = null,
     val voice: String? = null,
     val mascotExpression: String? = null,
+    /**
+     * Which body from the mascot body catalog this bot wears. Absent (an older
+     * harness included) means the shipped `cursor` silhouette.
+     */
+    val mascotBody: String? = null,
     val tasks: List<BotTask>? = null,
     val messages: List<Message>? = null,
     val activeLeafId: String? = null,
@@ -512,8 +540,21 @@ data class Instance(
     val id: String get() = instanceId
 }
 
+/**
+ * The small, phone-safe part of an engine's capabilities. Missing capabilities
+ * or effort levels mean the engine offers no reasoning control.
+ */
 @Serializable
-data class InstanceCapabilities(val images: Boolean? = null)
+data class InstanceCapabilities(
+    val images: Boolean? = null,
+    val effortLevels: List<String>? = null,
+    /**
+     * The engine can take a message into a turn that is already running.
+     * Engines without it hold mid-turn sends until the turn settles, which is
+     * a different promise and deserves different words in the composer.
+     */
+    val queueing: Boolean? = null,
+)
 
 @Serializable
 data class InstanceList(val instances: List<Instance>)
@@ -778,15 +819,24 @@ data class RoutineSchedule(
     val at: Double? = null,
     val time: String? = null,
     val weekdays: List<Int>? = null,
+    val everyMinutes: Int? = null,
+    val anchorAt: Long? = null,
 ) {
     @Serializable(with = RoutineScheduleKindSerializer::class)
-    enum class Kind { ONCE, DAILY, UNKNOWN }
+    enum class Kind { ONCE, DAILY, INTERVAL, UNKNOWN }
 
     companion object {
         fun once(atMillis: Double): RoutineSchedule = RoutineSchedule(Kind.ONCE, at = atMillis)
 
         fun daily(time: String, weekdays: List<Int>): RoutineSchedule =
             RoutineSchedule(Kind.DAILY, time = time, weekdays = weekdays)
+
+        fun interval(everyMinutes: Int, anchorAtMillis: Long): RoutineSchedule =
+            RoutineSchedule(
+                Kind.INTERVAL,
+                everyMinutes = everyMinutes,
+                anchorAt = anchorAtMillis,
+            )
     }
 }
 
@@ -796,6 +846,7 @@ object RoutineScheduleKindSerializer : KSerializer<RoutineSchedule.Kind> {
     override fun deserialize(decoder: Decoder): RoutineSchedule.Kind = when (decoder.decodeString()) {
         "once" -> RoutineSchedule.Kind.ONCE
         "daily" -> RoutineSchedule.Kind.DAILY
+        "interval" -> RoutineSchedule.Kind.INTERVAL
         else -> RoutineSchedule.Kind.UNKNOWN
     }
 
@@ -813,7 +864,10 @@ data class Routine(
     val runOn: String,
     val enabled: Boolean,
     val schedule: RoutineSchedule,
+    /** Legacy calendar/display length retained for older desktop compatibility. */
     val durationMinutes: Int,
+    /** Optional execution guard. Missing means the routine has no time limit. */
+    val timeoutMinutes: Int? = null,
     val nextRunAt: Double? = null,
     val createdAt: Double,
     val updatedAt: Double,
@@ -824,6 +878,8 @@ data class Routine(
 
     fun canToggle(atMillis: Double = System.currentTimeMillis().toDouble()): Boolean = when (schedule.type) {
         RoutineSchedule.Kind.DAILY -> true
+        RoutineSchedule.Kind.INTERVAL ->
+            (schedule.everyMinutes ?: 0) in 5..1_440 && schedule.anchorAt != null
         RoutineSchedule.Kind.ONCE -> (schedule.at ?: Double.NEGATIVE_INFINITY) > atMillis
         RoutineSchedule.Kind.UNKNOWN -> false
     }
@@ -835,7 +891,10 @@ data class RoutineRun(
     val routineId: String,
     val routineName: String,
     val prompt: String? = null,
+    /** Legacy calendar/display length snapshot. */
     val durationMinutes: Int? = null,
+    /** Optional execution-guard snapshot. */
+    val timeoutMinutes: Int? = null,
     val botId: String,
     val runOn: String,
     val scheduledFor: Double,
@@ -859,7 +918,12 @@ data class RoutineInput(
     val runOn: String = "maus",
     val enabled: Boolean? = null,
     val schedule: RoutineSchedule,
+    /** Still required by older paired desktops; it is not the execution timeout. */
     val durationMinutes: Int = 30,
+    /** A value replaces the stored limit; null leaves it unchanged on PATCH. */
+    val timeoutMinutes: Int? = null,
+    /** Interpreted by CompanionClient as an explicit JSON null. */
+    @kotlinx.serialization.Transient val clearTimeout: Boolean = false,
 )
 
 @Serializable
@@ -948,3 +1012,18 @@ internal data class RoutineRunResponse(val run: RoutineRun)
 
 @Serializable
 internal data class ConnectorAuthorizationResponse(val url: String)
+
+@Serializable
+data class BotOverviewWho(val name: String, val title: String, val blurb: String, val soulLead: String)
+
+@Serializable
+data class BotOverviewRecent(val at: Double, val summary: String)
+
+@Serializable
+data class BotOverview(
+    val who: BotOverviewWho,
+    val does: List<String> = emptyList(),
+    val reaches: List<String> = emptyList(),
+    val wont: List<String> = emptyList(),
+    val recent: List<BotOverviewRecent> = emptyList(),
+)

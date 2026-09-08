@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-09-02 (Merged `upstream/main` through `4b6adf8` / **0.1.49**, Apache-2.0. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md). Android companion is now **in upstream's tree** (`android/`); we inherit it as theirs. Fork store plans not drafted. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Hop-on map: [`README.md`](README.md).)
+Last updated: 2026-09-08 (Landed `upstream/main` through `81c784e` **0.1.66**. Isolated re-run of the Windows-suite failures passed; full `pnpm test` was not re-run this turn (~40 min). Do not push until asked. Theirs `IMAGE_LAYER_VERSION` stays **"5"**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md). Android companion is **in upstream's tree** (`android/`); we inherit it as theirs. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Hop-on map: [`README.md`](README.md).)
 
 ## Start here
 
@@ -19,19 +19,17 @@ plans: [`plans/archive/README.md`](plans/archive/README.md). The 2026-08-21
 morning handoff and the 2026-08-23 cold-start were deleted as duplicates of
 this file; git still has them.
 
-## Git (this machine, 2026-09-02)
+## Git (this machine, 2026-09-08)
 
 | | |
 |---|---|
-| Branch | `merge/upstream-0.1.27` |
-| HEAD | this merge — `upstream/main` through `4b6adf8` (0.1.49). License gate is that same SHA, Apache-2.0. Path A 8B@32k is `033f1ab`. Brand + Path C is `51a5a74`. |
-| Path A computer loop | `a9b676a` — honest open, last-look, compact `vm_*` wrap |
-| Merge base | this merge — 0.1.49 (Android companion, i18n, custom MCP/engines, browser-per-bot, pairing/remote workspace, white-label `brand.json`, automations/calendar, mascot body catalog). Path A 8B@32k and the fork layers sit on top. |
+| Branch | `merge/upstream-0.1.27` — this merge (0.1.66) |
+| HEAD | merge of `470e1bf` + `81c784e` (see `git log -1`) |
+| Theirs | `81c784e` — `upstream/main` **0.1.66**, Apache-2.0 |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
-| `origin/main` | `d037f40` — this branch is **not** merged to our `main` |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Caught up to `upstream/main` `4b6adf8` on 2026-09-02 (0.1.49). License check was green (Apache-2.0) before the merge started. Previous catch-up was `ec7b487` (0.1.37) on 2026-08-27. Theirs won at their paths: Android companion, i18n/`brand.json`, custom MCP, built-in browser, pairing, automations, mascot bodies. We kept consent-gated analytics (`AnalyticsSettings`), compact `vm_*` wrap, ACP keep-alive, Path A 8B@32k + first-run routes, image-gen MCP extra fields (1:1, rooms, iOS `.image`), brand pack A–C (`distribution.productName` / `PRODUCT_NAME`, Team Library off, update Download hidden), Path B/C, anti-slop oxlint, and `AGENTS.md` house rules (plus their `docs/verification/` pointer). Brand `INCOMPLETE` grew for new upstream files (docker/sync-release workflows, browser surface, pairing page). `pnpm check:brand --release` stays red. Hop-on whose-file is still `git diff --stat upstream/main` — the cheat sheet in [`README.md`](README.md) is not the ownership record.
+Catch-up to `upstream/main` `81c784e` (0.1.66) landed this turn. Previous landed catch-up was `4b6adf8` (0.1.49) on 2026-09-02. Whose-file is still `git diff --stat upstream/main`. Isolated green: cli-setup, acp-session (approvalMode fingerprint), cursor spawn argv, check-brand, browser-runtime, mcp-probe, kill-tree, second-server lease, Antigravity agents-MCP, SettingsModal i18n (analytics mock join). Full `pnpm test` leftover.
 
 Hermes ACP gold **passed on this NVIDIA box** and **failed on Admin CPU**. Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
@@ -83,7 +81,7 @@ Read `commercial-fork`; do not add a second profile.
 
 **Upstream license gate.** [`plans/2026-08-25-003-upstream-license-gate.md`](plans/2026-08-25-003-upstream-license-gate.md)
 is in tree. `pnpm check:upstream-license` after `git fetch upstream`, before any
-merge. Green today on `4b6adf8` (Apache-2.0). A “fetch and merge” order does
+merge. Green today on `81c784e` (Apache-2.0). A “fetch and merge” order does
 **not** skip it. On red: stop, paste the alert, wait for a named acknowledgment;
 default is freeze. Do not wrap fetch. Weekly Action:
 `.github/workflows/check-upstream-license.yml`.
@@ -139,8 +137,9 @@ Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
   (`server/turn-context.ts`). Resume miss: `replayAfterFailedResume`; Hermes
   treats `session/load` `{}` as dead via `sessionLoadLived`.
 - **ACP keep-alive (P6):** fork-owned [`server/acp-session.ts`](../server/acp-session.ts)
-  (idle 15m, cap 3, bot+thread `sessionKey`, fingerprint). `acp/core.ts`
-  parks the child on successful `end_turn`. Write-up:
+  (idle 15m, cap 3, bot+thread `sessionKey`, fingerprint includes cwd / picker
+  model / MCP names / **approvalMode**). `acp/core.ts` parks the child on
+  successful `end_turn`. Write-up:
   [`plans/2026-08-24-001-acp-session-keepalive.md`](plans/2026-08-24-001-acp-session-keepalive.md).
   Fake round-trip: one `initialize`, two `session/prompt`. Live Instruct
   protocol tee 2026-08-24 (thread `9ceeb692-…`): one `initialize`, one
@@ -162,13 +161,13 @@ Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
   hosted catalog). Never `String.prototype.replace` with a dollar-backtick
   replacement — it duplicated the file once.
 - Protected-input stop lives in `server/index.ts` (near the computer-use prompt).
-- `IMAGE_LAYER_VERSION` `"7"` in `server/container-computer.ts`
+- `IMAGE_LAYER_VERSION` `"5"` in `server/container-computer.ts` (theirs; do not bump)
 - Windows Local VM health: prefer Podman, treat empty Docker `info` as
   down, skip `info` when the Podman machine is stopped, wait 90s after a
   WSL wake (`server/container-computer.ts`, `server/podman-setup.ts`).
 - Settings stay opt-in analytics. Upstream default-on PostHog **loses** that merge.
 
-`RECOMMENDED_MODEL` / `modelForTier` are `qwen3-vl:8b`. Context 32768 on both tiers. Comfortable floor 24 GB. `NEW_SESSION_TIMEOUT` 120s.
+`RECOMMENDED_MODEL` / `modelForTier` are `qwen3-vl:8b`. Context 32768 on both tiers. Comfortable floor 24 GB. ACP `NEW_SESSION_TIMEOUT` is now **theirs 300s** (`OPENMAUS_ACP_NEW_SESSION_TIMEOUT_MS`); do not revert it to 120s.
 
 Hermes ACP 8B@32k gold, same prompt, `computer: off`, digest `901cae732162`, `llama-server -c 32768`:
 
@@ -217,8 +216,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Catch upstream** — done through `4b6adf8` (this merge, 0.1.49). Next catch-up is a
-   new fetch **plus** `pnpm check:upstream-license`, then merge only if green.
+4. **Full `pnpm test` leftover** after this 0.1.66 merge. Windows: `OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`, Git `usr\bin` on PATH. The first loaded suite looked like many failures; isolation showed suite-load flake plus two real overlay joins (Path C BYOK strip only on `hostedInference`; SettingsModal i18n analytics mock; ACP fingerprint includes `approvalMode`). Do not `--abort`. Next catch-up is a new fetch **plus** `pnpm check:upstream-license`.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
 7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs. Path B major-provider paste is in the tree; Windows Local VM health probe (empty Docker `info`, 90s Podman `info`) is in the tree; chooser reopen is still open on 005.
@@ -237,7 +235,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
 - Drive the host Windows desktop from Path A.
 - Mutate the Admin Local VM while the user is in a live Computer session
   (Phase 0 seats probe already did; ask first). Read-only inspect is fine.
-- Send JPEGs to Granite (`IMAGE_LAYER_VERSION` stays `"7"` for that).
+- Send JPEGs to Granite (theirs `IMAGE_LAYER_VERSION` stays `"5"`; do not bump it back to `"7"`).
 - Change `RECOMMENDED_MODEL` / `modelForTier` off `qwen3-vl:8b` except by a new plan (rollback is in 005).
 - Wrap Path A in `observe-computer-mcp` (~60 Cua tools).
 - Touch `server/computer-proxy.ts` to “port Box to the VM”.

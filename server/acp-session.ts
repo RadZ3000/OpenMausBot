@@ -105,6 +105,9 @@ export interface AcpSessionFingerprintParts {
   cwd: string;
   model: string;
   mcpNames: readonly string[];
+  /** Cursor (and similar) bake Ask/Auto/Full into argv. Reusing a parked
+   * child across modes would keep the first spawn's flags. */
+  approvalMode: string;
 }
 
 export function acpSessionFingerprint(parts: AcpSessionFingerprintParts): string {
@@ -112,11 +115,17 @@ export function acpSessionFingerprint(parts: AcpSessionFingerprintParts): string
     cwd: parts.cwd,
     model: parts.model,
     mcp: [...parts.mcpNames].sort(),
+    approval: parts.approvalMode,
   });
 }
 
 export function fingerprintTurn(turn: SendTurnInput, cwd: string, model: string): string {
-  return acpSessionFingerprint({ cwd, model, mcpNames: acpMcpNames(turn.integrations) });
+  return acpSessionFingerprint({
+    cwd,
+    model,
+    mcpNames: acpMcpNames(turn.integrations),
+    approvalMode: turn.approvalMode ?? "",
+  });
 }
 
 /** Same cwd rule the ACP driver uses (`turn.cwd ?? workspace ?? homedir()`).

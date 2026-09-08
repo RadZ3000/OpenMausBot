@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { writeFileAtomic } from "./atomic.ts";
-import type { InstanceConfigMap } from "./contracts.ts";
+import { EFFORT_LEVELS, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
 import { parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 
@@ -230,7 +230,21 @@ const instanceConfigSchema = z.object({
   config: z.json().optional(),
 });
 const instanceConfigMapSchema = z.record(z.string(), instanceConfigSchema);
+const defaultModelSelectionSchema = z.object({
+  instanceId: z.string().trim().min(1),
+  model: z.string().trim().min(1),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+});
 const appConfigSchema = z.object({
+  /** Verified by the dedicated domain endpoint, never a generic config patch. */
+  customDomain: z.string().optional(),
+  defaultModelSelection: defaultModelSelectionSchema.optional(),
+  /** CLI-only launch preferences. Never enable remote access implicitly. */
+  cliStartup: z.object({
+    access: z.enum(["local", "tunnel", "tailscale", "public-url"]),
+    publicUrl: z.string().url().optional(),
+    phone: z.enum(["ios", "android"]).optional(),
+  }).optional(),
   xai: z.object({ key: optionalText, url: optionalText }).optional(),
   /** `model` seeds the default selection; `provider` pins an OpenRouter
    * upstream (e.g. "fireworks"). Both are non-secret and optional. */
@@ -276,10 +290,18 @@ const appConfigSchema = z.object({
 const storedAppConfigSchema = appConfigSchema.extend({
   browserProfiles: storedBrowserProfilesSchema.optional(),
 });
-const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true });
+const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig {
+  customDomain?: string;
+  /** Preferred selection for newly created bots; existing bots keep theirs. */
+  defaultModelSelection?: ModelSelection;
+  cliStartup?: {
+    access: "local" | "tunnel" | "tailscale" | "public-url";
+    publicUrl?: string;
+    phone?: "ios" | "android";
+  };
   mcpServers?: Record<string, unknown>;
   language?: string;
   xai?: { key?: string; url?: string };
@@ -593,7 +615,7 @@ export const PROVIDER_CREDENTIAL_ENV = [
 
 /** Merge a partial config into ~/.openmausbot/config.json (secrets never
  * echoed back — callers report configured-or-not booleans only). */
-export function saveConfig(patch: Partial<AppConfig>): void {
+export function saveConfig(patch: Partial<AppConfig>, options: { replaceInstances?: boolean } = {}): void {
   const p = join(DATA_DIR, "config.json");
   let disk: JsonObject = {};
   try {
@@ -619,6 +641,13 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   if (checkedPatch.vps !== undefined) disk.vps = normalizeVpsConfig(checkedPatch.vps);
   // scalar, not a section: the merge loop above only walks objects
   if (checkedPatch.language !== undefined) disk.language = checkedPatch.language;
+  if (checkedPatch.customDomain !== undefined) disk.customDomain = checkedPatch.customDomain;
+  // A selection is replaced as one value, so changing engines also clears
+  // an effort level omitted from the new selection.
+  if (checkedPatch.defaultModelSelection !== undefined) {
+    disk.defaultModelSelection = checkedPatch.defaultModelSelection;
+  }
+  if (checkedPatch.cliStartup !== undefined) disk.cliStartup = checkedPatch.cliStartup;
   // Custom MCP mutations go through their own dedicated local API, but
   // saveConfig remains the single atomic persistence boundary.
   if (checkedPatch.mcpServers !== undefined) {
@@ -646,10 +675,16 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   }
   if (checkedPatch.instances) {
     const currentInstances = jsonObjectSchema.safeParse(disk.instances);
-    const diskInstances: JsonObject = currentInstances.success ? currentInstances.data : {};
+    const storedInstances: JsonObject = currentInstances.success ? currentInstances.data : {};
+    const diskInstances: JsonObject = options.replaceInstances ? {} : storedInstances;
     for (const [instanceId, entry] of Object.entries(checkedPatch.instances)) {
-      const current = jsonObjectSchema.safeParse(diskInstances[instanceId]);
+      const current = jsonObjectSchema.safeParse(storedInstances[instanceId]);
       const merged: JsonObject = current.success ? { ...current.data } : {};
+      // Replacement clears omitted known settings, but retained shadow
+      // entries keep fields understood only by a newer app or driver.
+      if (options.replaceInstances) {
+        for (const key of Object.keys(instanceConfigSchema.shape)) delete merged[key];
+      }
       Object.assign(merged, entry);
       diskInstances[instanceId] = merged;
     }
@@ -664,8 +699,8 @@ export function saveConfig(patch: Partial<AppConfig>): void {
  * entry rides driver.defaultConfig(). Returns false for unknown instances
  * when the fleet is explicitly configured. The returned map must stay
  * PERSISTABLE: instanceConfigs() injects credential env into consuming
- * drivers' entries for the live fleet, so those injected keys are stripped
- * back out before the map is returned — otherwise saving an override would
+ * drivers' entries for the live fleet, so only their originally configured
+ * environment is retained — otherwise saving an override would
  * copy xai/box/opencodeGo secrets into the instances section of
  * config.json. */
 export function withInstanceCli(
@@ -674,7 +709,7 @@ export function withInstanceCli(
   cli: string,
 ): InstanceCliUpdate {
   const next: AppConfig = structuredClone(cfg);
-  const map = instanceConfigs(next);
+  const map = persistableInstanceConfigs(next);
   // hasOwn, not truthiness: map is a plain object literal, so
   // map["__proto__"] resolves to Object.prototype — truthy — and the
   // assignment below would poison EVERY object in the process (instanceId
@@ -692,16 +727,19 @@ export function withInstanceCli(
     delete rest.cli;
     entry.config = Object.keys(rest).length ? rest : undefined;
   }
-  for (const e of Object.values(map)) {
-    if (!e.environment) continue;
-    const injected = injectedEnvironment(next, e.driver);
-    for (const [k, v] of Object.entries(e.environment)) {
-      if (injected.get(k) === v) delete e.environment[k];
-    }
-    if (!Object.keys(e.environment).length) delete e.environment;
-  }
   next.instances = map;
   return { ok: true, config: next };
+}
+
+/** Materialize defaults without copying injected workspace secrets to disk. */
+export function persistableInstanceConfigs(cfg: AppConfig): InstanceConfigMap {
+  const map = instanceConfigs(cfg);
+  for (const [id, entry] of Object.entries(map)) {
+    const environment = cfg.instances?.[id]?.environment;
+    if (environment) entry.environment = { ...environment };
+    else delete entry.environment;
+  }
+  return map;
 }
 
 interface InstanceCliUpdate {
@@ -709,8 +747,7 @@ interface InstanceCliUpdate {
   config: AppConfig;
 }
 
-/** The credential env instanceConfigs() injects for one driver — shared with
- * withInstanceCli() so the inject rule and the strip rule cannot drift apart.
+/** The credential env instanceConfigs() injects for one driver at runtime.
  * Each secret goes only to the driver that actually reads it: the API-key
  * Grok driver reads XAI_API_KEY, the Computer driver reads BOX_TOKEN, and
  * OpenCode reads OPENCODE_API_KEY. Every other engine brings its own
@@ -741,7 +778,8 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // a credential Milind doesn't want to manage; an `instances` entry brings
   // it back anytime.
   //
-  // Google rides `antigravityAgent` (the `agy` CLI), not `geminiAgent`:
+  // Google rides `antigravityAgent` (the official Google ACP server), not
+  // `geminiAgent`:
   // Google retired Gemini CLI for the free/Pro/Ultra tiers on 2026-06-18
   // (developers.googleblog.com, "transitioning Gemini CLI to Antigravity
   // CLI"), so a default `gemini` instance could only ever show unavailable.
@@ -799,14 +837,9 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     // with OMB_INFERENCE_BROKER_TOKEN. Leaving the workspace BYOK key on
     // that entry would make create() prefer OPENAI_COMPAT_API_KEY over the
     // install token (openai-compat.ts reads the workspace key first).
-    if (entry.driver === "openai-compat") {
-      const parsed = jsonObjectSchema.safeParse(entry.config);
-      const envName = parsed.success ? z.string().safeParse(parsed.data.apiKeyEnv) : null;
-      const named = envName?.success ? envName.data.trim() : "";
-      if (named && named !== "OPENAI_COMPAT_API_KEY") {
-        delete environment.OPENAI_COMPAT_API_KEY;
-        delete environment.OPENAI_COMPAT_URL;
-      }
+    if (id === "hostedInference" && entry.driver === "openai-compat") {
+      delete environment.OPENAI_COMPAT_API_KEY;
+      delete environment.OPENAI_COMPAT_URL;
     }
     entry.environment = environment;
     // The driver URL is configuration, not a credential. Environment is
@@ -825,6 +858,9 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
         const merged = { ...current };
         // A per-instance value always wins over the workspace default.
         for (const [k, v] of Object.entries(defaults)) {
+          // Empty routing explicitly means "no upstream pin" for isolated
+          // API connections. Do not replace it with a workspace provider.
+          if (k === "provider" && typeof merged[k] === "string") continue;
           if (typeof merged[k] !== "string" || !(merged[k] as string).trim()) merged[k] = v;
         }
         entry.config = merged;
