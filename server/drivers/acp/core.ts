@@ -727,10 +727,7 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
         const key = acpSessionSlot(turn);
         const fingerprint = acpFingerprintFromTurn(turn, turnConfig.workspace);
         let spawned = false;
-        // No resume cursor means the caller wants a fresh native session. A
-        // parked child would carry its old session over, and with it the
-        // "always allow" answers a fresh session is supposed to forget.
-        let live = turn.resumeCursor ? pool.take(key, fingerprint) : undefined;
+        let live = pool.take(key, fingerprint);
         if (!live) {
           let spawnedChild: LiveAcpChild | undefined;
           spawnedChild = openLiveChild(
@@ -1185,6 +1182,13 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
               });
             };
 
+            // Naming no session to resume starts a fresh conversation, so the
+            // approvals a person remembered for the old one do not carry into
+            // it. Deliberately outside the spawn branch below: a parked child
+            // is reused for speed, but reuse must not resurrect a grant.
+            const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
+            if (!cursor) sessionAllows.delete(threadId);
+
             if (spawned) {
               const init = await live.request(
                 "initialize",
@@ -1229,9 +1233,6 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
 
               rejectMissingImageCap(live.promptImages);
 
-              const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
-              // a fresh native session forgets what the previous one allowed
-              if (!cursor) sessionAllows.delete(threadId);
               let sessionResult: any = null;
               if (cursor) {
                 try {
