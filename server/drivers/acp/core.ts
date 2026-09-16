@@ -727,7 +727,10 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
         const key = acpSessionSlot(turn);
         const fingerprint = acpFingerprintFromTurn(turn, turnConfig.workspace);
         let spawned = false;
-        let live = pool.take(key, fingerprint);
+        // No resume cursor means the caller wants a fresh native session. A
+        // parked child would carry its old session over, and with it the
+        // "always allow" answers a fresh session is supposed to forget.
+        let live = turn.resumeCursor ? pool.take(key, fingerprint) : undefined;
         if (!live) {
           let spawnedChild: LiveAcpChild | undefined;
           spawnedChild = openLiveChild(
@@ -925,7 +928,7 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
           if (operationKey && sessionAllows.get(threadId)?.has(operationKey)) {
             const allow = optionFor("allow");
             if (allow) {
-              return send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: allow } } });
+              return live.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: allow } } });
             }
           }
           const tool = kind === "execute" ? "shell" : kind === "edit" ? "edit" : kind || "tool";

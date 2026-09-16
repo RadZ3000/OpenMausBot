@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-09-08 (Landed `8930b820` merge of `upstream/main` through `81c784e` **0.1.66**, plus a follow-up for fail-closed link types and Node-safe analytics storage. Isolated known-failure files, brokers, brand, and distribution are green. `pnpm typecheck` green. Full `pnpm test` was not re-run (~40 min). Do not push until asked. Theirs `IMAGE_LAYER_VERSION` stays **"5"**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md). Android companion is **in upstream's tree** (`android/`); we inherit it as theirs. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Hop-on map: [`README.md`](README.md).)
+Last updated: 2026-09-16 (Landed `d35833b9` merge of `upstream/main` through `19bf4de6` **0.1.82** — 333 commits, 45 conflicted files. `pnpm typecheck`, `pnpm check:brand`, and `pnpm check:distribution` are green; the brand ledger was re-baselined (24 counts moved, 5 rows dropped for files upstream deleted, 39 rows added for files upstream introduced). Full `pnpm test` re-run at the end of that turn; the six failures it first showed all pass in isolation — two were real (an upstream test asserting `OpenMausBot` where ours is `PRODUCT_NAME`; ACP pooling reusing a parked child on a cursor-less turn, which must start fresh) and three were room-coordination e2e contention on this 16 GB box. Do not push until asked. Theirs `IMAGE_LAYER_VERSION` stays **"5"**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md): one Chromium, each bot its windows, app shows a crop. Two Chromes / second VNC are out. [B-29](known-bugs.md) is P1 of 002. P1–P4 not coded. Do not mutate the Admin VM while the user is live. Grok Bot phone research in [`plans/2026-08-28-001-grok-bot-phone-research.md`](plans/2026-08-28-001-grok-bot-phone-research.md). Android companion is **in upstream's tree** (`android/`); we inherit it as theirs. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Unpackaged `pnpm dev` still prefers Claude if that CLI is present. Hop-on map: [`README.md`](README.md).)
 
 ## Start here
 
@@ -19,17 +19,21 @@ plans: [`plans/archive/README.md`](plans/archive/README.md). The 2026-08-21
 morning handoff and the 2026-08-23 cold-start were deleted as duplicates of
 this file; git still has them.
 
-## Git (this machine, 2026-09-08)
+## Git (this machine, 2026-09-16)
 
 | | |
 |---|---|
-| Branch | `merge/upstream-0.1.27` — this merge (0.1.66) |
-| HEAD | `8930b820` merge of `470e1bf` + `81c784e` (0.1.66) |
-| Theirs | `81c784e` — `upstream/main` **0.1.66**, Apache-2.0 |
+| Branch | `merge/upstream-0.1.27` — this merge (0.1.82) |
+| HEAD | `d35833b9` merge of `9d343d75` + `19bf4de6` (0.1.82) |
+| Theirs | `19bf4de6` — `upstream/main` **0.1.82**, Apache-2.0 |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Catch-up to `upstream/main` `81c784e` (0.1.66) landed this turn (`8930b820`). Previous landed catch-up was `4b6adf8` (0.1.49) on 2026-09-02. Whose-file is still `git diff --stat upstream/main`. Isolated green: cli-setup, acp-session, cursor spawn argv, check-brand, browser-runtime, mcp-probe, kill-tree, second-server lease, Antigravity agents-MCP, SettingsModal i18n, Codex device-auth, BotIdentityAvatars, Sidebar i18n, SidebarBotListItem, brokers. `pnpm typecheck` green. Full `pnpm test` leftover.
+Catch-up to `upstream/main` `19bf4de6` (0.1.82) landed this turn (`d35833b9`); previous was `8930b820` (0.1.66) on 2026-09-08. Whose-file is still `git diff --stat upstream/main`. `package.json` version is now theirs' `0.1.82`. New upstream dependency `croner` — `pnpm install` after this merge or `pnpm typecheck` fails on `shared/routine-schedule.ts`.
+
+What upstream removed, and what went with it: the **skill recorder** (`electron/build-recorder-helper.mjs`, `electron/skill-recorder.mjs`, `src/components/SkillRecorderPage.tsx`) and **remote-computer** (`server/remote-computer.ts`) are deleted. Our edits to those five files were branding only, so the deletions were accepted. `server/auto-approve.ts` was rewritten upstream (no more `looksDestructive` / `looksSensitive` / `alwaysAllow`); theirs was taken whole and our routing guard stays at the call site via `server/computer-routing.ts`. Upstream's `deleteBotWithLifecycle` replaced our inline bot-DELETE body; our `computerLooks.wipeBot` was re-added inside it. Our old backup-export button left the sidebar plus menu — upstream owns backup in its own settings panel now.
+
+Two upstream features collided by name with ours and were split rather than merged. `cfg.imageGen` is now **theirs** (avatar providers: `key` / `customApiKey` / `customUrl` / `customModel`); our generate_image proxy keeps `apiKey` / `baseUrl` / `model` in the same block, and the status route reports theirs at `imageGen` and ours at **`imageGenProxy`** (the per-bot tool gate in `useBotSettingsDerived` reads `imageGenProxy`). Our Qwen `.cmd` shim parsing moved out of `server/env-path.ts` — that file is theirs wholesale now — into fork-owned [`server/cmd-shim-vars.ts`](../server/cmd-shim-vars.ts), which theirs' `parseCmdShim` falls through to.
 
 Hermes ACP gold **passed on this NVIDIA box** and **failed on Admin CPU**. Packaged Electron still advertises **upstream** 0.1.32 — do not click Download;
 the public-release path is recorded in
@@ -139,7 +143,12 @@ Computer loop (P1, P3, P4 + durable VM + first routing slice + P8 + **P6**):
 - **ACP keep-alive (P6):** fork-owned [`server/acp-session.ts`](../server/acp-session.ts)
   (idle 15m, cap 3, bot+thread `sessionKey`, fingerprint includes cwd / picker
   model / MCP names / **approvalMode**). `acp/core.ts` parks the child on
-  successful `end_turn`. Write-up:
+  successful `end_turn`. A turn with **no `resumeCursor` never reuses a parked
+  child**: upstream's remembered "always allow" answers (`sessionAllows`) are
+  scoped to a native session, and a fresh session has to forget them. Do not
+  relax that to widen pool hits. Upstream's session-config and model-variant
+  work rides on the pooled child (`live.sessionConfigResult`), so a parked
+  session re-applies `turn.variant` before each prompt. Write-up:
   [`plans/2026-08-24-001-acp-session-keepalive.md`](plans/2026-08-24-001-acp-session-keepalive.md).
   Fake round-trip: one `initialize`, two `session/prompt`. Live Instruct
   protocol tee 2026-08-24 (thread `9ceeb692-…`): one `initialize`, one
@@ -216,7 +225,7 @@ tools at 8k and 32k; do not hunt more `vm_*`.
    **Qwen-CUA is not Path A** ([004](plans/2026-08-24-004-qwen3vl-vs-qwen-cua.md)).
 2. **Path A goal (EvoCUA)** → [`plans/2026-08-23-004-evocua-path-a-goal.md`](plans/2026-08-23-004-evocua-path-a-goal.md). GPU-box specialist; not this laptop’s first-run. Qwen-CUA (397B, weights not in their GitHub release) does not replace that pick.
 3. **Ship Windows** → [`plans/2026-08-20-004-release-channel-plan.md`](plans/2026-08-20-004-release-channel-plan.md). Never `.claude/skills/windows-release/` as written. Customer update-feed target recorded 2026-08-24; do not retarget `publish:` until the five decisions in that plan are made.
-4. **Full `pnpm test` leftover** after this 0.1.66 merge. Windows: `OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`, Git `usr\bin` on PATH. Isolated files that looked like many failures were suite-load flake plus overlay joins (Path C BYOK strip only on `hostedInference`; SettingsModal i18n analytics mock; ACP fingerprint includes `approvalMode`; fail-closed URLs captured before `openExternalLink`; analytics storage does not require `localStorage` at import). Next catch-up is a new fetch **plus** `pnpm check:upstream-license`.
+4. **Finish verifying and publish this 0.1.82 merge.** The branch is not pushed. One known-red test: `server/index.test.ts` → *"team import is additive-only: smuggled grants, claimed ids, and re-imports never touch existing records"*. It fails in a whole-file run and passes under `-t`, in ~3 s either way, so it is order dependence and not a timeout. Both tests are upstream's: the export test at ~4020 PATCHes a bot to `name: "Mira"` and the import test at ~4386 then asserts the colliding newcomer is numbered exactly `"Mira 2"`. Confirm the received name before changing anything — if it is `"Mira 3"`, the store is shared across the two tests and the assertion, not our merge, is what is wrong. Windows testing needs `OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1` and Git `usr\bin` on PATH; never pipe `pnpm test` through `Out-String`, which buffers the whole run and hides progress for 40+ minutes (`Tee-Object` streams). Room-coordination e2e files time out when they run beside `server/index.test.ts` on this box — re-run a suspect file alone before believing it. Next catch-up is a new fetch **plus** `pnpm check:upstream-license`.
 5. **Path C leftovers** → Polar packs (our org), tools-on-hosted, a true frontier SKU (`FRONTIER_UPSTREAM_MODEL` is still `gpt-4o-mini`). The capability-then-credits router is in tree; do not rebuild it. Chat UI badge for `capability` vs `credits` is later. Packaged builds need `OMB_INFERENCE_BROKER_URL` — no default.
 6. **Publish this branch** → point our `main` at it; user must ask.
 7. **First-run leftovers** → B-26 chooser, B-12 PATH after in-app CLI install, serial Path A CTAs. Path B major-provider paste is in the tree; Windows Local VM health probe (empty Docker `info`, 90s Podman `info`) is in the tree; chooser reopen is still open on 005.

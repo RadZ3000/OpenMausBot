@@ -37,7 +37,6 @@ import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { GoalRunCard } from "./GoalRunCard";
 import { AttachmentGallery, MessageAttachmentGallery } from "./AttachmentGallery";
 import { OptionCard } from "./OptionCard";
-import { AttachedFileChips, AttachedImageGallery } from "./AttachmentPreview";
 import { messageImageSrc } from "@/lib/message-image";
 import { ExpandableImage } from "./Lightbox";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";

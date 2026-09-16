@@ -24,7 +24,18 @@ vi.mock("@/lib/thread-preferences", () => ({
   useShowThreads: () => fixture.showThreads,
   setShowThreads: fixture.setShowThreads,
 }));
-vi.mock("@/lib/analytics", () => ({ analyticsEnabled: () => false, setAnalyticsEnabled: vi.fn() }));
+// Ours is an opt-in consent model, so the stub covers the consent exports too.
+vi.mock("@/lib/analytics", () => ({
+  analyticsConfigured: () => false,
+  analyticsConsent: () => null,
+  analyticsEnabled: () => false,
+  setAnalyticsConsent: vi.fn(),
+  initAnalytics: vi.fn(),
+  track: vi.fn(),
+  identifyEmail: vi.fn(),
+  emailGateDone: () => true,
+  setEmailGateDone: vi.fn(),
+}));
 vi.mock("./SettingsPrimitives", async (importOriginal) => {
   const original = await importOriginal<typeof import("./SettingsPrimitives")>();
   return {

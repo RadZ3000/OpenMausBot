@@ -521,6 +521,9 @@ export interface ConfigStatus {
     xaiConfigured?: boolean;
     customKeyConfigured?: boolean;
   };
+  /** Workspace-wide credential behind the generate_image tool. Separate from
+   * the avatar providers above: a bot may hold this grant without either. */
+  imageGenProxy?: { configured: boolean };
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
   /** UI language override; "" (or absent) follows the system language. */
@@ -556,7 +559,7 @@ export interface BrowserProfile {
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "composio" | "box" | "vps" | "rooms" | "threads" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing"
+  "xai" | "composio" | "box" | "vps" | "rooms" | "threads" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "imageGenProxy" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -571,6 +574,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     opencodeGo: frame.opencodeGo,
     tts: frame.tts,
     imageGen: frame.imageGen,
+    imageGenProxy: frame.imageGenProxy,
     profile: frame.profile,
     language: frame.language,
     features: frame.features,

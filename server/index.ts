@@ -1341,6 +1341,7 @@ function imageGenIntegration(botId: string, threadId: string, directory: string,
     kind: "imageGen",
     skillAuthoring: false,
     createdBots: 0,
+    openedThreads: 0,
   });
   const env: Record<string, string> = {
     ...AGENTS_NODE_FLAG,

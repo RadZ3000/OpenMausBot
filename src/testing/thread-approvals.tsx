@@ -4,7 +4,7 @@ import { ChatView, ErrorRow } from "../components/ChatView";
 import { DesktopCapabilitiesProvider } from "../components/DesktopCapabilities";
 import { StoreProvider, useStore } from "../state/store";
 import { applySkin } from "../lib/skins";
-import { setAnalyticsEnabled } from "../lib/analytics";
+import { setAnalyticsConsent } from "../lib/analytics";
 import "../styles.css";
 
 function Fixture() {
@@ -16,6 +16,6 @@ function Fixture() {
     {bot && <div className="min-h-0 flex-1"><ChatView bot={bot} /></div>}
   </div>;
 }
-setAnalyticsEnabled(false);
+setAnalyticsConsent(false);
 applySkin("midnight");
 createRoot(document.getElementById("root")!).render(<DesktopCapabilitiesProvider><StoreProvider><Fixture /></StoreProvider></DesktopCapabilitiesProvider>);

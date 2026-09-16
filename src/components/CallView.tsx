@@ -29,7 +29,6 @@ import { usePushToTalk } from "@/lib/push-to-talk";
 import { BotAvatar } from "./Avatar";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
 import { cn } from "@/lib/cn";
-import { distribution } from "@/lib/distribution";
 import { track } from "@/lib/analytics";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { callCapabilityHelp } from "@/lib/call-capability";
