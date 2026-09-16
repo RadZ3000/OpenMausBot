@@ -24,6 +24,7 @@ import {
   PiDriver,
   preferPiInjectRows,
   splitPiModel,
+  updatePiModelCatalog,
 } from "./pi.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-pi-cli.ts");
@@ -98,20 +99,6 @@ describe("buildMcpServers", () => {
     });
   });
 
-  it("wraps the cloud computer in the computer-proxy spawn contract", () => {
-    const servers = buildMcpServers({
-      threadId: "t",
-      text: "hi",
-      integrations: {
-        computer: { kind: "box", boxId: "b1", token: "tok", control: { url: "http://c", token: "ct" } },
-      },
-    });
-    expect(servers?.computer).toMatchObject({
-      command: process.execPath,
-      args: [expect.stringContaining("computer-proxy")],
-      env: expect.objectContaining({ OGB_BOX_ID: "b1", OGB_BOX_TOKEN: "tok" }),
-    });
-  });
 
   it("passes a local computer (Cua/VPS) through as a direct stdio server", () => {
     const servers = buildMcpServers({
@@ -187,6 +174,45 @@ describe("PiDriver catalog (fake CLI)", () => {
       FAKE_PI_MODE: "no-models",
     });
     expect(catalog.options).toEqual([]);
+  });
+
+  it("updates pi's catalog only on explicit refresh, then probes it again", async () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-pi-update-"));
+    const dump = join(home, "launches.jsonl");
+    const instance = await PiDriver.create({
+      instanceId: "pi-refresh",
+      displayName: undefined,
+      environment: { HOME: home, FAKE_PI_DUMP: dump },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    try {
+      const startup = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(startup.some((entry) => entry.argv?.[0] === "update")).toBe(false);
+
+      writeFileSync(dump, "");
+      await instance.refreshModels?.();
+      const refresh = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(refresh.map((entry) => entry.argv)).toEqual([
+        ["update", "--models", "--no-approve"],
+        ["--mode", "rpc", "--no-session"],
+      ]);
+    } finally {
+      await instance.dispose();
+    }
+  });
+
+  it("reports update failure without preventing a cached catalog probe", async () => {
+    expect(await updatePiModelCatalog(FAKE_CLI, {
+      PATH: process.env.PATH ?? "",
+      FAKE_PI_MODE: "update-error",
+    })).toBe(false);
+    const catalog = await fetchPiModels(FAKE_CLI, {
+      PATH: process.env.PATH ?? "",
+      HOME: join(tmpdir(), "omb-pi-update-error"),
+      FAKE_PI_MODE: "update-error",
+    });
+    expect(catalog.options).toHaveLength(2);
   });
 });
 
@@ -436,11 +462,6 @@ describe("PiDriver turns (fake CLI)", () => {
     const servers = mcpRow!.mcpConfig!.mcpServers!;
     // composio passes through verbatim as a stdio server
     expect(servers.composio).toMatchObject({ command: "node", args: ["connector-proxy.js"], env: { COMPOSIO_KEY: "ck" } });
-    // the cloud computer wraps in the computer-proxy spawn contract
-    expect(servers.computer.args[0]).toContain("computer-proxy");
-    expect(servers.computer.env).toMatchObject({ OGB_BOX_ID: "b1", OGB_BOX_TOKEN: "bt" });
-    // the box token lives in the 0600 config file, never in argv
-    expect(JSON.stringify(mcpRow!.argv)).not.toContain("bt");
   });
 
   it("rides the toolUse auto-continue and only settles on the final end_turn", async () => {
@@ -451,6 +472,10 @@ describe("PiDriver turns (fake CLI)", () => {
     // a tool ran and completed, then pi auto-continued to synthesize the reply
     expect(recorder.events.filter((e) => e.type === "item.started").length).toBe(1);
     expect(recorder.events.filter((e) => e.type === "item.completed" && (e as { itemType: string }).itemType === "tool").length).toBe(1);
+    expect(recorder.events.find((event) => event.type === "item.started")).toMatchObject({ summary: "echo hi", input: expect.stringContaining("echo hi") });
+    expect(recorder.events.find((event) => event.type === "item.completed" && event.itemType === "tool")).toMatchObject({ output: expect.stringContaining('"text": "hi"') });
+    expect(JSON.stringify(recorder.events)).not.toContain("pi-input-secret");
+    expect(JSON.stringify(recorder.events)).not.toContain("pi-output-secret");
     expect(done).toMatchObject({ ok: true, stopReason: "end_turn" });
     expect((done as { usage: { input: number; output: number } }).usage).toEqual({ input: 12, output: 2 });
     const text = recorder.events.find(

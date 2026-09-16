@@ -1,20 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Menu } from "lucide-react";
 import { StoreProvider, useStore } from "@/state/store";
-import { Onboarding } from "@/components/Onboarding";
+import { WelcomeFlow } from "@/components/onboarding/WelcomeFlow";
+import { FirstConversationTour } from "@/components/onboarding/FirstConversationTour";
+import { GuidedTour } from "@/components/onboarding/GuidedTour";
+import { welcomeDue } from "@/lib/onboarding";
+import { ThreadRefsProvider } from "@/components/ThreadRefs";
 import { emailGateDone, initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
 import { BotSettingsDialog } from "@/components/BotSettingsDialog";
 import { RemoteAgentSettingsPanel } from "@/components/RemoteAgentSettingsPanel";
+import { NewBotDialog } from "@/components/NewBotDialog";
 import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { SettingsModal } from "@/components/SettingsModal";
+import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { UpdateBanner } from "@/components/UpdateBanner";
-import { DesktopCapabilitiesProvider } from "@/components/DesktopCapabilities";
+import { DesktopCapabilitiesProvider, useDesktopCapabilities } from "@/components/DesktopCapabilities";
+import { WindowCaptionButtons } from "@/components/WindowCaptionButtons";
 import { RoutinesPage } from "@/components/RoutinesPage";
 import { NoEngines } from "@/components/NoEngines";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -22,18 +29,35 @@ import { KeyboardShortcutsModal } from "@/components/KeyboardShortcutsModal";
 import { LightboxProvider } from "@/components/Lightbox";
 import { InstallPathChooser } from "@/components/InstallPathChooser";
 import { LocalVmWorkspace } from "@/components/LocalVmWorkspace";
-import { SkillRecorderPage } from "@/components/SkillRecorderPage";
 import { TeamMapPage } from "@/components/TeamMapPage";
-import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { setLocale } from "@/lib/i18n";
 import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 
 function Shell() {
   const { state, dispatch } = useStore();
+  const { capabilities } = useDesktopCapabilities();
   const unreadCount =
     state.bots.filter((bot) => !bot.hidden && bot.unread).length +
     state.groups.filter((group) => group.unread).length;
   const remoteClient = window.ogb?.remoteClient?.active === true;
+  useEffect(() => {
+    if (!window.ogb?.environments) return;
+    const open = (computerId?: string | null) => {
+      if (computerId) {
+        const target = new URL(window.location.href);
+        target.searchParams.set("share-computer", computerId);
+        window.history.replaceState(null, "", `${target.pathname}${target.search}${target.hash}`);
+      }
+      dispatch({ type: "toggleAppSettings", open: true, section: "desktopWorkspaces" });
+    };
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("desktop-settings") === "workspaces") {
+      url.searchParams.delete("desktop-settings");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      open();
+    }
+    return window.ogb.environments.onOpenSettings?.(open);
+  }, [dispatch]);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
   // cancelling them with md:, which would still emit a translate value and
@@ -55,7 +79,7 @@ function Shell() {
   // the panel hands off to this and back)
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const previousViewRef = useRef(state.activeView);
-  const calendarOriginRef = useRef<"chat" | "team-map" | "skill-recorder">("chat");
+  const calendarOriginRef = useRef<"chat" | "team-map">("chat");
   const group = state.groups.find((g) => g.id === state.selectedId);
   const bot = group ? undefined : (state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0]);
   const calendarFocus = state.activeView === "routines";
@@ -85,7 +109,7 @@ function Shell() {
       const bots = state.bots.filter((b) => !b.hidden);
       if (e.key === "n" && !e.shiftKey) {
         e.preventDefault();
-        dispatch({ type: "newBot" });
+        dispatch({ type: "toggleNewBot", open: true });
       } else if (/^[1-9]$/.test(e.key)) {
         const target = bots[Number(e.key) - 1];
         if (target) {
@@ -125,7 +149,7 @@ function Shell() {
   // drawer whenever an action opens something over the chat.
   useEffect(() => {
     setDrawerOpen(false);
-  }, [state.selectedId, state.activeView, state.pluginsOpen, state.settingsOpen]);
+  }, [state.selectedId, bot?.threadId, group?.threadId, state.activeView, state.pluginsOpen, state.settingsOpen]);
 
   useEffect(() => {
     if (state.activeView === "routines" && previousViewRef.current !== "routines") {
@@ -159,12 +183,8 @@ function Shell() {
       dispatch({ type: "showTeamMap" });
       return;
     }
-    if (calendarOriginRef.current === "skill-recorder" && skillRecorderEnabled(state.config)) {
-      dispatch({ type: "showSkillRecorder" });
-      return;
-    }
     dispatch({ type: "select", id: state.selectedId });
-  }, [dispatch, state.config, state.selectedId]);
+  }, [dispatch, state.selectedId]);
   const openCalendarRoom = useCallback((id: string) => {
     dispatch({ type: "select", id });
   }, [dispatch]);
@@ -177,6 +197,14 @@ function Shell() {
     state.inspectorOpen ||
     state.appSettingsOpen ||
     state.pluginsOpen;
+
+  // The macOS app menu's Preferences… item lives in the desktop shell, so the
+  // shell signals the request over the bridge (Cmd+, accelerates the item).
+  // Local-shell only: remote server pages never receive the channel, and ogb
+  // is absent in the browser.
+  useEffect(() => {
+    return window.ogb?.onOpenAppSettings?.(() => dispatch({ type: "toggleAppSettings", open: true }));
+  }, [dispatch]);
 
   // The viewer outlives ComputerPanel and can target any bot, so release control
   // here (always mounted) when a bot's viewer closes. release() is idempotent.
@@ -235,8 +263,6 @@ function Shell() {
         <TeamMapPage />
       ) : state.activeView === "routines" ? (
         <RoutinesPage onBack={closeCalendar} onOpenRoom={openCalendarRoom} />
-      ) : !remoteClient && state.activeView === "skill-recorder" ? (
-        <SkillRecorderPage />
       ) : !remoteClient && localVmWorkspaceBotId ? (
         <LocalVmWorkspace
           primaryBotId={localVmWorkspaceBotId}
@@ -263,25 +289,32 @@ function Shell() {
           )}
         </main>
       )}
+      {/* The panels below are siblings, so their keys must differ even
+          though each is remounted per bot. Two siblings keyed `bot.id`
+          collide in React's keyed reconciliation whenever both are open
+          (Computer panel, then the usage chip): every re-render mounts a
+          fresh settings panel and never removes the previous one, so the
+          panels pile up and Close stops working. */}
       {state.settingsOpen && bot && (
         remoteClient
           ? <RemoteAgentSettingsPanel bot={bot} />
-          : <BotSettingsDialog key={bot.id} bot={bot} />
+          : <BotSettingsDialog key={`settings:${bot.id}`} bot={bot} />
       )}
       {state.computerOpen && bot && (
         remoteClient ? (
-          <RemoteDesktopPanel key={bot.id} bot={bot} />
+          <RemoteDesktopPanel key={`computer:${bot.id}`} bot={bot} />
         ) : (
           <ComputerPanel
-            key={bot.id}
+            key={`computer:${bot.id}`}
             bot={bot}
             onOpenVmWorkspace={openLocalVmWorkspace}
           />
         )
       )}
-      {!remoteClient && state.inspectorOpen && bot && <InspectorPanel bot={bot} />}
+      {!remoteClient && state.inspectorOpen && bot && <InspectorPanel key={bot.threadId} bot={bot} />}
       {state.appSettingsOpen && <SettingsModal />}
       {state.pluginsOpen && <PluginsPanel />}
+      {state.newBotOpen && <NewBotDialog />}
       {state.shortcutsOpen && (
         <KeyboardShortcutsModal
           open={state.shortcutsOpen}
@@ -292,12 +325,53 @@ function Shell() {
           palette on top when one of them is open underneath */}
       <CommandPalette onOpenChange={setPaletteOpen} />
       </div>
+      {/* Renderer-drawn caption buttons for the overlay-less frameless
+          Windows window. Deliberately the LAST child of the shell: Blink
+          resolves -webkit-app-region in DOM-walk order, so these no-drag
+          buttons must come after every drag-region header to actually
+          subtract from it — earlier placement let the header's drag region
+          swallow the buttons (dead clicks, no hover). z-40 keeps true
+          modals (z-50, later in DOM) painting above the buttons. */}
+      <WindowCaptionButtons
+        visible={capabilities.windowChrome === "win-caption" && Boolean(window.ogb?.windowControls)}
+      />
     </div>
   );
 }
 
-export default function App() {
-  const [gated, setGated] = useState(() => window.ogb?.remoteClient?.active !== true && !emailGateDone());
+/** Opens the welcome flow on a fresh workspace (the server's onboarding
+ * record says so) or on request from Settings. The decision waits for the
+ * config to arrive, so a returning user never sees the tour flash. */
+function WelcomeGate() {
+  const { state, dispatch } = useStore();
+  const [dismissed, setDismissed] = useState(false);
+  const due =
+    !dismissed &&
+    welcomeDue(state.config, {
+      remoteClient: window.ogb?.remoteClient?.active === true,
+      legacyDone: emailGateDone(),
+    });
+  // Explicit desktop connection Settings need no local provider onboarding.
+  // Organisation remains optional; closing Settings resumes the normal tour.
+  if (state.appSettingsOpen && ["desktopWorkspaces", "organization"].includes(state.appSettingsSection)) return null;
+  if (!state.welcomeOpen && !due) return null;
+  const bot = state.bots.find((b) => !b.hidden) ?? null;
+  const replay = state.welcomeOpen && !due;
+  return (
+    <WelcomeFlow
+      bot={bot}
+      replay={replay}
+      onDone={() => {
+        setDismissed(true);
+        dispatch({ type: "toggleWelcome", open: false });
+        // the first real finish hands over to the guided tour; a replay does not
+        if (!replay) dispatch({ type: "toggleTour", open: true });
+      }}
+    />
+  );
+}
+
+function Application() {
   useEffect(() => {
     initAnalytics();
   }, []);
@@ -305,13 +379,21 @@ export default function App() {
     <DesktopCapabilitiesProvider>
       <LightboxProvider>
         <StoreProvider>
-          <Shell />
-          {gated && <Onboarding onDone={() => setGated(false)} />}
-          {/* after Onboarding on purpose: same z-50 tier, so DOM order keeps the
-              path choice on top until it is answered or deferred */}
+          <ThreadRefsProvider>
+            <Shell />
+          </ThreadRefsProvider>
+          <WelcomeGate />
+          <GuidedTour />
+          <FirstConversationTour />
+          {/* after the welcome gate on purpose: same z-50 tier, so DOM order
+              keeps the path choice on top until it is answered or deferred */}
           <InstallPathChooser />
         </StoreProvider>
       </LightboxProvider>
     </DesktopCapabilitiesProvider>
   );
+}
+
+export default function App() {
+  return <WorkspaceBackupRecovery><Application /></WorkspaceBackupRecovery>;
 }

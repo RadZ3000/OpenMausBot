@@ -12,7 +12,9 @@
 import { execFile } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, extname, isAbsolute, join, normalize } from "node:path";
+import { basename, delimiter, dirname, extname, join } from "node:path";
+
+import { parseVarCmdShim } from "./cmd-shim-vars.ts";
 
 /** nvm keeps every node version's bin dir separately; newest first so a
  * CLI installed under the latest node wins. */
@@ -63,9 +65,6 @@ function windowsKnownDirs(): string[] {
     join(appData, "npm"), // npm -g shims: claude, codex
     join(home, ".grok", "bin"), // x.ai installer
     join(localAppData, "agy", "bin"), // Antigravity installer
-    join(localAppData, "hermes", "hermes-agent", "bin"), // Hermes installer (0.20+)
-    join(localAppData, "hermes", "bin"), // older Hermes shim layout
-    join(localAppData, "Programs", "Podman"), // per-user Podman.CLI MSI
     join(home, ".local", "bin"), // claude native installer
     join(home, ".claude", "local"),
     join(home, "bin"), // Factory droid installer (%USERPROFILE%\bin)
@@ -87,6 +86,17 @@ let loginShellPath: string | null = null;
  * and without resetting it a rescan would rebuild the cache without those
  * entries and never re-probe — "check again" would permanently lose
  * anything only the login shell's rc file knows about. */
+// Directories the app manages itself (its own npm prefix for engines it
+// installs from Settings). They go ahead of everything else so an engine
+// installed there wins over an older copy elsewhere on PATH.
+const registeredDirs: string[] = [];
+
+export function registerPathDir(dir: string): void {
+  if (registeredDirs.includes(dir)) return;
+  registeredDirs.unshift(dir);
+  resetPathCache();
+}
+
 export function resetPathCache(): void {
   cached = null;
   probed = false;
@@ -96,6 +106,7 @@ export function resetPathCache(): void {
 export function augmentedPath(): string {
   if (cached === null) {
     cached = mergePaths([
+      ...registeredDirs.filter((d) => existsSync(d)),
       ...(process.env.OMB_EXTRA_PATH ? process.env.OMB_EXTRA_PATH.split(delimiter) : []),
       ...(process.env.PATH ? process.env.PATH.split(delimiter) : []),
       // Keep the last successful login-shell result while a rescan starts a
@@ -145,6 +156,7 @@ export function resetPathCacheForTests(): void {
   cached = null;
   probed = false;
   loginShellPath = null;
+  registeredDirs.length = 0;
 }
 
 /** Every `name` binary on the augmented PATH as absolute paths, in PATH
@@ -222,8 +234,8 @@ function isFile(p: string): boolean {
 }
 
 /** PATHEXT-aware `which`. A path-ish cli is probed where it points. */
-function whichWin(cli: string): string | null {
-  const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+function whichWin(cli: string, env?: NodeJS.ProcessEnv): string | null {
+  const exts = ((env ?? process.env).PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
   // an extensionless name is not runnable on Windows, so PATHEXT wins over
   // the bare file — npm installs both `claude` (a sh script) and `claude.cmd`
   const probe = (base: string) => {
@@ -231,7 +243,8 @@ function whichWin(cli: string): string | null {
     return order.find(isFile) ?? null;
   };
   if (/[\\/]/.test(cli) || /^[a-zA-Z]:/.test(cli)) return probe(cli);
-  for (const dir of augmentedPath().split(delimiter)) {
+  const path = env ? (env.PATH ?? env.Path ?? "") : augmentedPath();
+  for (const dir of path.split(delimiter)) {
     if (!dir) continue;
     const hit = probe(join(dir, cli));
     if (hit) return hit;
@@ -242,63 +255,19 @@ function whichWin(cli: string): string | null {
 /** node.exe to run a script with: the one npm's shim would pick, else PATH,
  * else this executable only when it really is Node. In a packaged app,
  * process.execPath is Electron and must never be mistaken for node.exe. */
-function nodeExe(near: string): string | null {
+function nodeExe(near: string, env?: NodeJS.ProcessEnv): string | null {
   const local = join(near, "node.exe");
   if (isFile(local)) return local;
   // Ask for the executable explicitly so a custom PATHEXT ordering cannot
   // make a stray node.cmd hide the real node.exe beside it.
-  const onPath = whichWin("node.exe");
+  const onPath = whichWin("node.exe", env);
   if (onPath && extname(onPath).toLowerCase() === ".exe") return onPath;
   return (process.versions as Record<string, string | undefined>).electron ? null : process.execPath;
 }
 
-/** Substitute `%~dp0` and any `set "NAME=value"` the shim declares, so a target
- * reached through a variable resolves the same as one written inline.
- *
- * Qwen Code's shim is the case this exists for: `set "ROOT=%~dp0.."` and then
- * `"%ROOT%\lib\cli-entry.js"`. Exported for tests. */
-export function expandCmdVars(text: string, dir: string): string {
-  const withDp0 = text.replace(/%~dp0/gi, `${dir}\\`);
-  const vars = new Map<string, string>();
-  for (const match of withDp0.matchAll(/^[ \t]*set[ \t]+"([A-Za-z_]\w*)=([^"]*)"/gim)) {
-    vars.set(match[1].toUpperCase(), match[2]);
-  }
-  // depth-limited because a batch file may legitimately define a variable in
-  // terms of itself, and we are not writing an interpreter
-  const expand = (raw: string, depth: number): string =>
-    depth > 4
-      ? raw
-      : raw.replace(/%([A-Za-z_]\w*)%/g, (whole, name: string) => {
-          const found = vars.get(name.toUpperCase());
-          return found === undefined ? whole : expand(found, depth + 1);
-        });
-  return expand(withDp0, 0);
-}
-
-/** Every quoted path in the shim that exists on disk, once variables are gone. */
-function shimTargets(text: string, dir: string): string[] {
-  return [...expandCmdVars(text, dir).matchAll(/"([^"]+)"/g)]
-    .map((match) => (isAbsolute(match[1]) ? normalize(match[1]) : join(dir, match[1])))
-    .filter(isFile);
-}
-
-/** A launcher whose only job is to invoke the real shim: `call "…\x.cmd" %*`.
- * Written by installers that place a stub on PATH and keep the payload
- * elsewhere, and never in the %dp0% form. */
-function chainedShim(text: string, dir: string): string | null {
-  const call = /^[ \t]*call[ \t]+"([^"]+\.cmd)"/im.exec(text);
-  if (!call) return null;
-  const target = isAbsolute(call[1]) ? normalize(call[1]) : join(dir, call[1]);
-  return isFile(target) ? target : null;
-}
-
 /** npm/pnpm .cmd shims all spell their target as "%dp0%\..." (or
- * "%~dp0\..."). Whatever of those exists on disk is what the shim runs.
- *
- * Two further forms are tried only when that one finds nothing, so a shim that
- * works today keeps resolving exactly as it did — this path spawns every CLI
- * engine on Windows and a regression here takes Claude and Codex with it. */
-export function parseCmdShim(shim: string, depth = 0): ResolvedSpawn | null {
+ * "%~dp0\..."). Whatever of those exists on disk is what the shim runs. */
+function parseCmdShim(shim: string, env?: NodeJS.ProcessEnv, depth = 0): ResolvedSpawn | null {
   let text: string;
   try {
     text = readFileSync(shim, "utf8");
@@ -306,43 +275,27 @@ export function parseCmdShim(shim: string, depth = 0): ResolvedSpawn | null {
     return null;
   }
   const dir = dirname(shim);
-  const targets = [...text.matchAll(/"%~?dp0%?\\?([^"]+)"/g)]
+  // npm's own npm.cmd / npx.cmd, installed beside node.exe, name their entry
+  // in a variable next to a helper script that is not the CLI:
+  // SET "NPX_CLI_JS=%~dp0\node_modules\npm\bin\npx-cli.js". The launcher's
+  // switch to a globally upgraded npm is not followed; this node's npm runs.
+  const npmEntry = /^SET "NP[MX]_CLI_JS=%~dp0\\([^"]+)"/im.exec(text);
+  const targets = [...(npmEntry ? [npmEntry] : []), ...text.matchAll(/"%~?dp0%?\\?([^"]+)"/g)]
     .map((m) => join(dir, m[1]))
     .filter((p) => isFile(p) && basename(p).toLowerCase() !== "node.exe");
   const script = targets.find((p) => /\.[cm]?js$/i.test(p));
   if (script) {
-    const node = nodeExe(dir);
+    const node = nodeExe(dir, env);
     if (node) return { command: node, args: [script] };
   }
   const exe = targets.find((p) => extname(p).toLowerCase() === ".exe");
   if (exe) return { command: exe, args: [] };
-
-  // A shim that reaches its payload through a variable. Unlike the form above,
-  // a bundled node.exe here is the interpreter we want rather than noise to
-  // filter out — the shim ships its own runtime precisely so it does not
-  // depend on one being installed.
-  const expanded = shimTargets(text, dir);
-  const expandedScript = expanded.find((p) => /\.[cm]?js$/i.test(p));
-  if (expandedScript) {
-    const node = expanded.find((p) => basename(p).toLowerCase() === "node.exe") ?? nodeExe(dir);
-    if (node) return { command: node, args: [expandedScript] };
-  }
-  const expandedExe = expanded.find(
-    (p) => extname(p).toLowerCase() === ".exe" && basename(p).toLowerCase() !== "node.exe",
-  );
-  if (expandedExe) return { command: expandedExe, args: [] };
-
-  // A stub that calls the real shim. Depth-limited rather than trusted.
-  if (depth < 3) {
-    const next = chainedShim(text, dir);
-    if (next && next !== shim) return parseCmdShim(next, depth + 1);
-  }
-  return null;
+  return parseVarCmdShim(shim, (near) => nodeExe(near, env), (next, d) => parseCmdShim(next, env, d), depth);
 }
 
 /** `#!/usr/bin/env node` → `node <script>`. Only node: nothing else has a
  * meaningful Windows equivalent worth guessing at. */
-function parseNodeShebang(file: string): ResolvedSpawn | null {
+function parseNodeShebang(file: string, env?: NodeJS.ProcessEnv): ResolvedSpawn | null {
   let head = "";
   let fd: number | null = null;
   try {
@@ -362,7 +315,7 @@ function parseNodeShebang(file: string): ResolvedSpawn | null {
     }
   }
   if (!/^#!.*\bnode(\.exe)?\b/.test(head)) return null;
-  const node = nodeExe(dirname(file));
+  const node = nodeExe(dirname(file), env);
   return node ? { command: node, args: [file] } : null;
 }
 
@@ -371,28 +324,28 @@ function parseNodeShebang(file: string): ResolvedSpawn | null {
  * everywhere but win32 — POSIX already resolves PATH and #! itself.
  */
 /** Resolve a single command word (no tokenizer) — the platform spawn rules. */
-function resolveWord(cli: string, args: string[]): ResolvedSpawn {
+function resolveWord(cli: string, args: string[], env?: NodeJS.ProcessEnv): ResolvedSpawn {
   if (process.platform !== "win32") return { command: cli, args };
-  const file = whichWin(cli);
+  const file = whichWin(cli, env);
   // not found: hand back the name so spawn reports its own ENOENT
   if (!file) return { command: cli, args };
   const ext = extname(file).toLowerCase();
   if (ext === ".cmd" || ext === ".bat") {
-    const direct = parseCmdShim(file);
+    const direct = parseCmdShim(file, env);
     return direct ? { command: direct.command, args: [...direct.args, ...args] } : { command: file, args };
   }
   if (ext === ".exe" || ext === ".com") return { command: file, args };
-  const viaNode = parseNodeShebang(file);
+  const viaNode = parseNodeShebang(file, env);
   return viaNode ? { command: viaNode.command, args: [...viaNode.args, ...args] } : { command: file, args };
 }
 
-export function resolveCliSpawn(cli: string, args: string[]): ResolvedSpawn {
+export function resolveCliSpawn(cli: string, args: string[], env?: NodeJS.ProcessEnv): ResolvedSpawn {
   // An EXISTING FILE wins over the tokenizer: paths with spaces come from
   // our own candidate list unquoted ("/Applications/My Tools/claude"), and
   // splitting those would shred them. Only a bare word (no spaces) or an
   // explicitly-quoted/wrapper string reaches the split below.
   const trimmed = cli.trim();
-  if (trimmed.includes(" ") && existsSync(trimmed)) return resolveWord(trimmed, args);
+  if (trimmed.includes(" ") && existsSync(trimmed)) return resolveWord(trimmed, args, env);
   // A `cli` value may carry fixed leading arguments — wrapper scripts like
   // `/usr/local/bin/ag claude agp` are one string in the Engines panel. ONE
   // tokenizer pass, then resolve the head directly (never re-tokenized: a
@@ -405,7 +358,7 @@ export function resolveCliSpawn(cli: string, args: string[]): ResolvedSpawn {
     const [head, ...fixed] = split;
     // empty input → hand the raw string to spawn so IT reports the ENOENT
     if (!head) return { command: cli, args };
-    return resolveWord(head, [...fixed, ...args]);
+    return resolveWord(head, [...fixed, ...args], env);
   }
-  return resolveWord(cli, args);
+  return resolveWord(cli, args, env);
 }

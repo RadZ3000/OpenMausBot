@@ -32,6 +32,7 @@ import { cn } from "@/lib/cn";
 import { distribution } from "@/lib/distribution";
 import { track } from "@/lib/analytics";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
+import { callCapabilityHelp } from "@/lib/call-capability";
 
 /** Spoken answers to a permission card. Anything else is read as a reply
  * to the bot, not as consent — an approval must never be granted by a
@@ -75,7 +76,10 @@ export function CallTargetButton({
   const { state, dispatch } = useStore();
   const { capabilities, ready: capabilitiesReady } = useDesktopCapabilities();
   const active = useOnCall() === targetId;
-  const supported = capabilities.dictation.available && Boolean(window.ogb?.speechStart);
+  const capabilityHelp = capabilitiesReady
+    ? callCapabilityHelp(capabilities, Boolean(window.ogb?.speechStart))
+    : null;
+  const supported = capabilitiesReady && !capabilityHelp;
   const localVoice = localSystemVoiceActive();
   const configured = localVoice || Boolean(state.config?.tts?.configured);
   const everyTargetHasVoice = voices.length > 0 && voices.every((voice) => Boolean(voice));
@@ -93,7 +97,7 @@ export function CallTargetButton({
     : !capabilitiesReady
       ? "Checking call availability"
       : !supported
-        ? "Calls currently need the macOS desktop app"
+        ? capabilityHelp?.label ?? "Call unavailable"
         : !configured
           ? "Set up a voice in an agent profile to make calls"
           : !voiceReady
@@ -102,15 +106,13 @@ export function CallTargetButton({
 
   const reason = !capabilitiesReady
     ? "Checking whether this device can make calls."
-    : !capabilities.dictation.available
-      ? `Calls require ${distribution.productName} for macOS because speech recognition runs on-device.`
-      : !window.ogb?.speechStart
-        ? `The speech service is unavailable in this app build. Restart or update ${distribution.productName}.`
+    : capabilityHelp
+      ? capabilityHelp.reason
         : !configured
-          ? "Add an ElevenLabs API key — or switch to the built-in Mac voices — so the bot can speak during calls."
+          ? "Set up ElevenLabs, Fish Audio, Chatterbox, or a built-in Mac voice so the bot can speak during calls."
           : !voiceReady
             ? voices.length > 1
-              ? "Give every channel member a voice before starting a channel call."
+              ? "Give every group member a voice before starting a group call."
               : "Choose a voice before starting a call."
             : "";
 
@@ -173,6 +175,18 @@ export function CallTargetButton({
         >
           <div className="text-[13px] font-medium text-ink">Call unavailable</div>
           <div className="mt-1 text-[12px] leading-[1.45] text-ink-secondary">{reason}</div>
+          {capabilityHelp?.action === "choose-local-workspace" && (
+            <button
+              type="button"
+              onClick={() => {
+                setHelpOpen(false);
+                void window.ogb?.workspaces?.menu();
+              }}
+              className="mt-2.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
+            >
+              Choose This computer
+            </button>
+          )}
           {voiceSetupRequired && (
             <button
               type="button"
@@ -376,7 +390,7 @@ function Call({ bot }: { bot: Bot }) {
       const openQuestion = askedQuestion.current;
       if (openQuestion) {
         askedQuestion.current = null;
-        dispatch({ type: "answerCard", botId: bot.id, messageId: openQuestion.messageId, answer: said });
+        dispatch({ type: "answerCard", botId: bot.id, threadId: bot.threadId, messageId: openQuestion.messageId, answer: said });
         move("working");
         return;
       }

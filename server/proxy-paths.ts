@@ -35,7 +35,7 @@ export function resolveProxy(relative: string): string {
  * the check that would have caught the 0.1.24 breakage. */
 export const SPAWNED_PROXIES = {
   browser: resolveProxy("browser-proxy"),
-  computer: resolveProxy("computer-proxy"),
+  localComputer: resolveProxy("local-computer-proxy"),
   permission: resolveProxy("permission-proxy"),
   containerMcp: resolveProxy("container-mcp"),
   compactComputerMcp: resolveProxy("compact-computer-mcp"),
@@ -44,6 +44,7 @@ export const SPAWNED_PROXIES = {
   agents: resolveProxy("drivers/agents-proxy"),
   dweb: resolveProxy("drivers/dweb-proxy"),
   connectors: resolveProxy("connector-proxy"),
+  mcpGate: resolveProxy("mcp-gate"),
   phone: resolveProxy("drivers/phone-proxy"),
   imageGen: resolveProxy("drivers/image-proxy"),
   // Loaded by the external `pi` process via `-e`, not by this server — but

@@ -4,7 +4,7 @@
 // transcript AND its own provider session. If resume cursors leaked
 // between tasks, a "fresh" task would silently resume the previous
 // conversation, which is the exact thing tasks exist to prevent.
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,8 +16,8 @@ async function freshStore() {
   vi.resetModules();
   vi.stubEnv("HOME", home);
   vi.stubEnv("USERPROFILE", home);
-  const { Store, UNTITLED_TASK, titleFromMessage } = await import("./store.ts");
-  return { store: new Store(() => ({ instanceId: "claude", model: "m" })), UNTITLED_TASK, titleFromMessage };
+  const { Store, UNTITLED_TASK, UNTITLED_THREAD, titleFromMessage } = await import("./store.ts");
+  return { store: new Store(() => ({ instanceId: "claude", model: "m" })), UNTITLED_TASK, UNTITLED_THREAD, titleFromMessage };
 }
 
 afterEach(async () => {
@@ -31,10 +31,10 @@ afterEach(async () => {
 
 describe("tasks", () => {
   it("gives every new bot one task pointing at its thread", async () => {
-    const { store, UNTITLED_TASK } = await freshStore();
+    const { store, UNTITLED_THREAD } = await freshStore();
     const bot = store.createBot();
     expect(store.tasks(bot.id)).toHaveLength(1);
-    expect(store.activeTask(bot.id)).toMatchObject({ threadId: bot.threadId, title: UNTITLED_TASK });
+    expect(store.activeTask(bot.id)).toMatchObject({ threadId: bot.threadId, title: UNTITLED_THREAD });
   });
 
   it("starts a new task on a fresh thread and makes it active", async () => {
@@ -84,10 +84,10 @@ describe("tasks", () => {
   });
 
   it("names a task after the first thing you asked it", async () => {
-    const { store, UNTITLED_TASK, titleFromMessage } = await freshStore();
+    const { store, UNTITLED_THREAD, titleFromMessage } = await freshStore();
     const bot = store.createBot();
     store.createTask(bot.id);
-    expect(store.activeTask(bot.id)!.title).toBe(UNTITLED_TASK);
+    expect(store.activeTask(bot.id)!.title).toBe(UNTITLED_THREAD);
 
     store.titleTaskFromFirstMessage(bot.id, "Audit the payroll spreadsheet\nand flag anything odd");
     expect(store.activeTask(bot.id)!.title).toBe("Audit the payroll spreadsheet");
@@ -98,8 +98,8 @@ describe("tasks", () => {
     expect(titleFromMessage("x".repeat(80))).toHaveLength(48);
   });
 
-  it("deletes a task with its transcript, but never the last one", async () => {
-    const { store } = await freshStore();
+  it("deletes a task with its transcript and replaces the last one with fresh context", async () => {
+    const { store, UNTITLED_THREAD } = await freshStore();
     const bot = store.createBot();
     const first = bot.threadId;
     const second = store.createTask(bot.id)!;
@@ -111,8 +111,75 @@ describe("tasks", () => {
     expect(store.bot(bot.id)!.threadId).toBe(first);
     expect(store.messagesFor(second.threadId)).toHaveLength(0);
 
-    expect(store.deleteTask(bot.id, first)).toBeNull();
+    store.appendMessage(first, { role: "user", kind: "text", text: "Finished work" });
+    store.setResumeCursor(bot.id, "claude", "old-session");
+    store.patchTask(bot.id, first, {
+      title: "Finished work", rewound: true, pinnedMessageId: "old-pin", unread: true,
+      modelSelection: { instanceId: "codex", model: "thread-only-override" },
+    });
+    expect(store.deleteTask(bot.id, first)).toBeTruthy();
     expect(store.tasks(bot.id)).toHaveLength(1);
+    const replacement = store.activeTask(bot.id)!;
+    expect(replacement.threadId).not.toBe(first);
+    expect(replacement).toMatchObject({
+      title: UNTITLED_THREAD, resumeCursors: {}, modelSelection: bot.modelSelection,
+      busy: false, unread: false, activity: "idle",
+    });
+    expect(replacement.pinnedMessageId).toBeUndefined();
+    expect(replacement.rewound).toBeUndefined();
+    expect(bot.resumeCursors).toEqual({});
+    expect(bot.pinnedMessageId).toBeUndefined();
+    expect(bot.unread).toBe(false);
+    expect(store.messagesFor(first)).toHaveLength(0);
+    expect(store.messagesFor(replacement.threadId)).toHaveLength(0);
+    expect(store.deleteTask(bot.id, first)).toBeNull();
+    const { Store } = await import("./store.ts");
+    const reloaded = new Store(() => ({ instanceId: "claude", model: "m" }));
+    expect(reloaded.bot(bot.id)?.threadId).toBe(replacement.threadId);
+    expect(reloaded.tasks(bot.id)).toHaveLength(1);
+    expect(reloaded.messagesFor(replacement.threadId)).toHaveLength(0);
+  });
+
+  it("deletes a task's event logs along with its transcript", async () => {
+    const { store } = await freshStore();
+    const bot = store.createBot();
+    const first = bot.threadId;
+    const second = store.createTask(bot.id)!;
+    const { EVENTS_DIR, NATIVE_DIR } = await import("./config.ts");
+    for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${first}.ndjson`), "{}\n");
+      writeFileSync(join(dir, `${second.threadId}.ndjson`), "{}\n");
+    }
+
+    expect(store.deleteTask(bot.id, second.threadId)).toBeTruthy();
+
+    for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
+      expect(existsSync(join(dir, `${second.threadId}.ndjson`))).toBe(false);
+      // the surviving task keeps its logs
+      expect(existsSync(join(dir, `${first}.ndjson`))).toBe(true);
+    }
+  });
+
+  it("deleting a bot removes every member thread's event logs", async () => {
+    const { store } = await freshStore();
+    const bot = store.createBot();
+    const original = bot.threadId;
+    const extra = store.createTask(bot.id)!;
+    const { EVENTS_DIR, NATIVE_DIR } = await import("./config.ts");
+    for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${original}.ndjson`), "{}\n");
+      writeFileSync(join(dir, `${extra.threadId}.ndjson`), "{}\n");
+    }
+
+    expect(store.deleteBot(bot.id)).toBe(true);
+
+    for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
+      for (const threadId of [original, extra.threadId]) {
+        expect(existsSync(join(dir, `${threadId}.ndjson`))).toBe(false);
+      }
+    }
   });
 
   it("adopts a pre-tasks bot's endless thread as its first task", async () => {

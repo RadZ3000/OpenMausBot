@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,19 +6,25 @@ import type { JsonValue } from "./schema.ts";
 
 import { customMcpServers,
   DATA_DIR,
+  ensureDirs,
   instanceConfigs,
   isValidSshAlias,
   loadBrowserProfileIdAliases,
   loadConfig,
+  providerReloadKeys,
   localVmMaxInstances,
   localVmMode,
   parseConfigPatch,
   parseStoredConfig,
   persistableInstanceConfigs,
   roomTurnTimeoutMinutes,
+  maxConcurrentBotThreads,
+  threadEventLogMaxBytes,
+  threadEventLogRetentionDays,
   showToolCallsEnabled,
   saveConfig,
-  skillRecorderEnabled,
+  skillAuthoringEnabled,
+  sharedComputersEnabled,
   builtInBrowserEnabled,
   browserProfilePartitionId,
   browserProfilePartitionTarget,
@@ -33,6 +39,61 @@ import { customMcpServers,
 } from "./config.ts";
 
 describe("configuration boundaries", () => {
+  it("keeps Fish Audio and ElevenLabs voice credentials separate", () => {
+    const parsed = parseConfigPatch({
+      tts: { provider: "fish", key: "eleven-key", fishKey: "fish-key", voice: "fish-voice" },
+    });
+    expect(parsed.tts).toEqual({
+      provider: "fish",
+      key: "eleven-key",
+      fishKey: "fish-key",
+      voice: "fish-voice",
+    });
+    expect(() => parseConfigPatch({ tts: { provider: "unknown" } })).toThrow("provider");
+  });
+
+  it("defaults to three parallel threads and validates a configurable maximum of ten", () => {
+    expect(maxConcurrentBotThreads({})).toBe(3);
+    expect(parseStoredConfig({ threads: { maxConcurrentPerBot: 10 } })).toEqual({ threads: { maxConcurrentPerBot: 10 } });
+    expect(maxConcurrentBotThreads(parseConfigPatch({ threads: { maxConcurrentPerBot: 1 } }))).toBe(1);
+    for (const value of [0, -1, 11, 1.5, "10", null]) {
+      expect(() => parseConfigPatch({ threads: { maxConcurrentPerBot: value } })).toThrow("threads.maxConcurrentPerBot");
+    }
+  });
+
+  it("caps per-thread event logs only when a size is configured", () => {
+    expect(threadEventLogMaxBytes({})).toBeNull();
+    expect(threadEventLogMaxBytes({ threads: { maxConcurrentPerBot: 3 } })).toBeNull();
+    const parsed = parseStoredConfig({ threads: { maxConcurrentPerBot: 3, eventLogMaxBytes: 50 * 1024 * 1024 } });
+    expect(threadEventLogMaxBytes(parsed)).toBe(50 * 1024 * 1024);
+    for (const value of [0, -1, 256 * 1024 - 1, 1.5, "1000", null]) {
+      expect(() => parseConfigPatch({ threads: { maxConcurrentPerBot: 3, eventLogMaxBytes: value } })).toThrow("threads.eventLogMaxBytes");
+    }
+  });
+
+  it("keeps thread event logs forever unless a retention window is configured", () => {
+    expect(threadEventLogRetentionDays({})).toBeNull();
+    expect(threadEventLogRetentionDays(parseStoredConfig({ threads: { maxConcurrentPerBot: 2 } }))).toBeNull();
+    const configured = parseStoredConfig({ threads: { maxConcurrentPerBot: 2, eventLogRetentionDays: 30 } });
+    expect(threadEventLogRetentionDays(configured)).toBe(30);
+    for (const value of [0, -1, 1.5, "30", null, 3660]) {
+      expect(() => parseConfigPatch({ threads: { maxConcurrentPerBot: 2, eventLogRetentionDays: value } })).toThrow("threads.eventLogRetentionDays");
+    }
+  });
+
+  it("keeps avatar providers and credentials separate, normalizing a router endpoint", () => {
+    const parsed = parseConfigPatch({ imageGen: {
+      provider: "custom", key: "openai-kept", customApiKey: "router-only",
+      customUrl: "http://127.0.0.1:4000/v1/", customModel: " local/image ",
+    } });
+    expect(parsed.imageGen).toEqual({ provider: "custom", key: "openai-kept", customApiKey: "router-only", customUrl: "http://127.0.0.1:4000/v1", customModel: "local/image" });
+    expect(parseStoredConfig({ imageGen: { key: "legacy" } }).imageGen).toEqual({ key: "legacy" });
+    expect(() => parseConfigPatch({ imageGen: { provider: "unknown" } })).toThrow("provider");
+    expect(() => parseConfigPatch({ imageGen: { customUrl: "https://user:secret@router.example/v1" } })).toThrow("customUrl");
+    const childEnv = { OMB_CUSTOM_IMAGE_KEY: "must-not-reach-bot" };
+    stripWorkspaceCredentialEnv(childEnv);
+    expect(childEnv).not.toHaveProperty("OMB_CUSTOM_IMAGE_KEY");
+  });
   it("persists a custom domain but excludes it from generic config patches", () => {
     expect(parseStoredConfig({ customDomain: "https://bots.example.com" })).toEqual({ customDomain: "https://bots.example.com" });
     expect(parseConfigPatch({ customDomain: "https://unverified.example.com", language: "en" })).toEqual({ language: "en" });
@@ -67,6 +128,14 @@ describe("configuration boundaries", () => {
     expect(parseConfigPatch(input)).toEqual(expected);
   });
 
+  it("round-trips an opaque model variant without converting omission to none", () => {
+    const defaultModelSelection = { instanceId: "opencodeGo", model: "provider/model", variant: "minimal" };
+    expect(parseConfigPatch({ defaultModelSelection })).toEqual({ defaultModelSelection });
+    expect(parseStoredConfig({ defaultModelSelection })).toEqual({ defaultModelSelection });
+    expect(parseConfigPatch({ defaultModelSelection: { instanceId: "opencodeGo", model: "provider/model" } }))
+      .toEqual({ defaultModelSelection: { instanceId: "opencodeGo", model: "provider/model" } });
+  });
+
   it.each<JsonValue>([
     null,
     "codex/model",
@@ -76,6 +145,9 @@ describe("configuration boundaries", () => {
     { instanceId: "codex", model: "   " },
     { instanceId: "codex", model: 42 },
     { instanceId: "codex", model: "model", effort: "turbo" },
+    { instanceId: "opencodeGo", model: "model", variant: "" },
+    { instanceId: "opencodeGo", model: "model", variant: " low " },
+    { instanceId: "opencodeGo", model: "model", variant: "low", effort: "high" },
   ])("rejects an invalid default model selection: %j", (defaultModelSelection) => {
     expect(() => parseStoredConfig({ defaultModelSelection })).toThrow("defaultModelSelection");
     expect(() => parseConfigPatch({ defaultModelSelection })).toThrow("defaultModelSelection");
@@ -333,15 +405,20 @@ describe("configuration boundaries", () => {
     expect(localVmMaxInstances({ localVm: { maxInstances: 3 } })).toBe(3);
   });
 
-  it("keeps experimental features off by default and accepts an explicit opt-in", () => {
-    expect(skillRecorderEnabled({})).toBe(false);
-    expect(parseConfigPatch({ features: { skillRecorder: true } })).toEqual({
-      features: { skillRecorder: true },
+  it("keeps skill authoring on by default with an explicit opt-out, and the browser off by default", () => {
+    expect(skillAuthoringEnabled({})).toBe(true);
+    expect(skillAuthoringEnabled({ features: {} })).toBe(true);
+    expect(skillAuthoringEnabled({ features: { skillAuthoring: true } })).toBe(true);
+    expect(parseConfigPatch({ features: { skillAuthoring: false } })).toEqual({
+      features: { skillAuthoring: false },
     });
-    expect(skillRecorderEnabled({ features: { skillRecorder: true } })).toBe(true);
+    expect(skillAuthoringEnabled({ features: { skillAuthoring: false } })).toBe(false);
+    // the pre-rename flag is dropped as a no-op rather than rejected, so a
+    // stale client's PATCH cannot fail the request or re-enable anything
+    expect(parseConfigPatch({ features: { skillRecorder: true } })).toEqual({ features: {} });
     // the built-in browser is an independent explicit opt-in
     expect(builtInBrowserEnabled({})).toBe(false);
-    expect(builtInBrowserEnabled({ features: { skillRecorder: true } })).toBe(false);
+    expect(builtInBrowserEnabled({ features: { skillAuthoring: true } })).toBe(false);
     expect(parseConfigPatch({ features: { browser: false } })).toEqual({ features: { browser: false } });
     expect(builtInBrowserEnabled({ features: { browser: false } })).toBe(false);
     expect(builtInBrowserEnabled({ features: { browser: true } })).toBe(true);
@@ -358,8 +435,24 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({
       browserProfiles: [{ id: "work", name: "Work" }, { id: "work", name: "Work again" }],
     })).toThrow(/browserProfiles.*id.*duplicated/i);
-    expect(() => parseConfigPatch({ features: { skillRecorder: "yes" } })).toThrow(
-      "features.skillRecorder",
+    expect(() => parseConfigPatch({ features: { skillAuthoring: "yes" } })).toThrow(
+      "features.skillAuthoring",
+    );
+  });
+
+  it("keeps computer sharing off unless config.json explicitly turns it on", () => {
+    // A maintainer-only escape hatch, not a Settings toggle: missing, empty
+    // and explicit-false all mean off, and only a literal true opts in.
+    expect(sharedComputersEnabled({})).toBe(false);
+    expect(sharedComputersEnabled({ features: {} })).toBe(false);
+    expect(sharedComputersEnabled({ features: { skillAuthoring: true } })).toBe(false);
+    expect(sharedComputersEnabled({ features: { sharedComputers: false } })).toBe(false);
+    expect(sharedComputersEnabled({ features: { sharedComputers: true } })).toBe(true);
+    expect(parseConfigPatch({ features: { sharedComputers: true } })).toEqual({
+      features: { sharedComputers: true },
+    });
+    expect(() => parseConfigPatch({ features: { sharedComputers: "yes" } })).toThrow(
+      "features.sharedComputers",
     );
   });
 
@@ -377,6 +470,31 @@ describe("configuration boundaries", () => {
 
   it.each(["one-per-bot", "windows", 1, null])("rejects an invalid Local VM mode: %j", (mode) => {
     expect(() => parseConfigPatch({ localVm: { mode } })).toThrow("localVm.mode");
+  });
+});
+
+describe("saving the newer sections", () => {
+  it("persists the Anthropic key, the spend limit and the price list, section by section", () => {
+    const path = join(DATA_DIR, "config.json");
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(path, JSON.stringify({ xai: { key: "xai-fixture" } }));
+    try {
+      saveConfig({ anthropic: { key: "sk-ant-fixture" } });
+      saveConfig({ budgets: { monthlyUsd: 25, warnAtPercent: 70 } });
+      saveConfig({ billing: { currency: "EUR", prices: { default: { inputPerMillion: 1, outputPerMillion: 2 } } } });
+      // a later save of one section leaves the others alone, and replaces the price list whole
+      saveConfig({ billing: { prices: { "gpt-5": { inputPerMillion: 3, outputPerMillion: 4 } } } });
+      const disk = JSON.parse(readFileSync(path, "utf8"));
+      expect(disk).toMatchObject({
+        xai: { key: "xai-fixture" },
+        anthropic: { key: "sk-ant-fixture" },
+        budgets: { monthlyUsd: 25, warnAtPercent: 70 },
+        billing: { currency: "EUR", prices: { "gpt-5": { inputPerMillion: 3, outputPerMillion: 4 } } },
+      });
+      expect(disk.billing.prices.default).toBeUndefined();
+    } finally {
+      rmSync(path, { force: true });
+    }
   });
 });
 
@@ -401,6 +519,15 @@ describe("default fleet", () => {
       OPENAI_COMPAT_API_KEY: "secret",
       OPENAI_COMPAT_URL: "https://models.example.test/v1",
     });
+  });
+
+  it("hands a saved Anthropic key only to Claude instances, as the variable the CLI reads", () => {
+    const map = instanceConfigs({ anthropic: { key: "sk-ant-fixture", url: "https://anthropic-proxy.example.test" } });
+    expect(map.claude.environment).toEqual({ ANTHROPIC_API_KEY: "sk-ant-fixture", ANTHROPIC_BASE_URL: "https://anthropic-proxy.example.test" });
+    expect(map.codex.environment).toEqual({});
+    expect(map.openaiCompat.environment).toEqual({});
+    expect(instanceConfigs({ anthropic: { url: "https://only-a-url.example.test" } }).claude.environment).toEqual({});
+    expect(parseConfigPatch({ anthropic: { key: "sk-ant-new" } })).toEqual({ anthropic: { key: "sk-ant-new" } });
   });
 
   it("preserves a per-instance OpenAI-compatible URL override", () => {
@@ -605,6 +732,72 @@ describe("credential env narrowing", () => {
   });
 });
 
+describe("legacy feature flag migration", () => {
+  const path = join(DATA_DIR, "config.json");
+  const readDisk = () => JSON.parse(readFileSync(path, "utf8"));
+
+  beforeEach(() => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    rmSync(path, { force: true });
+  });
+  afterEach(() => {
+    rmSync(path, { force: true });
+  });
+
+  it("carries a legacy skillRecorder opt-in over to skillAuthoring once, at startup", () => {
+    writeFileSync(path, JSON.stringify({ profile: { name: "Ada" }, features: { skillRecorder: true, browser: false } }));
+    ensureDirs();
+    expect(readDisk()).toEqual({ profile: { name: "Ada" }, features: { browser: false, skillAuthoring: true } });
+    expect(skillAuthoringEnabled(loadConfig())).toBe(true);
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
+    // a second boot finds nothing left to migrate and leaves the file alone
+    const written = readFileSync(path, "utf8");
+    ensureDirs();
+    expect(readFileSync(path, "utf8")).toBe(written);
+  });
+
+  it("keeps a legacy opt-out off and removes the old key", () => {
+    writeFileSync(path, JSON.stringify({ features: { skillRecorder: false } }));
+    ensureDirs();
+    expect(readDisk()).toEqual({ features: { skillAuthoring: false } });
+    expect(skillAuthoringEnabled(loadConfig())).toBe(false);
+  });
+
+  it("lets an explicit skillAuthoring value win over the legacy key", () => {
+    writeFileSync(path, JSON.stringify({ features: { skillRecorder: true, skillAuthoring: false } }));
+    ensureDirs();
+    expect(readDisk()).toEqual({ features: { skillAuthoring: false } });
+    expect(skillAuthoringEnabled(loadConfig())).toBe(false);
+  });
+
+  it("treats a non-boolean legacy value as off and a null features block as absent", () => {
+    writeFileSync(path, JSON.stringify({ features: { skillRecorder: "yes" } }));
+    ensureDirs();
+    expect(readDisk()).toEqual({ features: { skillAuthoring: false } });
+    const nulled = JSON.stringify({ features: null });
+    writeFileSync(path, nulled);
+    ensureDirs();
+    expect(readFileSync(path, "utf8")).toBe(nulled);
+  });
+
+  it("leaves a config without the legacy key untouched", () => {
+    for (const disk of [{ profile: { name: "Ada" } }, { features: {} }, { features: { skillAuthoring: true } }]) {
+      const raw = JSON.stringify(disk);
+      writeFileSync(path, raw);
+      ensureDirs();
+      expect(readFileSync(path, "utf8")).toBe(raw);
+    }
+  });
+
+  it("does not create a config file or throw on a fresh or unreadable install", () => {
+    ensureDirs();
+    expect(() => readFileSync(path, "utf8")).toThrow();
+    writeFileSync(path, "{not json");
+    expect(() => ensureDirs()).not.toThrow();
+    expect(readFileSync(path, "utf8")).toBe("{not json");
+  });
+});
+
 describe("credential env preference", () => {
   const VARS = [
     "XAI_API_KEY",
@@ -615,6 +808,7 @@ describe("credential env preference", () => {
     "BOX_TOKEN",
     "OPENCODE_API_KEY",
     "OMB_TTS_KEY",
+    "OMB_FISH_AUDIO_API_KEY",
     "OMB_OPENAI_IMAGE_KEY",
     "COMPOSIO_API_KEY",
   ] as const;
@@ -644,7 +838,7 @@ describe("credential env preference", () => {
         xai: { key: "file-xai", url: "https://api.example.test/v1" },
         box: { token: "file-box" },
         opencodeGo: { apiKey: "file-ocg" },
-        tts: { key: "file-tts", voice: "narrator" },
+        tts: { key: "file-tts", fishKey: "file-fish", voice: "narrator" },
         imageGen: { key: "file-image" },
       }),
     );
@@ -652,12 +846,13 @@ describe("credential env preference", () => {
     process.env.BOX_TOKEN = "env-box";
     process.env.OPENCODE_API_KEY = "env-ocg";
     process.env.OMB_TTS_KEY = "env-tts";
+    process.env.OMB_FISH_AUDIO_API_KEY = "env-fish";
     process.env.OMB_OPENAI_IMAGE_KEY = "env-image";
     const cfg = loadConfig();
     expect(cfg.xai).toEqual({ key: "env-xai", url: "https://api.example.test/v1" });
     expect(cfg.box).toEqual({ token: "env-box" });
     expect(cfg.opencodeGo).toEqual({ apiKey: "env-ocg" });
-    expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator" });
+    expect(cfg.tts).toEqual({ key: "env-tts", fishKey: "env-fish", voice: "narrator" });
     expect(cfg.imageGen).toEqual({ key: "env-image" });
   });
 
@@ -668,6 +863,18 @@ describe("credential env preference", () => {
     expect(loadConfig().customDomain).toBe("https://bots.example.com");
     saveConfig({ customDomain: "" });
     expect(loadConfig()).toMatchObject({ customDomain: "", language: "en", profile: { name: "Workspace owner" } });
+  });
+
+  it("merges onboarding progress like any other section", () => {
+    saveConfig({ onboarding: { completedAt: "2026-09-09T10:00:00.000Z", version: 1 } });
+    saveConfig({ onboarding: { hintsSeen: ["computer"] } });
+    expect(loadConfig().onboarding).toEqual({
+      completedAt: "2026-09-09T10:00:00.000Z",
+      version: 1,
+      hintsSeen: ["computer"],
+    });
+    expect(() => parseConfigPatch({ onboarding: { hintsSeen: ["x".repeat(61)] } })).toThrow();
+    expect(() => parseConfigPatch({ onboarding: { unknown: true } })).toThrow();
   });
 
   it("falls back to the config file when the env var is unset (dev mode)", () => {
@@ -808,6 +1015,15 @@ describe("credential env preference", () => {
     expect(process.env.COMPOSIO_API_KEY).toBe("ak_just_saved");
     expect(process.env.BOX_TOKEN).toBeUndefined();
     expect(process.env.OMB_TTS_KEY).toBeUndefined();
+    expect(process.env.OMB_FISH_AUDIO_API_KEY).toBeUndefined();
+  });
+
+  it("syncCredentialEnv updates Fish Audio without replacing ElevenLabs", () => {
+    process.env.OMB_TTS_KEY = "eleven-kept";
+    process.env.OMB_FISH_AUDIO_API_KEY = "fish-old";
+    syncCredentialEnv({ tts: { fishKey: "fish-new" } });
+    expect(process.env.OMB_TTS_KEY).toBe("eleven-kept");
+    expect(process.env.OMB_FISH_AUDIO_API_KEY).toBe("fish-new");
   });
 
   it("syncCredentialEnv keeps model and provider env in step with a save", () => {
@@ -856,6 +1072,7 @@ describe("workspace credential env strip", () => {
     // consumed in-process (Computer driver / voice module), never by a CLI
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("BOX_TOKEN");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_TTS_KEY");
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_FISH_AUDIO_API_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_OPENAI_IMAGE_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_BROWSER_CONNECTION");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_USER_DATA");
@@ -882,6 +1099,15 @@ describe("customMcpServers", () => {
 
   it("returns {} when the section is absent", () => {
     expect(customMcpServers({} as Parameters<typeof customMcpServers>[0])).toEqual({});
+  });
+
+  it("narrows to a bot's own list when one is given, and to nothing for an empty list", () => {
+    const all = cfg({ notes: { command: "a" }, linear: { command: "b" }, off: { command: "c", enabled: false } });
+    expect(Object.keys(customMcpServers(all))).toEqual(["notes", "linear"]);
+    expect(Object.keys(customMcpServers(all, ["linear", "gone"]))).toEqual(["linear"]);
+    expect(customMcpServers(all, [])).toEqual({});
+    // a bot's list never re-enables a server the workspace switched off
+    expect(customMcpServers(all, ["off"])).toEqual({});
   });
 
   it("skips disabled entries silently", () => {
@@ -912,8 +1138,8 @@ describe("customMcpServers", () => {
     expect(Object.keys(out)).toEqual(["good_name"]);
   });
 
-  it("skips url transports with a teaching message, not a crash", () => {
-    expect(customMcpServers(cfg({ api: { url: "https://x/mcp" } }))).toEqual({});
+  it("passes a url transport through as streamable HTTP", () => {
+    expect(customMcpServers(cfg({ api: { url: "https://x/mcp" } }))).toEqual({ api: { type: "http", url: "https://x/mcp", headers: {} } });
   });
 
   it("skips malformed entries without dropping the valid ones", () => {
@@ -925,5 +1151,30 @@ describe("customMcpServers", () => {
       }),
     );
     expect(Object.keys(out)).toEqual(["keeper"]);
+  });
+});
+
+describe("providerReloadKeys", () => {
+  it("rebuilds the fleet only for sections a driver reads", () => {
+    expect(providerReloadKeys({ claude: { model: "x" }, profile: { name: "me" } })).toEqual(["claude"]);
+    expect(providerReloadKeys({ onboarding: { hintsSeen: ["tour.composer"] } })).toEqual([]);
+    expect(providerReloadKeys({ profile: {}, language: "de", tts: {}, features: {} })).toEqual([]);
+  });
+});
+
+describe("customMcpServers with url entries", () => {
+  it("passes remote servers through in the engines' shape, next to commands", () => {
+    const cfg = {
+      mcpServers: {
+        docs: { type: "sse", url: "https://docs.example/sse", headers: { Authorization: "Bearer t" } },
+        notes: { command: "npx" },
+        // one bad address never takes the rest down
+        broken: { url: "not-an-address" },
+      },
+    } as Parameters<typeof customMcpServers>[0];
+    expect(customMcpServers(cfg)).toEqual({
+      docs: { type: "sse", url: "https://docs.example/sse", headers: { Authorization: "Bearer t" } },
+      notes: { command: "npx", args: [], env: {} },
+    });
   });
 });

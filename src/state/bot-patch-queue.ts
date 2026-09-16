@@ -29,6 +29,7 @@ export type BotUpdatePatch = Partial<
     | "imageGen"
     | "browser"
     | "browserProfile"
+    | "mcpServers"
     | "modelSelection"
   >
 > & {

@@ -28,17 +28,18 @@ export type BotPatch = Partial<
     | "alwaysAllow"
     | "autoApprove"
     | "approvalMode"
-    | "autoReview"
     | "speakReplies"
     | "voice"
     | "chiefOfStaff"
+    | "managedSections"
     | "approvePeerComms"
     | "composio"
     | "browser"
+    | "mcpServers"
     | "imageGen"
     | "modelSelection"
   >
-> & { computer?: Bot["computer"] | null; acknowledgeLocalAuto?: boolean; confirmFullAccess?: boolean };
+> & { computer?: Bot["computer"] | null; acknowledgeLocalAuto?: boolean; confirmFullAccess?: boolean; acknowledgePeerScope?: boolean };
 
 export function useBotSettingsDerived(bot: Bot) {
   const { state, dispatch } = useStore();
@@ -50,7 +51,6 @@ export function useBotSettingsDerived(bot: Bot) {
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
-  const canAutoReview = engine?.capabilities?.approvalReview === true;
   // The approval level (ask / auto / full / custom) as the shared rule reads
   // it from the record — bots saved before approvalMode existed still carry
   // only autoApprove. Full and Custom need the packaged desktop's trusted
@@ -62,7 +62,9 @@ export function useBotSettingsDerived(bot: Bot) {
   const canUseVps = engine?.capabilities?.computerMcp === true && engine.driverKind !== "boxAgent";
   const connectedAppsConfigured = state.config?.composio?.configured === true;
   const connectedAppsEnabled = bot.composio !== false;
-  const imageGenConfigured = state.config?.imageGen?.configured === true;
+  // imageGen is the avatar provider status; the per-bot tool gate follows the
+  // workspace generate_image proxy, which carries its own credential.
+  const imageGenConfigured = state.config?.imageGenProxy?.configured === true;
   const canUseImageGen = engine?.capabilities?.imageGenMcp === true;
   const imageGenEnabled = bot.imageGen !== false;
   const canUseBrowser = engine?.capabilities?.browserMcp === true;
@@ -91,7 +93,6 @@ export function useBotSettingsDerived(bot: Bot) {
   return {
     patch,
     engine,
-    canAutoReview,
     approvalMode,
     trustedModesAvailable,
     canCoordinate,

@@ -1,65 +1,29 @@
 // The narrow bridge the Electron preload exposes. Absent in the browser.
 
 declare global {
+  type CompanyBackupEntry = Omit<import("../../electron/company-backups.mjs").CompanyBackupMetadata, "status"> & { status: "creating" | "uploading" | "completing" | "ready" | "cleanup" };
+  interface CompanyBackupScheduleState {
+    enabled: boolean;
+    status: "off" | "waiting" | "running" | "paused" | "error";
+    nextBackupAt?: number;
+    lastAttemptAt?: number;
+    lastBackupAt?: number;
+    message?: string;
+  }
+  interface CompanyBackupState {
+    busy: boolean;
+    pendingRestore?: boolean;
+    kind?: "backup" | "restore";
+    progress?: import("../../electron/company-backups.mjs").CompanyBackupProgress;
+    message?: string;
+    lastBackupAt?: number;
+    schedule?: CompanyBackupScheduleState;
+  }
 /** The package.json version, inlined by Vite's define at build time. */
 const __APP_VERSION__: string;
 
-type NativeSkillRecordingEvent = {
-  type: "app" | "click" | "scroll" | "key" | "typing" | "clipboard" | "download";
-  atMs: number;
-  app?: string;
-  windowTitle?: string;
-  x?: number;
-  y?: number;
-  button?: "left" | "right" | "other";
-  deltaY?: number;
-  keycode?: number;
-  meta?: boolean;
-  control?: boolean;
-  option?: boolean;
-  shift?: boolean;
-  /** Element identity for a click, from the accessibility tree. */
-  role?: string;
-  name?: string;
-  identifier?: string;
-  ancestry?: string[];
-  /** Typed keystroke count (never the characters themselves). */
-  keyCount?: number;
-  /** Clipboard action kind — never its contents. */
-  op?: "copy" | "cut" | "paste";
-  /** Downloaded file name and its origin URLs. */
-  filename?: string;
-  whereFroms?: string[];
-};
-
-type SkillRecordingPayload = {
-  name: string;
-  description: string;
-  durationMs: number;
-  transcript: string;
-  transcription?: { provider: "assemblyai"; model: string };
-  audio?: string;
-  events: Array<{
-    type: "app" | "click" | "scroll" | "shortcut" | "typing" | "clipboard" | "download";
-    atMs: number;
-    app?: string;
-    windowTitle?: string;
-    direction?: "up" | "down";
-    shortcut?: string;
-    keyCount?: number;
-    screenshot?: string;
-    /** Element identity for a click. */
-    role?: string;
-    name?: string;
-    identifier?: string;
-    ancestry?: string[];
-    /** Clipboard action kind — never its contents. */
-    op?: "copy" | "cut" | "paste";
-    /** Downloaded file name and its origin URLs. */
-    filename?: string;
-    whereFroms?: string[];
-  }>;
-};
+  type DesktopSharedFolder = import("../../electron/computer-sharing.mjs").SharedFolder;
+  type DesktopComputerSharing = import("../../electron/computer-sharing.mjs").SharingState;
 
   type DesktopCapabilities = {
     host: {
@@ -70,7 +34,7 @@ type SkillRecordingPayload = {
       session: "x11" | "wayland" | "headless" | "unknown";
       packaged: boolean;
     };
-    windowChrome: "mac-inset" | "native";
+    windowChrome: "mac-inset" | "win-caption" | "native";
     screenPreview: {
       available: boolean;
       interaction: "direct" | "portal-picker" | "none";
@@ -127,6 +91,18 @@ type SkillRecordingPayload = {
     code?: "load-failed" | "renderer-gone";
   }
 
+  /** Whether the desktop is holding this computer awake for routines. */
+  interface DesktopRoutineWake {
+    /** the toggle */
+    keepAwake: boolean;
+    /** a power assertion is held right now */
+    hold: boolean;
+    /** "due" | "running" while held; "off" | "battery" | "idle" | "stopped" otherwise */
+    reason: string;
+    /** the due routine's time, when the hold is for a due routine */
+    at: number | null;
+    onBattery: boolean;
+  }
   interface DesktopRemoteClientState {
     active: boolean;
     endpoint?: string;
@@ -137,6 +113,22 @@ type SkillRecordingPayload = {
   interface Window {
     ogb?: {
       platform: NodeJS.Platform;
+      organization?: import("../../electron/managed-desktop.mjs").ManagedDesktopBridge;
+      companyBackups?: {
+        state(): Promise<CompanyBackupState>;
+        list(): Promise<{ backups: CompanyBackupEntry[]; usedBytes: number; limits: { ownerQuotaBytes: number; retainedSnapshots: number } }>;
+        create(input: { clientState: import("../../shared/workspace-backup").WorkspaceBackupClientState }): Promise<CompanyBackupEntry>;
+        configureSchedule?(input: { enabled: false } | { enabled: true; confirmation: "BACK UP THIS WORKSPACE DAILY" }): Promise<CompanyBackupState>;
+        prepareRestore(input: { id: string; password?: string }): Promise<{ id: string; summary: import("../../shared/workspace-backup").WorkspaceBackupSummary }>;
+        restore(input: { id: string; confirmation: "REPLACE" }): Promise<{ restoreId: string }>;
+        delete(input: { id: string; confirmation: "DELETE" }): Promise<unknown>;
+        cancel(): Promise<void>;
+        onState(callback: (state: CompanyBackupState) => void): () => void;
+      };
+      workspaces?: {
+        state: () => Promise<{ local: boolean; name: string; origin?: string }>;
+        menu: () => Promise<void>;
+      };
       /** Saved servers and the active one (desktop Server menu). Present on
        * the local server's UI; a remote server's page sees a reduced bridge. */
       environments?: {
@@ -147,8 +139,16 @@ type SkillRecordingPayload = {
           environments: Array<{ id: string; name: string; origin: string }>;
         }>;
         switch: (id: string) => Promise<void>;
-        addFromLink: (link: string) => Promise<void>;
+        addFromLink: (link: string, name?: string) => Promise<boolean | void>;
         forget: (id: string) => Promise<void>;
+        onOpenSettings?: (callback: (computerId?: string | null) => void) => () => void;
+      };
+      /** Local main-window only. Hosted renderers cannot grant themselves access. */
+      computerSharing?: {
+        state(id: string): Promise<DesktopComputerSharing>;
+        chooseFolder(): Promise<DesktopSharedFolder | null>;
+        save(id: string, grant: Pick<DesktopComputerSharing, "folders" | "terminal" | "computer">): Promise<DesktopComputerSharing | null>;
+        revoke(id: string): Promise<DesktopComputerSharing>;
       };
       getCapabilities(): Promise<DesktopCapabilities>;
       onCapabilitiesChanged(cb: (capabilities: DesktopCapabilities) => void): () => void;
@@ -157,6 +157,12 @@ type SkillRecordingPayload = {
         state(): Promise<DesktopRemoteClientState>;
         pair(endpoint: string, code: string): Promise<DesktopRemoteClientState>;
         disconnect(): Promise<DesktopRemoteClientState>;
+      };
+      /** Keep this computer awake for scheduled routines; absent on remote
+       * server pages and in older desktop builds. */
+      routines?: {
+        wakeState(): Promise<DesktopRoutineWake>;
+        keepAwake(enabled: boolean): Promise<DesktopRoutineWake>;
       };
       companionAccount?: {
         state(): Promise<CompanionAccountState>;
@@ -171,7 +177,8 @@ type SkillRecordingPayload = {
         setMode(
           botId: string,
           mode: import("../../shared/approval-mode").ApprovalMode,
-          options?: { acknowledgeLocalAuto?: boolean },
+          options?: { acknowledgeLocalAuto?: boolean; threadId?: string; threadOnly?: boolean;
+            modelSelection?: import("../state/store").ModelSelection; updateBotDefault?: boolean },
         ): Promise<import("../state/store").Bot>;
       };
       localControl: {
@@ -198,19 +205,6 @@ type SkillRecordingPayload = {
         cb: (line: { partial?: boolean; text?: string; error?: string }) => void,
       ): () => void;
       onSpeechEnd(cb: (info: { code: number | null; reason?: string }) => void): () => void;
-      skillRecorder?: {
-        permissions(): Promise<{ supported: boolean; reason?: string }>;
-        start(): Promise<{ recording: boolean }>;
-        stop(): Promise<{ recording: boolean }>;
-        save(payload: SkillRecordingPayload): Promise<{ id: string; path: string; events: number }>;
-        onEvent(cb: (event: NativeSkillRecordingEvent) => void): () => void;
-        onEnd(cb: (info: { code: number | null; reason?: string }) => void): () => void;
-      };
-      transcription?: {
-        status(): Promise<{ configured: boolean }>;
-        setKey(value: string): Promise<{ configured: boolean }>;
-        streamingToken(): Promise<{ token: string; expiresInSeconds: number }>;
-      };
       /** Absolute path of a dropped File ("" when the drag carried no
        * file on disk). Absent in older builds of the shell. */
       getPathForFile?(file: File): string;
@@ -229,8 +223,21 @@ type SkillRecordingPayload = {
       openExternal?(url: string): Promise<boolean>;
       /** Recolor the native window chrome for a skin; absent on older builds. */
       applySkin?(skin: string): Promise<boolean>;
+      /** The renderer-drawn Windows caption buttons; absent outside the
+       * frameless Windows shell (macOS/Linux/browser keep native chrome). */
+      windowControls?: {
+        minimize(): Promise<boolean>;
+        toggleMaximize(): Promise<boolean>;
+        close(): Promise<boolean>;
+        state(): Promise<{ maximized: boolean }>;
+        onMaximizedChanged(cb: (maximized: boolean) => void): () => void;
+      };
       /** Receives a GitHub package URL opened through openmausbot://install. */
       onPackageInstall?(cb: (url: string) => void): () => void;
+      /** The desktop shell's app-menu Preferences… item was activated; open
+       * app Settings. Local-shell only: remote server pages never receive
+       * the channel, and the bridge is absent in the browser. */
+      onOpenAppSettings?(cb: () => void): () => void;
       /** Updates the native Dock/taskbar unread indicator. */
       setUnreadCount?(count: number): void;
       /** Opens a live desktop as a sandboxed window owned by this app. */
@@ -271,7 +278,7 @@ type SkillRecordingPayload = {
       saveFile?(filePath: string): Promise<string | null>;
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
-        name: "composioApiKey" | "xaiApiKey" | "openaiCompatApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "openaiImageApiKey" | "imageGenApiKey",
+        name: "composioApiKey" | "xaiApiKey" | "openaiCompatApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "openaiImageApiKey" | "customImageApiKey" | "imageGenApiKey",
         value: string,
       ): Promise<ConfigStatus>;
       /** Whether this packaged build has a hosted-inference Worker URL. */

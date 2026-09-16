@@ -7,6 +7,7 @@ import type { BotRecord } from "./store.ts";
 import type { Routine } from "./routines.ts";
 import type { RoutineRequestSchedule } from "../shared/routine-request.ts";
 import { approvalModeFor } from "../shared/approval-mode.ts";
+import { cronScheduleLabel } from "../shared/cron-label.ts";
 
 export interface BotOverview {
   who: { name: string; title: string; blurb: string; soulLead: string };
@@ -14,6 +15,20 @@ export interface BotOverview {
   reaches: string[];
   wont: string[];
   recent: Array<{ at: number; summary: string }>;
+  /** Optional setup ideas, each pointing at the relevant settings section.
+   * These are customization suggestions, not requirements for chatting. */
+  setup: SetupStep[];
+}
+
+export type SetupStepId = "identity" | "soul" | "folder" | "apps" | "schedule";
+export type SetupStepSection = "identity" | "soul" | "access" | "routines";
+
+export interface SetupStep {
+  id: SetupStepId;
+  label: string;
+  done: boolean;
+  /** Bot-settings section for this customization. */
+  section?: SetupStepSection;
 }
 
 export interface OverviewFacts {
@@ -33,6 +48,7 @@ export interface OverviewFacts {
     | "composio"
     | "browser"
     | "chiefOfStaff"
+    | "managedSections"
   >;
   routines: Array<{
     id: string;
@@ -89,6 +105,7 @@ function clockTime(hhmm: string): string {
  * approval card's scheduleText() carries the anchor instant and timezone
  * name because a card must be exact; a plain-language overview must not. */
 function schedulePhrase(schedule: OverviewFacts["routines"][number]["schedule"], timeZone: string): string {
+  if (schedule.type === "cron") return cronScheduleLabel(schedule);
   if (schedule.type === "once") {
     const date = new Date(schedule.at).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone });
     return `Once on ${date} at ${time(schedule.at, timeZone)}`;
@@ -213,9 +230,13 @@ function reachesLines(facts: OverviewFacts): string[] {
   }
   if (facts.browserEnabled && facts.engine?.browserMcp && facts.bot.browser !== false && facts.bot.computer !== "off") lines.push("Has the built-in browser.");
   if (facts.engine?.agentsMcp && facts.sectionPeers > 0 && facts.bot.peers?.length !== 0) {
-    lines.push(`Can talk to ${facts.sectionPeers} other bot${facts.sectionPeers === 1 ? "" : "s"} in its section.`);
+    const scope = facts.bot.chiefOfStaff && facts.bot.managedSections?.length ? "its allowed teams" : "its section";
+    lines.push(`Can talk to ${facts.sectionPeers} other bot${facts.sectionPeers === 1 ? "" : "s"} in ${scope}.`);
   }
   if (facts.bot.chiefOfStaff) lines.push("Coordinates its section as Chief of Staff.");
+  if (facts.bot.chiefOfStaff && facts.bot.managedSections?.length) {
+    lines.push(`May also coordinate these teams: ${facts.bot.managedSections.map(name => name || "General").join(", ")}.`);
+  }
   return lines;
 }
 
@@ -225,7 +246,7 @@ function wontLines(facts: OverviewFacts): string[] {
   if (mode === "ask") lines.push("Command approvals use Ask mode; saved permissions and provider rules still apply.");
   if (mode === "custom") lines.push("Command approvals follow the provider's custom configuration.");
   if (facts.bot.peers?.length === 0) lines.push("Cannot initiate contact with other bots.");
-  else if (facts.bot.approvePeerComms) lines.push("Asks before contacting other bots.");
+  else if (mode !== "full" && facts.bot.approvePeerComms) lines.push("Asks before contacting other bots.");
   // "Has no connected apps." is definite when apps are off for this bot,
   // not configured, or unsupported by its engine — no inventory needed. Only
   // the "configured but nothing connected" case rests on the inventory, so
@@ -235,7 +256,7 @@ function wontLines(facts: OverviewFacts): string[] {
   }
   if (facts.bot.computer === "off") lines.push("Can't use a computer.");
   if (!facts.routines.some((routine) => routine.enabled)) lines.push("Won't act on a schedule.");
-  lines.push("Profile proposal cards require your approval.");
+  if (mode !== "full") lines.push("Profile proposal cards require your approval.");
   return lines;
 }
 
@@ -251,5 +272,35 @@ export function buildBotOverview(facts: OverviewFacts): BotOverview {
     reaches: reachesLines(facts),
     wont: wontLines(facts),
     recent: facts.recent,
+    setup: setupSteps(facts),
   };
+}
+
+const DEFAULT_BOT_NAMES = /^(new bot|bot|untitled)(\s*\d+)?$/i;
+
+/** Optional customization ideas. Every step is derived from the same facts
+ * the sentences use, so "done" here can never disagree with "Can reach". */
+export function setupSteps(facts: OverviewFacts): SetupStep[] {
+  const named = facts.bot.name.trim() !== "" && !DEFAULT_BOT_NAMES.test(facts.bot.name.trim());
+  const described = facts.bot.title.trim() !== "" || facts.bot.description.trim() !== "";
+  const apps = facts.connectedApps;
+  const routines = facts.routines.some((routine) => routine.enabled);
+  const webhooks = facts.webhooks.some((webhook) => webhook.enabled);
+  const steps: SetupStep[] = [
+    { id: "identity", label: "Give it a name and a role", done: named && described, section: "identity" },
+    { id: "soul", label: "Write its standing instructions", done: (facts.bot.soul ?? "").trim() !== "", section: "soul" },
+    { id: "folder", label: "Choose a working folder", done: Boolean(facts.bot.cwd), section: "access" },
+  ];
+  // Apps only count as a step when this bot could use them at all; a
+  // bot on an engine without connected apps is not "missing" them.
+  if (couldUseApps(facts)) {
+    steps.push({
+      id: "apps",
+      label: "Connect the apps it needs",
+      done: apps.authoritative && apps.services.length > 0,
+      section: "access",
+    });
+  }
+  steps.push({ id: "schedule", label: "Add a schedule or a trigger", done: routines || webhooks, section: "routines" });
+  return steps;
 }

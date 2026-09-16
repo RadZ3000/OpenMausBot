@@ -19,8 +19,13 @@ struct ChatListView: View {
     @State private var searching = false
     @State private var searchOpen = false
     @State private var showingUpdates = false
+    @State private var showingWalkie = false
     @State private var showingNewGroup = false
     @State private var showingNewSection = false
+    @State private var expandedBots = Set<String>()
+    @State private var collapsedFolders = Set<String>()
+    @State private var creatingThreads = Set<String>()
+    @State private var managingThreads: Chat?
     @FocusState private var searchFocused: Bool
 
     /// Room for the floating bar, so the last row can scroll clear of it.
@@ -61,7 +66,7 @@ struct ChatListView: View {
                                     .buttonStyle(.plain)
                                     .padding(.horizontal, 16)
                                 }
-                                sectionLabel(Text("Chats"))
+                                sectionLabel(Text("Threads"))
                                     .padding(.top, 14)
                                     .padding(.bottom, 4)
                             } else if searching {
@@ -85,7 +90,7 @@ struct ChatListView: View {
                             description: Text(
                                 query.isEmpty
                                     ? "Bots you create on your computer show up here."
-                                    : "No chat matches \u{201C}\(query)\u{201D}."
+                                    : "No thread matches \u{201C}\(query)\u{201D}."
                             )
                         )
                     }
@@ -127,6 +132,9 @@ struct ChatListView: View {
                 if ProcessInfo.processInfo.arguments.contains("-open-new-section") {
                     showingNewSection = true
                 }
+                if ProcessInfo.processInfo.arguments.contains("-open-walkie") {
+                    showingWalkie = true
+                }
                 if ProcessInfo.processInfo.arguments.contains("-open-first"),
                    path.isEmpty, let first = chats.first {
                     path.append(first.chat)
@@ -139,6 +147,13 @@ struct ChatListView: View {
                     path.append(chat)
                 }
             }
+            .fullScreenCover(isPresented: $showingWalkie) {
+                WalkieView { chat in
+                    showingWalkie = false
+                    path.append(chat)
+                }
+                .environmentObject(session)
+            }
             .sheet(isPresented: $showingNewGroup) {
                 NewGroupSheet { room in
                     showingNewGroup = false
@@ -147,6 +162,13 @@ struct ChatListView: View {
             }
             .sheet(isPresented: $showingNewSection) {
                 NewSectionSheet()
+            }
+            .sheet(item: $managingThreads) { chat in
+                TaskManagerView(chat: chat) { threadId in
+                    guard let bot = session.state.bot(forThread: threadId) else { return }
+                    managingThreads = nil
+                    path.append(Chat.bot(bot))
+                }
             }
             .task(id: query) {
                 let expected = query
@@ -184,7 +206,7 @@ struct ChatListView: View {
             Spacer(minLength: 8)
 
             VStack(spacing: 2) {
-                Text("Chats")
+                Text("Threads")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Color.primary)
                 Text(headerSubtitle)
@@ -238,13 +260,13 @@ struct ChatListView: View {
         }
 
         channelsStrip(
-            title: "Channels",
+            title: "Groups",
             rooms: session.state.unsectionedChannels,
             showsCreate: true
         )
 
         if !session.state.botChats.isEmpty {
-            channelsStrip(title: "Bot chats", rooms: session.state.botChats, showsCreate: false)
+            channelsStrip(title: "Bot threads", rooms: session.state.botChats, showsCreate: false)
         }
 
         let unsectioned = summaries(for: session.state.unsectionedBots)
@@ -298,7 +320,7 @@ struct ChatListView: View {
                         GroupTile(room: nil)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("New channel")
+                    .accessibilityLabel("New group")
                 }
             }
             .padding(.horizontal, 16)
@@ -308,17 +330,41 @@ struct ChatListView: View {
     @ViewBuilder
     private func botRows(_ rows: [ChatSummary]) -> some View {
         ForEach(Array(rows.enumerated()), id: \.element.id) { index, summary in
-            NavigationLink(value: summary.chat) {
-                ChatRow(
-                    chat: summary.chat,
-                    preview: summary.preview,
-                    at: summary.lastActivity,
-                    state: MausState.forChat(summary.chat, in: session.state),
-                    waiting: waitingChats.contains(summary.chat.id),
-                    last: index == rows.count - 1
-                )
+            VStack(spacing: 0) {
+                NavigationLink(value: summary.chat) {
+                    ChatRow(
+                        chat: summary.chat,
+                        preview: summary.preview,
+                        at: summary.lastActivity,
+                        state: MausState.forChat(summary.chat, in: session.state),
+                        waiting: waitingChats.contains(summary.chat.id),
+                        last: index == rows.count - 1
+                    )
+                }
+                .buttonStyle(.plain)
+                if case let .bot(bot) = summary.chat {
+                    BotThreadTree(
+                        botID: bot.id, query: $query,
+                        expanded: Binding(
+                            get: { expandedBots.contains(bot.id) },
+                            set: { value in
+                                if value { expandedBots.insert(bot.id) } else { expandedBots.remove(bot.id) }
+                            }
+                        ),
+                        collapsedFolders: $collapsedFolders,
+                        creating: Binding(
+                            get: { creatingThreads.contains(bot.id) },
+                            set: { value in
+                                if value { creatingThreads.insert(bot.id) } else { creatingThreads.remove(bot.id) }
+                            }
+                        )
+                    ) { chat in
+                        path.append(chat)
+                    } manage: { chat in
+                        managingThreads = chat
+                    }
+                }
             }
-            .buttonStyle(.plain)
         }
     }
 
@@ -332,7 +378,7 @@ struct ChatListView: View {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.secondary)
-                        TextField("Search chats", text: $query)
+                        TextField("Search threads", text: $query)
                             .font(.system(size: 17))
                             .submitLabel(.search)
                             .autocorrectionDisabled()
@@ -378,8 +424,11 @@ struct ChatListView: View {
             updatesButton
                 .frame(width: 180)
             searchButton
-            sectionButton
-            newBotButton
+            walkieButton
+            if session.canAdminister {
+                sectionButton
+                newBotButton
+            }
         }
     }
 
@@ -388,23 +437,24 @@ struct ChatListView: View {
             updatesButton
                 .frame(minWidth: 148)
             searchButton
-            // Creating bots and sections is the owner's, on the server's own
-            // UI, when this phone is paired with a server directly.
-            if session.connection?.pairedWithServer != true {
-            Menu {
-                Button("New section", systemImage: "folder.badge.plus", action: openNewSection)
-                    .disabled(!hasVisibleBots)
-                Button("New bot", systemImage: "square.and.pencil", action: createBot)
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(Color.primary)
-                    .frame(width: 48, height: 48)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .glassCapsule()
-            .accessibilityLabel("Create")
+            walkieButton
+            // Creating bots and sections needs the admin scope on a server;
+            // a chat-only phone is not shown buttons the server would refuse.
+            if session.canAdminister {
+                Menu {
+                    Button("New section", systemImage: "folder.badge.plus", action: openNewSection)
+                        .disabled(!hasVisibleBots)
+                    Button("New bot", systemImage: "square.and.pencil", action: createBot)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 48, height: 48)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .glassCapsule()
+                .accessibilityLabel("Create")
             }
         }
     }
@@ -424,6 +474,15 @@ struct ChatListView: View {
             searchFocused = true
         }
         .accessibilityLabel("Search")
+    }
+
+    /// Walkie: hold-to-talk with every agent's state at a glance.
+    private var walkieButton: some View {
+        GlassButton(systemImage: "waveform", size: 48, weight: .semibold) {
+            Haptics.selection()
+            showingWalkie = true
+        }
+        .accessibilityLabel("Walkie")
     }
 
     private var sectionButton: some View {
@@ -471,7 +530,13 @@ struct ChatListView: View {
             $0.chat.name.localizedCaseInsensitiveContains(query)
                 || $0.chat.subtitle.localizedCaseInsensitiveContains(query)
                 || $0.preview.localizedCaseInsensitiveContains(query)
+                || matchesThread($0.chat)
         }
+    }
+
+    private func matchesThread(_ chat: Chat) -> Bool {
+        guard case let .bot(bot) = chat else { return false }
+        return !bot.threadGroups(matching: query).isEmpty
     }
 
     private func summaries(for bots: [Bot]) -> [ChatSummary] {
@@ -546,7 +611,7 @@ struct GroupTile: View {
             }
             .frame(width: 64, height: 64)
 
-            Text(room?.name ?? "New channel")
+            Text(room?.name ?? "New group")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(room == nil ? Color.secondary : Color.primary)
                 .lineLimit(1)
@@ -703,6 +768,7 @@ struct UpdatesPill: View {
         .buttonStyle(.plain)
         .glassCapsule()
         .accessibilityLabel("Updates")
+        .accessibilityIdentifier("updates-button")
     }
 
     private var subline: String {

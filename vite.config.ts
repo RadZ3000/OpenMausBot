@@ -26,6 +26,7 @@ export default defineConfig({
       "companion/**/*.test.ts",
       "enterprise/**/*.test.ts",
       "scripts/**/*.test.mjs",
+      "scripts/**/*.test.ts",
       "brand/**/*.test.ts",
     ],
     setupFiles: ["server/testing/setup.ts"],
@@ -54,6 +55,9 @@ export default defineConfig({
     // talks to /api — clients hold no transports
     proxy: {
       "/api": {
+        target: `http://127.0.0.1:${process.env.OMB_PORT || process.env.OGB_PORT || 8799}`,
+      },
+      "/.well-known/openmausbot/environment": {
         target: `http://127.0.0.1:${process.env.OMB_PORT || process.env.OGB_PORT || 8799}`,
       },
     },

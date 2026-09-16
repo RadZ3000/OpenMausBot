@@ -5,10 +5,13 @@ import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shared/image-generation.ts";
 
 import { writeFileAtomic } from "./atomic.ts";
-import { EFFORT_LEVELS, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
-import { parseStoredMcpServer } from "./mcp-registry.ts";
+import { EFFORT_LEVELS } from "../shared/wire.ts";
+import { isModelVariant, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
+import type { McpServerSpec } from "./contracts.ts";
+import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 
 const optionalText = z.string().optional();
@@ -19,6 +22,13 @@ const BROWSER_PROFILE_ID = /^[a-z0-9_-]{1,40}$/;
 export const DEFAULT_ROOM_TURN_TIMEOUT_MINUTES = 5;
 export const MIN_ROOM_TURN_TIMEOUT_MINUTES = 1;
 export const MAX_ROOM_TURN_TIMEOUT_MINUTES = 1_440;
+export const DEFAULT_MAX_CONCURRENT_BOT_THREADS = 3;
+export const MAX_CONCURRENT_BOT_THREADS = 10;
+/** Bounds for threads.eventLogMaxBytes: the floor keeps the kept tail large
+ * enough to still serve the event inspector's recent-line window; the
+ * ceiling just rejects absurd hand edits. */
+export const MIN_THREAD_EVENT_LOG_BYTES = 256 * 1024;
+export const MAX_THREAD_EVENT_LOG_BYTES = 4 * 1024 * 1024 * 1024;
 export const DEFAULT_LOCAL_VM_MODE = "shared" as const;
 export const DEFAULT_LOCAL_VM_MAX_INSTANCES = 2;
 export const MIN_LOCAL_VM_MAX_INSTANCES = 1;
@@ -212,15 +222,40 @@ const browserProfilesSchema = z.array(browserProfileSchema).max(20).superRefine(
     });
   });
 });
+// Deliberately non-strict: an unknown flag (such as `skillRecorder`, the
+// pre-rename name a stale client may still PATCH) is dropped as a no-op
+// instead of failing the whole stored config or the request.
 const featureConfigSchema = z.object({
-  /** Experimental desktop workflow recorder. Hidden unless explicitly enabled. */
-  skillRecorder: z.boolean().optional(),
+  /** Bots may draft skills (skill_manage, the Verify card's Save as skill,
+   * /learn) for your review. On unless explicitly switched off in Settings;
+   * every draft still waits for review. */
+  skillAuthoring: z.boolean().optional(),
   /** Show each tool run in the transcript. Off unless explicitly enabled. */
   showToolCalls: z.boolean().optional(),
   /** Experimental built-in browser. Off until explicitly enabled; each bot
    * also has its own switch. */
   browser: z.boolean().optional(),
+  /** Opt-in computer sharing (a desktop lending folders, a terminal or
+   * computer control to a workspace). Off until explicitly enabled; there is
+   * no Settings toggle — see sharedComputersEnabled. */
+  sharedComputers: z.boolean().optional(),
+  /** Claude bots also load the MCP servers and connectors from this
+   * machine's own Claude Code setup (Plugins → MCP servers switch). Off by
+   * default: each extra tool costs tokens on every model call. */
+  claudeUserMcp: z.boolean().optional(),
 });
+/** First-run progress. Kept in the workspace config rather than a browser so
+ * it survives cleared site data and is shared by every paired client. Hint
+ * ids are short renderer-chosen slugs; the list is capped so a buggy client
+ * cannot grow the file without bound. */
+const onboardingConfigSchema = z.object({
+  /** ISO timestamp of finishing (or skipping to the end of) the welcome flow. */
+  completedAt: z.string().trim().max(40).optional(),
+  /** Which welcome flow was completed; a newer flow may re-show itself. */
+  version: z.number().int().min(0).max(1000).optional(),
+  reelSeen: z.boolean().optional(),
+  hintsSeen: z.array(z.string().trim().min(1).max(60)).max(100).optional(),
+}).strict();
 const instanceConfigSchema = z.object({
   driver: z.string().min(1),
   displayName: optionalText,
@@ -234,10 +269,15 @@ const defaultModelSelectionSchema = z.object({
   instanceId: z.string().trim().min(1),
   model: z.string().trim().min(1),
   effort: z.enum(EFFORT_LEVELS).optional(),
-});
+  variant: z.string().refine(isModelVariant, "invalid model variant").optional(),
+}).refine((selection) => selection.variant === undefined || selection.effort === undefined,
+  "choose either a model variant or an effort level");
 const appConfigSchema = z.object({
   /** Verified by the dedicated domain endpoint, never a generic config patch. */
   customDomain: z.string().optional(),
+  /** Who may sign in with an emailed code (server/account-signin.ts):
+   * addresses or `@domain` entries; admins get every scope, members chat only. */
+  signIn: z.object({ admins: z.array(z.string().max(320)).max(500).optional(), members: z.array(z.string().max(320)).max(5000).optional() }).optional(),
   defaultModelSelection: defaultModelSelectionSchema.optional(),
   /** CLI-only launch preferences. Never enable remote access implicitly. */
   cliStartup: z.object({
@@ -246,6 +286,35 @@ const appConfigSchema = z.object({
     phone: z.enum(["ios", "android"]).optional(),
   }).optional(),
   xai: z.object({ key: optionalText, url: optionalText }).optional(),
+  /** Anthropic API key for Claude Code billed per token, handed only to
+   * Claude instances; `url` only for a proxy or a test double. Never a
+   * personal-login OAuth token. */
+  anthropic: z.object({ key: optionalText, url: optionalText }).optional(),
+  /** Monthly spend limit for the whole workspace, against the cost engines
+   * report to the usage ledger. Enforced only with the `budgets` entitlement. */
+  budgets: z
+    .object({
+      monthlyUsd: z.number().min(0).max(1_000_000).optional(),
+      warnAtPercent: z.number().int().min(1).max(100).optional(),
+    })
+    .optional(),
+  /** The operator's own sell prices per million tokens, keyed by model id,
+   * `driver/model`, or `default`. Read only with the `billing` entitlement. */
+  billing: z
+    .object({
+      currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+      prices: z
+        .record(
+          z.string().min(1).max(160),
+          z.object({
+            inputPerMillion: z.number().min(0).max(1_000_000),
+            outputPerMillion: z.number().min(0).max(1_000_000),
+            cachedInputPerMillion: z.number().min(0).max(1_000_000).optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
   /** `model` seeds the default selection; `provider` pins an OpenRouter
    * upstream (e.g. "fireworks"). Both are non-secret and optional. */
   openaiCompat: z
@@ -258,18 +327,46 @@ const appConfigSchema = z.object({
   vps: vpsConfigSchema.optional(),
   /** Optional OpenCode key; persisted write-only and passed only to its child. */
   opencodeGo: z.object({ apiKey: optionalText }).optional(),
-  /** Voice credentials and the selected voice id. `provider` picks the
-   * engine: "elevenlabs" (default; needs a key) or "system" (the Mac's
-   * built-in voices, no key). */
-  tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional() }).optional(),
-  /** `key` is the OS-stored secret for in-process avatars. `apiKey` / baseUrl /
-   * model also feed the generate_image MCP proxy (hosted or a local diffusion
-   * server). Only the keys are secret. */
+  /** Voice settings and the selected voice id. `provider` picks the
+   * engine: "elevenlabs" (default; needs `key`), "fish" (needs its own
+   * `fishKey`), "system" (the Mac's built-in voices, no key), or
+   * "chatterbox" (a local OpenAI-compatible Chatterbox server; `baseUrl`
+   * and `model` are settings, not secrets). Cloud keys stay separate so
+   * switching providers never overwrites or misuses the other key. */
+  tts: z.object({
+    key: optionalText,
+    fishKey: optionalText,
+    voice: optionalText,
+    provider: z.enum(["elevenlabs", "fish", "system", "chatterbox"]).optional(),
+    baseUrl: z
+      .string()
+      .trim()
+      .max(2048)
+      .refine((value) => !value || /^https?:\/\//i.test(value), "the Chatterbox server address must start with http:// or https://")
+      .optional(),
+    model: optionalText,
+  }).optional(),
+  /** Avatar provider credentials stay separate; choosing a router never reuses a cloud key.
+   * `apiKey` / `baseUrl` / `model` are ours and feed the generate_image MCP
+   * proxy (hosted or a local diffusion server); only the keys are secret. */
   imageGen: z.object({
+    provider: z.enum(["openai", "xai", "custom"]).optional(),
     key: optionalText,
     apiKey: optionalText,
     baseUrl: optionalText,
     model: optionalText,
+    customApiKey: optionalText,
+    customUrl: z.string().trim().max(2048).transform((value, ctx) => {
+      if (!value) return "";
+      try { return normalizeImageGenerationUrl(value); } catch (error) {
+        ctx.addIssue({ code: "custom", message: (error as Error).message });
+        return z.NEVER;
+      }
+    }).optional(),
+    customModel: z.string().trim().max(200).refine(
+      (value) => !["\r", "\n", "\0"].some((character) => value.includes(character)),
+      "Use a model ID without control characters",
+    ).optional(),
   }).optional(),
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
@@ -277,8 +374,18 @@ const appConfigSchema = z.object({
    * system language. Unknown tags degrade to English in the renderer. */
   language: optionalText,
   rooms: roomConfigSchema.optional(),
+  threads: z.object({
+    maxConcurrentPerBot: z.number().int().min(1).max(MAX_CONCURRENT_BOT_THREADS),
+    /** Cap each per-thread events/ and native/ NDJSON log at this many
+     * bytes; absent (the default) keeps today's unbounded growth (#1280). */
+    eventLogMaxBytes: z.number().int().min(MIN_THREAD_EVENT_LOG_BYTES).max(MAX_THREAD_EVENT_LOG_BYTES).optional(),
+    /** Days a closed or archived thread's event logs survive (#1280).
+     * Absent keeps them forever. */
+    eventLogRetentionDays: z.number().int().min(1).max(3650).optional(),
+  }).strict().optional(),
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
+  onboarding: onboardingConfigSchema.optional(),
   browserProfiles: browserProfilesSchema.optional(),
   instances: instanceConfigMapSchema.optional(),
   /** User-configured MCP servers, mounted into every capable engine. Kept
@@ -295,6 +402,7 @@ const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig {
   customDomain?: string;
+  signIn?: { admins?: string[]; members?: string[] };
   /** Preferred selection for newly created bots; existing bots keep theirs. */
   defaultModelSelection?: ModelSelection;
   cliStartup?: {
@@ -305,21 +413,29 @@ export interface AppConfig {
   mcpServers?: Record<string, unknown>;
   language?: string;
   xai?: { key?: string; url?: string };
+  anthropic?: { key?: string; url?: string };
+  budgets?: { monthlyUsd?: number; warnAtPercent?: number };
+  billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string };
   box?: { token?: string };
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string };
   opencodeGo?: { apiKey?: string };
-  tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
-  imageGen?: { key?: string; apiKey?: string; baseUrl?: string; model?: string };
+  tts?: { key?: string; fishKey?: string; voice?: string; provider?: "elevenlabs" | "fish" | "system" | "chatterbox"; baseUrl?: string; model?: string };
+  /** Theirs is the avatar provider set; the three extras are ours, for the
+   * generate_image MCP proxy upstream does not have. */
+  imageGen?: ImageGenerationConfig & { apiKey?: string; baseUrl?: string; model?: string };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
+  threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillRecorder?: boolean; showToolCalls?: boolean; browser?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean };
+  /** First-run progress; see onboardingConfigSchema. */
+  onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[] };
   /** Named browser sessions any bot can be pointed at. */
   browserProfiles?: BrowserProfile[];
   instances?: InstanceConfigMap;
@@ -437,6 +553,24 @@ export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
   return cfg.rooms?.turnTimeoutMinutes ?? DEFAULT_ROOM_TURN_TIMEOUT_MINUTES;
 }
 
+export function maxConcurrentBotThreads(cfg: AppConfig): number {
+  return cfg.threads?.maxConcurrentPerBot ?? DEFAULT_MAX_CONCURRENT_BOT_THREADS;
+}
+
+/** Size cap for each per-thread events/ and native/ NDJSON log. Null (the
+ * default) means unbounded growth — rotation is strictly opt-in (#1280). */
+export function threadEventLogMaxBytes(cfg: AppConfig): number | null {
+  const cap = cfg.threads?.eventLogMaxBytes;
+  return typeof cap === "number" && Number.isFinite(cap) && cap > 0 ? cap : null;
+}
+
+/** Days a closed or archived bot thread's event logs survive before the
+ * retention sweep removes them (#1280). Null — the default — keeps them
+ * forever. */
+export function threadEventLogRetentionDays(cfg: AppConfig): number | null {
+  return cfg.threads?.eventLogRetentionDays ?? null;
+}
+
 export function localVmMode(cfg: AppConfig): "shared" | "per-bot" {
   return cfg.localVm?.mode ?? DEFAULT_LOCAL_VM_MODE;
 }
@@ -445,8 +579,10 @@ export function localVmMaxInstances(cfg: AppConfig): number {
   return cfg.localVm?.maxInstances ?? DEFAULT_LOCAL_VM_MAX_INSTANCES;
 }
 
-export function skillRecorderEnabled(cfg: AppConfig): boolean {
-  return cfg.features?.skillRecorder === true;
+/** On by default; only an explicit `false` (the Settings toggle, or a legacy
+ * `skillRecorder: false` carried over at startup) switches it off. */
+export function skillAuthoringEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.skillAuthoring !== false;
 }
 
 export function showToolCallsEnabled(cfg: AppConfig): boolean {
@@ -457,6 +593,52 @@ export function showToolCallsEnabled(cfg: AppConfig): boolean {
  * switch sits under it, so either can withhold the browser. */
 export function builtInBrowserEnabled(cfg: AppConfig): boolean {
   return cfg.features?.browser === true;
+}
+
+/** Opt-in computer sharing: the routes, the agent tools, the advertised
+ * capability and the desktop connector. Off unless an explicit `true` turns
+ * it on, because the reviewed feature still has open security holes (a
+ * read-only folder grant could be escalated to a shell).
+ *
+ * Deliberately NOT a Settings toggle: this is a maintainer-only escape hatch
+ * for an unfinished feature, not a user preference. Someone who needs it
+ * enables it by hand in `~/.openmausbot/config.json`
+ * (`{"features": {"sharedComputers": true}}`) and restarts the server. */
+export function sharedComputersEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.sharedComputers === true;
+}
+
+/** Claude bots also see the MCP servers of this machine's own Claude Code
+ * setup — the way Codex bots already read ~/.codex/config.toml. Off unless
+ * the person switched it on under Plugins → MCP servers; the Claude driver
+ * then omits --strict-mcp-config while keeping skills, hooks and the
+ * personal CLAUDE.md out. */
+export function claudeUserMcpEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.claudeUserMcp === true;
+}
+
+/** Config sections no provider driver reads. A write that touches only
+ * these must not rebuild the fleet: rebuilding disposes every engine child
+ * and reloads it, seconds of work that would also interrupt in-flight
+ * turns. The guided tour writes `onboarding` on every step, so it in
+ * particular has to stay cheap. */
+export const FLEET_NEUTRAL_KEYS: ReadonlySet<string> = new Set([
+  "profile",
+  "language",
+  "tts",
+  "imageGen",
+  "vps",
+  "rooms",
+  "threads",
+  "localVm",
+  "features",
+  "browserProfiles",
+  "onboarding",
+]);
+
+/** The keys of a config patch that require the provider fleet to reload. */
+export function providerReloadKeys(patch: object): string[] {
+  return Object.keys(patch).filter((key) => !FLEET_NEUTRAL_KEYS.has(key));
 }
 
 // OMB_DATA_DIR isolates test/soak rigs from the user's real fleet.
@@ -485,6 +667,34 @@ export function ensureDirs() {
     }
   }
   for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
+  migrateLegacyFeatureFlags();
+}
+
+/** `features.skillRecorder` became `features.skillAuthoring` when the Teach a
+ * skill recorder was removed. featureConfigSchema is non-strict, so
+ * parseStoredConfig would silently drop the old key (reading the opt-in as
+ * off) while saveConfig's raw section merge would carry it on disk forever.
+ * Rewrite it once, here, before the server's single loadConfig() at boot: an
+ * explicit `skillAuthoring` already on disk wins over the legacy key, and a
+ * file without the legacy key is left untouched. */
+function migrateLegacyFeatureFlags(): void {
+  const p = join(DATA_DIR, "config.json");
+  try {
+    if (!existsSync(p)) return;
+    const disk = jsonObjectSchema.safeParse(parseJson(readFileSync(p, "utf8")));
+    if (!disk.success) return;
+    const features = jsonObjectSchema.safeParse(disk.data.features);
+    if (!features.success || !Object.hasOwn(features.data, "skillRecorder")) return;
+    const next: JsonObject = { ...features.data };
+    if (!Object.hasOwn(next, "skillAuthoring")) next.skillAuthoring = next.skillRecorder === true;
+    delete next.skillRecorder;
+    writeFileAtomic(p, JSON.stringify({ ...disk.data, features: next }, null, 2), { mode: 0o600 });
+    console.log(`[config] features.skillRecorder renamed to features.skillAuthoring (${String(next.skillAuthoring)})`);
+  } catch (error) {
+    // A readable but unwritable config would otherwise lose the opt-in on
+    // every boot with no trace: parseStoredConfig drops the legacy key.
+    console.error(`[config] could not rename features.skillRecorder: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export function loadConfig(): AppConfig {
@@ -503,6 +713,12 @@ export function loadConfig(): AppConfig {
   // shadow the save until the next launch.
   cfg.xai = { ...cfg.xai };
   if (process.env.XAI_API_KEY !== undefined) cfg.xai.key = process.env.XAI_API_KEY;
+  // Deliberately not ANTHROPIC_API_KEY: a key in the server's own env is
+  // never the workspace key, so an operator's stray variable cannot flip
+  // every Claude bot onto pay-as-you-go billing.
+  cfg.anthropic = { ...cfg.anthropic };
+  if (process.env.OMB_ANTHROPIC_API_KEY !== undefined) cfg.anthropic.key = process.env.OMB_ANTHROPIC_API_KEY;
+  if (process.env.OMB_ANTHROPIC_API_URL !== undefined) cfg.anthropic.url = process.env.OMB_ANTHROPIC_API_URL;
   cfg.openaiCompat = { ...cfg.openaiCompat };
   if (process.env.OPENAI_COMPAT_API_KEY !== undefined) cfg.openaiCompat.key = process.env.OPENAI_COMPAT_API_KEY;
   if (process.env.OPENAI_COMPAT_URL !== undefined) cfg.openaiCompat.url = process.env.OPENAI_COMPAT_URL;
@@ -516,8 +732,10 @@ export function loadConfig(): AppConfig {
   if (process.env.OPENCODE_API_KEY !== undefined) cfg.opencodeGo.apiKey = process.env.OPENCODE_API_KEY;
   cfg.tts = { ...cfg.tts };
   if (process.env.OMB_TTS_KEY !== undefined) cfg.tts.key = process.env.OMB_TTS_KEY;
+  if (process.env.OMB_FISH_AUDIO_API_KEY !== undefined) cfg.tts.fishKey = process.env.OMB_FISH_AUDIO_API_KEY;
   cfg.imageGen = { ...cfg.imageGen };
   if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;
+  if (process.env.OMB_CUSTOM_IMAGE_KEY !== undefined) cfg.imageGen.customApiKey = process.env.OMB_CUSTOM_IMAGE_KEY;
   // Deliberately its own variable rather than OPENAI_API_KEY: that name is
   // stripped from CLI children on purpose (drivers/codex.ts), and reusing it
   // here would put a key back into exactly the environments that protect
@@ -525,6 +743,14 @@ export function loadConfig(): AppConfig {
   if (process.env.OMB_IMAGE_API_KEY !== undefined) cfg.imageGen.apiKey = process.env.OMB_IMAGE_API_KEY;
   if (process.env.OMB_IMAGE_BASE_URL !== undefined) cfg.imageGen.baseUrl = process.env.OMB_IMAGE_BASE_URL;
   if (process.env.OMB_IMAGE_MODEL !== undefined) cfg.imageGen.model = process.env.OMB_IMAGE_MODEL;
+  // The sign-in allow-list: env is how a headless box or a container is
+  // bootstrapped before anyone can reach Settings.
+  const splitEmails = (value: string) => value.split(/[,\s]+/).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  if (process.env.OMB_SIGNIN_EMAILS !== undefined || process.env.OMB_SIGNIN_MEMBER_EMAILS !== undefined) {
+    cfg.signIn = { ...cfg.signIn };
+    if (process.env.OMB_SIGNIN_EMAILS !== undefined) cfg.signIn.admins = splitEmails(process.env.OMB_SIGNIN_EMAILS);
+    if (process.env.OMB_SIGNIN_MEMBER_EMAILS !== undefined) cfg.signIn.members = splitEmails(process.env.OMB_SIGNIN_MEMBER_EMAILS);
+  }
   return cfg;
 }
 
@@ -538,12 +764,15 @@ export function loadConfig(): AppConfig {
 export function syncCredentialEnv(patch: Partial<AppConfig>): void {
   const secrets: Array<[value: string | undefined, name: string]> = [
     [patch.xai?.key, "XAI_API_KEY"],
+    [patch.anthropic?.key, "OMB_ANTHROPIC_API_KEY"],
     [patch.openaiCompat?.key, "OPENAI_COMPAT_API_KEY"],
     [patch.composio?.apiKey, "COMPOSIO_API_KEY"],
     [patch.box?.token, "BOX_TOKEN"],
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
     [patch.tts?.key, "OMB_TTS_KEY"],
+    [patch.tts?.fishKey, "OMB_FISH_AUDIO_API_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
+    [patch.imageGen?.customApiKey, "OMB_CUSTOM_IMAGE_KEY"],
     [patch.imageGen?.apiKey, "OMB_IMAGE_API_KEY"],
   ];
   for (const [value, name] of secrets) {
@@ -555,6 +784,7 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
   // must follow the same set-when-truthy / delete-when-cleared rule as keys.
   const settings: Array<[value: string | undefined, name: string]> = [
     [patch.openaiCompat?.url, "OPENAI_COMPAT_URL"],
+    [patch.anthropic?.url, "OMB_ANTHROPIC_API_URL"],
     [patch.openaiCompat?.model, "OPENAI_COMPAT_MODEL"],
     [patch.openaiCompat?.provider, "OPENAI_COMPAT_PROVIDER"],
   ];
@@ -572,12 +802,16 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
  * child these are someone else's keys riding along in `...process.env`. */
 export const WORKSPACE_CREDENTIAL_ENV = [
   "XAI_API_KEY",
+  "OMB_ANTHROPIC_API_KEY",
+  "OMB_ANTHROPIC_API_URL",
   "OPENAI_COMPAT_API_KEY",
   "OPENAI_COMPAT_URL",
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
+  "OMB_FISH_AUDIO_API_KEY",
   "OMB_OPENAI_IMAGE_KEY",
+  "OMB_CUSTOM_IMAGE_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
   "OMB_INFERENCE_BROKER_TOKEN",
@@ -630,7 +864,7 @@ export function saveConfig(patch: Partial<AppConfig>, options: { replaceInstance
   // back after we have successfully recognized the legacy list.
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features"] as const) {
+  for (const key of ["xai", "anthropic", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "threads", "localVm", "features", "budgets", "billing", "onboarding"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -642,6 +876,7 @@ export function saveConfig(patch: Partial<AppConfig>, options: { replaceInstance
   // scalar, not a section: the merge loop above only walks objects
   if (checkedPatch.language !== undefined) disk.language = checkedPatch.language;
   if (checkedPatch.customDomain !== undefined) disk.customDomain = checkedPatch.customDomain;
+  if (checkedPatch.signIn !== undefined) disk.signIn = checkedPatch.signIn;
   // A selection is replaced as one value, so changing engines also clears
   // an effort level omitted from the new selection.
   if (checkedPatch.defaultModelSelection !== undefined) {
@@ -756,6 +991,11 @@ interface InstanceCliUpdate {
 export function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "grok" && cfg.xai?.key) environment.set("XAI_API_KEY", cfg.xai.key);
+  // The workspace Anthropic key reaches Claude Code as the variable it
+  // reads, carried in the instance environment so the driver can tell a
+  // deliberate workspace key from one riding along in the parent's env.
+  if (driver === "claudeAgent" && cfg.anthropic?.key) environment.set("ANTHROPIC_API_KEY", cfg.anthropic.key);
+  if (driver === "claudeAgent" && cfg.anthropic?.key && cfg.anthropic.url) environment.set("ANTHROPIC_BASE_URL", cfg.anthropic.url);
   if (driver === "openai-compat" && cfg.openaiCompat?.key)
     environment.set("OPENAI_COMPAT_API_KEY", cfg.openaiCompat.key);
   if (driver === "openai-compat" && cfg.openaiCompat?.url)
@@ -872,15 +1112,13 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
 
 // ── user-configured MCP servers ─────────────────────────────────────────
 // config.json: { "mcpServers": { "notes": { "command": "npx", "args":
-// ["-y", "@x/notes-mcp"], "env": { "NOTES_TOKEN": "…" } } } }
-// stdio only for now; validate-with-skip so one bad entry never takes the
-// fleet down, and each skip is logged once with a sentence that teaches.
+// ["-y", "@x/notes-mcp"], "env": { "NOTES_TOKEN": "…" } },
+//                                "docs": { "type": "http", "url": "https://…/mcp",
+// "headers": { "Authorization": "Bearer …" } } } }
+// Validate-with-skip so one bad entry never takes the fleet down, and each
+// skip is logged once with a sentence that teaches.
 
-export interface CustomMcpServer {
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-}
+export type CustomMcpServer = McpServerSpec;
 
 const reportedMcpSkips = new Set<string>();
 function skipMcpEntry(name: string, why: string): void {
@@ -891,24 +1129,21 @@ function skipMcpEntry(name: string, why: string): void {
 }
 
 /** The validated, normalized custom servers from config — or {}. */
-export function customMcpServers(cfg: AppConfig): Record<string, CustomMcpServer> {
+export function customMcpServers(cfg: AppConfig, only?: string[]): Record<string, CustomMcpServer> {
   const out: Record<string, CustomMcpServer> = {};
   for (const [name, raw] of Object.entries(cfg.mcpServers ?? {})) {
-    if (raw && typeof raw === "object" && "url" in raw) {
-      skipMcpEntry(name, 'only stdio servers ("command") are supported so far — HTTP transports are a planned follow-up');
-      continue;
-    }
+    // a bot with its own list gets exactly those names; a bot without one
+    // keeps getting every enabled server, as before this field existed
+    if (only && !only.includes(name)) continue;
     const parsed = parseStoredMcpServer(name, raw);
     if (!parsed.ok) {
-      skipMcpEntry(name, `${parsed.error} Expected { "command": "npx", "args": [...], "env": { ... } }`);
+      skipMcpEntry(name, `${parsed.error} Expected { "command": "npx", "args": [...], "env": { ... } } or { "type": "http", "url": "https://…", "headers": { ... } }`);
       continue;
     }
     if (!parsed.server.enabled) continue;
-    out[name] = {
-      command: parsed.server.command,
-      args: parsed.server.args,
-      env: parsed.server.env,
-    };
+    out[name] = isRemoteMcpServer(parsed.server)
+      ? { type: parsed.server.type, url: parsed.server.url, headers: parsed.server.headers }
+      : { command: parsed.server.command, args: parsed.server.args, env: parsed.server.env };
   }
   return out;
 }

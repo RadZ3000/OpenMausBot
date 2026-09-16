@@ -25,6 +25,10 @@
 //                     file exists — a deterministic busy window for the
 //                     steer-queue e2e, with the echo pinning exactly what a
 //                     drained turn was sent)
+//                   | safe-agent-reads (simulate a native Auto reviewer around
+//                     the real injected agents MCP; not a real classifier test)
+//   FAKE_ACP_MCP_TRANSPORTS  comma list of remote MCP transports the agent
+//                       advertises in initialize (mcpCapabilities), e.g. "http,sse"
 //   FAKE_ACP_DUMP   path to write {argv, env} as JSON, so a test can assert
 //                   argv shape (agent/stdio flags) and env hygiene
 //   FAKE_ACP_RPC_DUMP  JSON array of RPC method names this process has seen.
@@ -38,6 +42,10 @@
 //   FAKE_ACP_MODEL_STICKS  session/set_config_option succeeds but leaves the
 //                        model where it was, so the confirmation guard in
 //                        core.ts has something to catch
+//   FAKE_ACP_VARIANTS JSON map of model -> {id?, currentValue?, options} using
+//                        ACP select values/groups; never contacts a provider.
+//   FAKE_ACP_CONFIG_UPDATES JSON array of {after, sessionId?, configOptions,
+//                        replay?}, emitted after the named RPC response.
 //   FAKE_ACP_USAGE_ROOT  put the prompt result's usage at the root instead of
 //                        under _meta (what opencode 1.18.18 actually does)
 //
@@ -53,6 +61,12 @@ const ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42
 // identical to before.
 const models = (process.env.FAKE_ACP_MODELS ?? "").split(",").filter(Boolean);
 let currentModel: string | null = models[0] ?? null;
+const variantConfigs: Record<string, { id?: string; currentValue?: string; options: any[] }> =
+  JSON.parse(process.env.FAKE_ACP_VARIANTS ?? "{}");
+let currentVariant = variantConfigs[currentModel ?? ""]?.currentValue;
+const variantValues = (entries: any[]): string[] => entries.flatMap((entry) => (
+  typeof entry?.value === "string" ? [entry.value] : Array.isArray(entry?.options) ? variantValues(entry.options) : []
+));
 const modes = (process.env.FAKE_ACP_MODES ?? "").split(",").filter(Boolean);
 let currentMode: string | null = modes[0] ?? null;
 // task id captured from the last delegate_bot reply, for a later
@@ -85,6 +99,7 @@ function savedDelegatedTaskId(): string {
   return chiefDelegatedTaskId;
 }
 const configOptions = () => {
+  const variant = variantConfigs[currentModel ?? ""];
   const options = [
     ...(models.length ? [
         {
@@ -96,6 +111,14 @@ const configOptions = () => {
           options: models.map((value) => ({ value, name: value })),
         },
       ] : []),
+    ...(variant ? [{
+      id: variant.id ?? "effort",
+      name: "Effort",
+      category: "thought_level",
+      type: "select",
+      currentValue: currentVariant,
+      options: variant.options,
+    }] : []),
     ...(modes.length ? [{
       id: "mode",
       name: "Mode",
@@ -135,12 +158,14 @@ const dumpEnv = Object.fromEntries(
     "FAKE_ACP_DUMP_PROMPT",
     "TEST_POLICY",
     "OPENCODE_API_KEY",
+    "OPENCODE_PERMISSION",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
     "XAI_API_KEY",
     "BOX_TOKEN",
     "OMB_TTS_KEY",
+    "OMB_FISH_AUDIO_API_KEY",
     "FACTORY_API_KEY",
     "UNSLOTH_STUDIO_AUTH_TOKEN",
     "CURSOR_API_KEY",
@@ -207,6 +232,32 @@ if (argv[0] === "models" || argv.includes("--list-models")) {
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 const result = (id: unknown, res: unknown) => out({ jsonrpc: "2.0", id, result: res });
+const configUpdates = JSON.parse(process.env.FAKE_ACP_CONFIG_UPDATES ?? "[]") as Array<{
+  after: string; sessionId?: string; configOptions: unknown[]; replay?: boolean;
+}>;
+const emitConfigUpdates = (after: string, sessionId: string) => {
+  for (const update of configUpdates.filter((entry) => entry.after === after)) {
+    out({
+      jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: update.sessionId ?? sessionId,
+        ...(update.replay ? { _meta: { isReplay: true } } : {}),
+        update: { sessionUpdate: "config_option_update", configOptions: update.configOptions },
+      },
+    });
+  }
+};
+// Send response and subsequent updates in one chunk to exercise wire ordering:
+// a promise continuation must not overwrite a newer notification with the ACK.
+const resultAndConfigUpdates = (id: unknown, res: unknown, after: string, sessionId: string) => {
+  const updates = configUpdates.filter((entry) => entry.after === after).map((update) => ({
+    jsonrpc: "2.0", method: "session/update", params: {
+      sessionId: update.sessionId ?? sessionId,
+      ...(update.replay ? { _meta: { isReplay: true } } : {}),
+      update: { sessionUpdate: "config_option_update", configOptions: update.configOptions },
+    },
+  }));
+  process.stdout.write([{ jsonrpc: "2.0", id, result: res }, ...updates].map((message) => JSON.stringify(message)).join("\n") + "\n");
+};
 const rpcMethods: string[] = [];
 const recordMethod = (method: string) => {
   rpcMethods.push(method);
@@ -218,7 +269,7 @@ const configCalls: Array<{ method: string; params: unknown }> = [];
 
 // pending server→client permission request id → resolver
 let pendingPermissionId: number | null = null;
-let onPermissionAnswered: (() => void) | null = null;
+let onPermissionAnswered: ((allowed: boolean) => void) | null = null;
 
 // ask-peer mode: the "agents" MCP server entry from session/new's mcpServers
 type McpEntry = { command: string; args?: string[]; env?: Array<{ name: string; value: string }> };
@@ -226,7 +277,7 @@ let agentsMcp: McpEntry | null = null;
 
 /** Minimal one-shot MCP stdio client: initialize, call each tool in
  * sequence, return the text of the last result. Dependency-free. */
-function driveMcp(entry: McpEntry, calls: Array<{ name: string; args: (prev: string) => object }>): Promise<string> {
+function driveMcp(entry: McpEntry, calls: Array<{ name: string; args: (prev: string) => object }>, strict = false): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
     for (const { name, value } of entry.env ?? []) env[name] = value;
@@ -261,6 +312,15 @@ function driveMcp(entry: McpEntry, calls: Array<{ name: string; args: (prev: str
           continue;
         }
         if (msg.id === undefined) continue;
+        // Protocol failures (for example a removed tool) are never a successful
+        // empty reply. Tool-result denials remain inspectable by the legacy
+        // approval fixtures unless that caller explicitly requires success.
+        if (msg.error || (strict && msg.result?.isError)) {
+          clearTimeout(timer);
+          child.kill();
+          reject(new Error(`Fixture MCP request failed: ${JSON.stringify(msg.error ?? msg.result)}`));
+          return;
+        }
         if (step === -1) {
           write({ jsonrpc: "2.0", method: "notifications/initialized" });
           next();
@@ -276,8 +336,8 @@ function driveMcp(entry: McpEntry, calls: Array<{ name: string; args: (prev: str
 
 function playTurn() {
   out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "hello from fake acp" } } } });
-  out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-1", title: "run" } } });
-  out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-1", status: "completed" } } });
+  out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-1", title: "run", rawInput: { path: "/fixture/readme.md", password: "acp-input-secret" } } } });
+  out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-1", status: "completed", rawOutput: { text: "fixture file content", api_key: "acp-output-secret" } } } });
 }
 
 /** Scripted text → tool → text → tool → text turn for order-contract tests. */
@@ -313,7 +373,10 @@ function handle(msg: any) {
   // client's response to our permission request
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingPermissionId) {
     pendingPermissionId = null;
-    onPermissionAnswered?.();
+    const chosen = msg.result?.outcome?.optionId;
+    // which option the client picked, for tests asserting allow_always
+    if (process.env.FAKE_ACP_PERMISSION_ANSWER) writeFileSync(process.env.FAKE_ACP_PERMISSION_ANSWER, String(chosen ?? "cancelled"));
+    onPermissionAnswered?.(typeof chosen === "string" && chosen.startsWith("allow"));
     return;
   }
   if (!msg.method) return;
@@ -333,19 +396,25 @@ function handle(msg: any) {
       const agentName = process.env.FAKE_ACP_AGENT_NAME;
       const acceptsImages = process.env.FAKE_ACP_IMAGE_CAPABILITY === "1"
         || process.env.FAKE_ACP_IMAGE_PROMPT === "1";
+      // which remote MCP transports this agent advertises, e.g. "http,sse"
+      const mcpTransports = (process.env.FAKE_ACP_MCP_TRANSPORTS ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
       result(msg.id, {
         protocolVersion: 1,
         authMethods,
         agentInfo: agentName
           ? { name: agentName, version: process.env.FAKE_ACP_AGENT_VERSION ?? "test" }
           : undefined,
-        agentCapabilities: agentName || acceptsImages
+        agentCapabilities: agentName || acceptsImages || mcpTransports.length
           ? {
               ...(agentName ? { loadSession: true, sessionCapabilities: { resume: true }, auth: { logout: true } } : {}),
               ...(acceptsImages ? { promptCapabilities: { image: true } } : {}),
+              ...(mcpTransports.length ? { mcpCapabilities: { http: mcpTransports.includes("http"), sse: mcpTransports.includes("sse") } } : {}),
             }
           : undefined,
-        _meta: { modelState: { currentModelId: "fake-acp-model" } },
+        _meta: {
+          modelState: { currentModelId: "fake-acp-model" },
+          ...(process.env.FAKE_ACP_GROK_VERSION ? { grokShell: true, agentVersion: process.env.FAKE_ACP_GROK_VERSION } : {}),
+        },
       });
       break;
     }
@@ -372,11 +441,11 @@ function handle(msg: any) {
       }
       const opts = configOptions();
       const mdls = sessionModels();
-      result(msg.id, {
+      resultAndConfigUpdates(msg.id, {
         sessionId: "fake-acp-session",
         ...(opts ? { configOptions: opts } : {}),
         ...(mdls ? { models: mdls } : {}),
-      });
+      }, "session/new", "fake-acp-session");
       break;
     }
     case "session/load": {
@@ -384,9 +453,15 @@ function handle(msg: any) {
         result(msg.id, null);
         break;
       }
+      if (mode === "safe-agent-reads") {
+        agentsMcp = (msg.params?.mcpServers ?? []).find((server: any) => server.name === "agents") ?? null;
+      }
+      if (process.env.FAKE_ACP_DUMP) {
+        writeFileSync(`${process.env.FAKE_ACP_DUMP}.mcp.json`, JSON.stringify(msg.params?.mcpServers ?? []));
+      }
       const opts = configOptions();
       const mdls = sessionModels();
-      result(msg.id, { ...(opts ? { configOptions: opts } : {}), ...(mdls ? { models: mdls } : {}) });
+      resultAndConfigUpdates(msg.id, { ...(opts ? { configOptions: opts } : {}), ...(mdls ? { models: mdls } : {}) }, "session/load", msg.params.sessionId);
       break;
     }
     case "session/resume": {
@@ -431,6 +506,16 @@ function handle(msg: any) {
     }
     case "session/set_config_option": {
       const { configId, value } = msg.params ?? {};
+      const variant = variantConfigs[currentModel ?? ""];
+      if (variant && configId === (variant.id ?? "effort") && variantValues(variant.options).includes(value)) {
+        if (!process.env.FAKE_ACP_VARIANT_STICKS) currentVariant = value;
+        configCalls.push({ method: msg.method, params: msg.params });
+        if (process.env.FAKE_ACP_DUMP) {
+          writeFileSync(`${process.env.FAKE_ACP_DUMP}.config.json`, JSON.stringify(configCalls, null, 2));
+        }
+        resultAndConfigUpdates(msg.id, process.env.FAKE_ACP_EMPTY_VARIANT_ACK ? {} : { configOptions: configOptions() }, "effort", msg.params.sessionId);
+        break;
+      }
       if (configId === "mode" && modes.includes(value)) {
         currentMode = value;
         configCalls.push({ method: msg.method, params: msg.params });
@@ -451,18 +536,27 @@ function handle(msg: any) {
       // FAKE_ACP_MODEL_STICKS: answer OK and keep the old model anyway. Nothing
       // in the protocol forbids it, and it is the shape core.ts's confirmation
       // guard exists for — an error is loud, this is silent.
-      if (!process.env.FAKE_ACP_MODEL_STICKS) currentModel = value;
+      if (!process.env.FAKE_ACP_MODEL_STICKS) {
+        currentModel = value;
+        currentVariant = variantConfigs[value]?.currentValue;
+      }
       configCalls.push({ method: msg.method, params: msg.params });
       if (process.env.FAKE_ACP_DUMP) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.config.json`, JSON.stringify(configCalls, null, 2));
       }
-      result(msg.id, { configOptions: configOptions() });
+      resultAndConfigUpdates(msg.id, { configOptions: configOptions() }, "model", msg.params.sessionId);
       break;
     }
     case "session/prompt": {
+      emitConfigUpdates("session/prompt", msg.params.sessionId);
       if (process.env.FAKE_ACP_DUMP) {
         dumpState.prompt = msg.params?.prompt;
         writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
+      }
+      if (process.env.FAKE_ACP_DUMP && process.env.FAKE_ACP_VARIANTS) {
+        writeFileSync(`${process.env.FAKE_ACP_DUMP}.selection.json`, JSON.stringify({
+          sessionId: msg.params.sessionId, model: currentModel, variant: currentVariant,
+        }));
       }
       if (process.env.FAKE_ACP_DUMP && process.env.FAKE_ACP_DUMP_PROMPT === "1") {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.prompt.json`, JSON.stringify(msg.params?.prompt ?? null, null, 2));
@@ -707,6 +801,33 @@ function handle(msg: any) {
         });
       } else if (mode === "interleave") playInterleaveTurn();
       else if (mode !== "empty-reply") playTurn();
+      if (mode === "safe-agent-reads" && agentsMcp) {
+        const entry = agentsMcp;
+        // Deliberately independent of the app's policy catalog. These are the
+        // two exact calls in the reported regression, repeated in one turn.
+        void (async () => {
+          for (const name of ["list_bots", "session_search", "list_bots"]) {
+            const nativeAuto = argv[argv.indexOf("--permission-mode") + 1] === "auto";
+            if (!nativeAuto) {
+              const allowed = await new Promise<boolean>((resolve) => {
+                pendingPermissionId = 9100;
+                onPermissionAnswered = resolve;
+                out({ jsonrpc: "2.0", id: pendingPermissionId, method: "session/request_permission", params: {
+                  toolCall: { toolCallId: `fixture-${name}`, kind: "other", title: `agents__${name}`, rawInput: {} },
+                  options: [{ optionId: "allow-once", kind: "allow_once" }, { optionId: "reject", kind: "reject_once" }],
+                } });
+              });
+              if (!allowed) { complete(); return; }
+            }
+            const text = await driveMcp(entry, [{ name, args: () => name === "session_search" ? { query: "approval fixture" } : {} }], true);
+            out({ jsonrpc: "2.0", method: "session/update", params: { update: {
+              sessionUpdate: "agent_message_chunk", content: { text: `${name}: ${text}\n` },
+            } } });
+          }
+          complete();
+        })().catch((error) => out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: String(error) } }));
+        return;
+      }
       if (mode === "permission") {
         // ask the client to approve a tool, then complete once answered
         pendingPermissionId = 9001;
@@ -716,9 +837,14 @@ function handle(msg: any) {
           id: pendingPermissionId,
           method: "session/request_permission",
           params: {
-            toolCall: { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
+            toolCall: process.env.FAKE_ACP_PERMISSION_TOOL_CALL
+              ? JSON.parse(process.env.FAKE_ACP_PERMISSION_TOOL_CALL)
+              : { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
             options: [
               { optionId: "allow-once", kind: "allow_once" },
+              // Grok offers a session-wide allow on some requests and omits
+              // it on others; the driver must cope with both.
+              ...(process.env.FAKE_ACP_ALLOW_ALWAYS ? [{ optionId: "allow-always", kind: "allow_always" }] : []),
               { optionId: "reject", kind: "reject_once" },
             ],
           },

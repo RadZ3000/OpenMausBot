@@ -1,7 +1,7 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Square, Target, Users, X } from "lucide-react";
-import { useStore, visibleMessages, type Bot, type Group, type Message } from "@/state/store";
+import { useStore, visibleMessages, currentTaskBot, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { activeLocale, t } from "@/lib/i18n";
 import {
@@ -22,10 +22,12 @@ import {
   type FailedComposerSend,
 } from "@/lib/drafts";
 import { BotAvatar } from "./Avatar";
+import { MentionTextarea } from "./MentionTextarea";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
-import { ApprovalModeSelector } from "./ApprovalModeSelector";
+import { PlaceChip } from "./PlaceChip";
 import { FullAccessWarning } from "./FullAccessWarning";
+import { ApprovalModeSelector } from "./ApprovalModeSelector";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import {
   appendPastedText,
@@ -50,8 +52,11 @@ import { ReplyQuote } from "./ReplyQuote";
 import {
   QueuedComposerMessages,
   composerCanSteerQueuedMessages,
+  doubleEnterSteerWindowExpiresAt,
+  doubleEnterSteersQueue,
 } from "./ComposerQueuedMessages";
-import { skillRecorderEnabled } from "@/lib/feature-flags";
+import { skillAuthoringEnabled } from "@/lib/feature-flags";
+import { mentionChoicesForQuery } from "@/lib/mentions";
 import {
   composerSlashTrigger,
   goalTextFromComposer,
@@ -79,7 +84,7 @@ interface ComposerDraftSnapshot extends ComposerSendSnapshot {
 
 /** Renders the editable message composer and its pending attachments. */
 export function Composer({
-  bot,
+  bot: profile,
   group,
   members,
   onEditLast,
@@ -87,7 +92,7 @@ export function Composer({
   onClearReply,
   onConsumeReply,
   onRestoreReply,
-  locked = false,
+  locked: setupLocked = false,
 }: {
   bot?: Bot;
   group?: Group;
@@ -100,6 +105,8 @@ export function Composer({
   /** New rooms keep the composer inert until their setup is saved or skipped. */
   locked?: boolean;
 }) {
+  const bot = profile ? currentTaskBot(profile) : undefined;
+  const locked = setupLocked || Boolean(bot?.awaitingThreadSnapshot);
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
   const remoteClient = window.ogb?.remoteClient?.active === true;
@@ -108,11 +115,18 @@ export function Composer({
   // configured default responder.
   const busy = group ? Boolean(group.working || group.busyBotId) : Boolean(bot?.busy);
   // an engine with a live session takes a message INTO the running turn;
-  // for those the composer never locks — the server steers instead of 409
+  // for those the composer never locks — the server steers instead of 409.
+  // A room steers through its busy speaker's engine, mirroring how the
+  // server's queue-steer route resolves the running turn.
+  const steerInstanceId = group
+    ? members?.find((member) => member.id === group.busyBotId)?.modelSelection.instanceId
+    : bot?.modelSelection.instanceId;
   const canSteer =
-    !group && Boolean(bot) && state.instances.find((i) => i.instanceId === bot!.modelSelection.instanceId)?.capabilities?.queueing === true;
+    state.instances.find((i) => i.instanceId === steerInstanceId)?.capabilities?.queueing === true;
   // a pending approval blocks the prompt until it is answered
   const threadId = group?.threadId ?? bot?.threadId ?? "";
+  // The conversation's own place, when pinned; the chip reads it next to the bot default.
+  const composerTask = profile?.tasks?.find((task) => task.threadId === threadId);
   // the VISIBLE branch only — an approval left on a branch you edited away
   // from must not keep blocking the composer
   const approvals = pendingApprovals(group ? group.messages : bot ? visibleMessages(bot) : []);
@@ -199,6 +213,7 @@ export function Composer({
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
   const [dismissedSlashAt, setDismissedSlashAt] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mentionListRef = useRef<HTMLDivElement>(null);
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
 
@@ -242,7 +257,7 @@ export function Composer({
       description: t("composer.command.goalDesc"),
     });
     if (
-      skillRecorderEnabled(state.config) &&
+      skillAuthoringEnabled(state.config) &&
       (group ? (members ?? []).some(supportsAgents) : supportsAgents(bot))
     ) {
       available.push({
@@ -274,17 +289,13 @@ export function Composer({
     if (!mention || mention.start === dismissedAt) return [];
     const pool: MentionChoice[] = group
       ? [
-          { id: "__everyone__", name: "everyone" },
+          ...(!group.dm ? [{ id: "__everyone__", name: "everyone" }] : []),
           ...(members ?? []).map((member) => ({ id: member.id, name: member.name, bot: member })),
         ]
       : state.bots
           .filter((member) => member.id !== bot?.id && !member.hidden)
           .map((member) => ({ id: member.id, name: member.name, bot: member }));
-    const q = mention.query.trim().toLowerCase();
-    // "@Scout " — the full name plus a space — is a COMPLETED tag, not a
-    // search: keep the picker closed so Enter sends instead of re-picking
-    if (mention.query.endsWith(" ") && pool.some((b) => b.name.toLowerCase() === q)) return [];
-    return pool.filter((b) => !q || b.name.toLowerCase().includes(q)).slice(0, 6);
+    return mentionChoicesForQuery(pool, mention.query);
   }, [mention, dismissedAt, state.bots, bot?.id, group, members]);
   const mentionPickerOpen = candidates.length > 0;
 
@@ -293,15 +304,12 @@ export function Composer({
     [mention?.start, mention?.query, slash?.start, slash?.query],
   );
 
-  // one line at rest, then grow with the draft — hard cap at six lines
   useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    const line = parseFloat(getComputedStyle(el).lineHeight) || 24;
-    const cap = line * 6;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, cap)}px`;
-  }, [text]);
+    if (!mentionPickerOpen) return;
+    mentionListRef.current
+      ?.querySelector<HTMLElement>(`[data-mention-index="${highlight}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [highlight, mentionPickerOpen]);
 
   const pickMention = (peer: MentionChoice) => {
     if (!mention) return;
@@ -345,20 +353,51 @@ export function Composer({
   );
   const [steering, setSteering] = useState(false);
   const interruptTurn = () => {
-    if (group) dispatch({ type: "interruptGroup", groupId: group.id });
-    else if (bot) dispatch({ type: "interrupt", botId: bot.id });
+    if (group) dispatch({ type: "interruptGroup", groupId: group.id, threadId });
+    else if (bot) dispatch({ type: "interrupt", botId: bot.id, threadId });
   };
+  const queueHeadId = queuedMessages[0]?.queueId;
   const steerQueued = () => {
+    if (!queueHeadId) return;
     setSteering(true);
+    const settle = () => setSteering(false);
+    if (group && canSteer) {
+      // A steer-capable room folds the queued head into the running turn
+      // through the server; it never interrupts the turn to do it.
+      dispatch({ type: "steerGroupQueued", groupId: group.id, threadId, queueId: queueHeadId, onError: settle, onSettled: settle });
+    } else if (group) {
+      // A room whose running engine cannot steer keeps the old behavior:
+      // Steer ends the running turn so the next queued message starts.
+      dispatch({ type: "interruptGroup", groupId: group.id, threadId, onError: settle });
+    } else if (bot && canSteer) {
+      // A steer-capable engine folds the queued words into the running turn
+      // through the server; it never interrupts the turn to do it.
+      dispatch({ type: "steerQueued", botId: bot.id, threadId, queueId: queueHeadId, onError: settle, onSettled: settle });
+    } else if (bot) {
     // Unlike the general Stop control, Steer belongs to this exact queue.
     // Scoping prevents a 1:1 queue from interrupting the same bot in a room
     // (or a routine) whose work is unrelated to the words shown here.
-    const onError = () => setSteering(false);
-    if (group) dispatch({ type: "interruptGroup", groupId: group.id, threadId, onError });
-    else if (bot) dispatch({ type: "interrupt", botId: bot.id, threadId, onError });
+      dispatch({ type: "interrupt", botId: bot.id, threadId, onError: settle });
+    }
   };
-  const queueHeadId = queuedMessages[0]?.queueId;
   useEffect(() => setSteering(false), [threadId, queueHeadId]);
+  // Double-Enter gesture: when a send lands as a queued chip on a busy
+  // steer-capable thread (live steer lost its race, an attachment, an
+  // older CLI), a second Enter within a short window pulls that queue into
+  // the running turn. Plain sends never consult the window, so they keep
+  // their normal latency.
+  const steerAgainUntilRef = useRef(0);
+  const prevPendingCountRef = useRef(pendingCount);
+  useEffect(() => {
+    const expiresAt = doubleEnterSteerWindowExpiresAt(
+      prevPendingCountRef.current,
+      pendingCount,
+      busy,
+      canSteer,
+    );
+    if (expiresAt !== null) steerAgainUntilRef.current = expiresAt;
+    prevPendingCountRef.current = pendingCount;
+  }, [pendingCount, busy, canSteer]);
   // Most engines acknowledge interruption quickly, but a lost response must
   // not leave a control claiming to steer forever. Queue drain or turn end
   // clears it immediately; twenty seconds is the final recovery floor.
@@ -375,6 +414,7 @@ export function Composer({
   const [approvalWarning, setApprovalWarning] = useState<{
     mode: "auto" | "full";
     botId: string;
+    threadId: string;
   } | null>(null);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   // Approval mode belongs to one bot; a room has several, each with its own.
@@ -382,6 +422,7 @@ export function Composer({
   const approvalEngine = modeBot
     ? state.instances.find((instance) => instance.instanceId === modeBot.modelSelection.instanceId)
     : undefined;
+  const trustedThreadAccess = Boolean(!remoteClient && window.ogb?.approvals && capabilities.host.packaged);
   const uploadImage = useCallback(async (file: File): Promise<Attachment | null> => {
     const optimistic = optimisticImageAttachment(file);
     if (!optimistic) return null;
@@ -424,16 +465,17 @@ export function Composer({
   };
   const setApprovalMode = (mode: ApprovalMode) => {
     if (!modeBot || modeBot.busy || mode === approvalModeFor(modeBot)) return;
+    if ((mode === "full" || mode === "custom") && !trustedThreadAccess) return;
     if (mode === "full") {
-      setApprovalWarning({ mode: "full", botId: modeBot.id });
+      setApprovalWarning({ mode, botId: modeBot.id, threadId: modeBot.threadId });
       return;
     }
     // Safe Auto still needs its dedicated warning when it can drive the host.
     if (mode === "auto" && modeBot.computer === "local") {
-      setApprovalWarning({ mode: "auto", botId: modeBot.id });
+      setApprovalWarning({ mode: "auto", botId: modeBot.id, threadId: modeBot.threadId });
       return;
     }
-    dispatch({ type: "updateBot", botId: modeBot.id, patch: { approvalMode: mode } });
+    dispatch({ type: "updateTask", botId: modeBot.id, threadId: modeBot.threadId, patch: { approvalMode: mode } });
   };
 
   const hasContent = Boolean(effectiveText.trim()) || attachments.length > 0;
@@ -701,13 +743,15 @@ export function Composer({
         )}
         {mentionPickerOpen && (
           <div
+            ref={mentionListRef}
             role="listbox"
             aria-label={t("composer.mention.aria")}
-            className="absolute bottom-full left-2 z-20 mb-2 w-72 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg"
+            className="absolute bottom-full left-2 z-20 mb-2 max-h-72 w-72 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border border-hairline/40 bg-raised shadow-lg"
           >
             {candidates.map((peer, i) => (
               <button
                 key={peer.id}
+                data-mention-index={i}
                 role="option"
                 aria-selected={i === highlight}
                 onClick={() => pickMention(peer)}
@@ -779,22 +823,27 @@ export function Composer({
         <QueuedComposerMessages
           items={queuedMessages}
           onSteer={canSteerQueued ? steerQueued : undefined}
+          steerInterrupts={!canSteer}
           steerMode={group ? "next" : "all"}
           steering={steering}
           onCancel={(queueId) => {
             if (group) dispatch({ type: "cancelGroupQueued", groupId: group.id, threadId, queueId });
-            else if (bot) dispatch({ type: "cancelQueued", botId: bot.id, queueId });
+            else if (bot) dispatch({ type: "cancelQueued", botId: bot.id, threadId, queueId });
           }}
         />
         <div className="relative">
           {/* App-ground from the pill midline down, full-bleed. Bubbles may
               tuck into the top half of the radius; they must not show below
-              center — including the corner pockets around the paperclip. */}
+              center. End at the dock's pb-3 padding: a viewport-height
+              backdrop extends the document and lets focus scroll the header
+              away. Only the decoration is bounded; upward menus stay free. */}
           <div
             aria-hidden
-            className="absolute -left-5 -right-5 top-1/2 h-[50vh] bg-app"
+            data-composer-backdrop
+            className="pointer-events-none absolute -left-5 -right-5 -bottom-3 top-1/2 bg-app"
           />
-        <div className="relative z-[1] flex items-end gap-1 rounded-3xl bg-raised px-2 py-1.5">
+        <div data-tour="composer" className="relative z-[1] rounded-3xl bg-composer px-2 py-1.5 ring-1 ring-composer-ring">
+        <div className="flex items-end gap-1">
           <input
             ref={fileInput}
             type="file"
@@ -857,13 +906,26 @@ export function Composer({
                   driverKind={approvalEngine.driverKind}
                   onSelect={setApprovalMode}
                   disabled={Boolean(modeBot.busy)}
-                  trustedModesAvailable={Boolean(window.ogb?.approvals && capabilities.host.packaged)}
+                  trustedModesAvailable={trustedThreadAccess}
+                />
+              )}
+              {modeBot && !remoteClient && (
+                <PlaceChip
+                  bot={modeBot}
+                  task={composerTask}
+                  live={Boolean(modeBot.busy)}
+                  disabled={Boolean(modeBot.busy)}
+                  onPin={(surface) => dispatch({ type: "updateTask", botId: modeBot.id, threadId: modeBot.threadId, patch: { surface } })}
                 />
               )}
             </div>
           )}
-          <textarea
-          ref={inputRef}
+          <MentionTextarea
+          inputRef={inputRef}
+          peers={group ? members ?? [] : state.bots.filter((member) => member.id !== bot?.id)}
+          everyone={Boolean(group && !group.dm)}
+          // the message is composed in the writer's language, not the UI's
+          dir="auto"
           rows={1}
           value={text}
           onChange={(e) => {
@@ -923,13 +985,25 @@ export function Composer({
             // Shift+Enter inserts a newline; plain Enter sends
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
+              // The second Enter of the gesture: the chip above is waiting,
+              // the composer is empty, and the window is open — steer the
+              // queue into the running turn instead of waiting it out.
+              if (
+                canSteer &&
+                doubleEnterSteersQueue(steerAgainUntilRef.current, Date.now(), pendingCount, hasContent)
+              ) {
+                steerAgainUntilRef.current = 0;
+                steerQueued();
+                return;
+              }
               send();
             }
             if (e.key === "Escape" && recording) setRecording(false);
           }}
           disabled={Boolean(approval) || locked || attachmentPending}
+          aria-busy={bot?.awaitingThreadSnapshot || undefined}
           placeholder={
-            locked
+            setupLocked
               ? t("composer.placeholder.locked")
               : approval
               ? t("composer.placeholder.approval")
@@ -938,7 +1012,9 @@ export function Composer({
               : recording
               ? t("composer.placeholder.listening")
               : busy && canSteer
-                ? t("composer.placeholder.steer", { name: busyName })
+                ? pendingCount > 0
+                  ? t("composer.placeholder.steerQueued", { name: busyName })
+                  : t("composer.placeholder.steer", { name: busyName })
               : busy
                 ? group
                   ? t("composer.placeholder.queueGroup", { name: busyName })
@@ -953,7 +1029,7 @@ export function Composer({
                   : t("composer.placeholder.bot", { name: bot?.name ?? "" })
           }
           aria-label={t("composer.placeholder.bot", { name: group ? group.name : (bot?.name ?? "") })}
-            className="max-h-[9rem] min-h-6 min-w-0 flex-1 resize-none overflow-y-auto self-center bg-transparent px-1 py-1 text-[15px] leading-6 text-ink placeholder:text-ink-secondary focus:outline-none"
+            className="block max-h-[9rem] min-h-6 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-[15px] leading-6 placeholder:text-ink-secondary focus:outline-none"
           />
           <div className="flex items-center gap-1">
           {/* Stop stays a stop. Stop-then-steer is named beside the queued
@@ -1014,31 +1090,31 @@ export function Composer({
           </div>
         </div>
         </div>
+        </div>
       </div>
       <div className="pointer-events-auto">
+      <FullAccessWarning
+        open={approvalWarning?.mode === "full"}
+        scope="thread"
+        onCancel={() => setApprovalWarning(null)}
+        onConfirm={() => {
+          const target = approvalWarning;
+          setApprovalWarning(null);
+          if (target?.mode !== "full" || !trustedThreadAccess) return;
+          dispatch({ type: "updateTask", botId: target.botId, threadId: target.threadId,
+            patch: { approvalMode: "full", confirmFullAccess: true } });
+        }}
+      />
       <LocalComputerAutoWarning
         open={approvalWarning?.mode === "auto"}
         onCancel={() => setApprovalWarning(null)}
         onConfirm={() => {
           if (approvalWarning?.mode === "auto") {
             dispatch({
-              type: "updateBot",
+              type: "updateTask",
               botId: approvalWarning.botId,
+              threadId: approvalWarning.threadId,
               patch: { approvalMode: "auto", acknowledgeLocalAuto: true },
-            });
-          }
-          setApprovalWarning(null);
-        }}
-      />
-      <FullAccessWarning
-        open={approvalWarning?.mode === "full"}
-        onCancel={() => setApprovalWarning(null)}
-        onConfirm={() => {
-          if (approvalWarning?.mode === "full") {
-            dispatch({
-              type: "updateBot",
-              botId: approvalWarning.botId,
-              patch: { approvalMode: "full", confirmFullAccess: true },
             });
           }
           setApprovalWarning(null);

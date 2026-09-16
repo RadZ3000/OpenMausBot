@@ -6,13 +6,16 @@
 // same row and write through the same action.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Loader2, RefreshCw, Search } from "lucide-react";
-import { useStore, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
-import type { EffortLevel } from "../../server/contracts.ts";
+import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
+import type { EffortLevel } from "../../shared/wire";
+import type { ModelVariantOption } from "../../shared/runtime-events";
 import { filterCustomModels, partitionCustomModels, suggestedModels } from "@/lib/custom-models";
 import { isCustomOnly, splitEngineRail } from "@/lib/engine-rail";
 import { ProviderMark } from "./ProviderIcons";
 import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { approvalModeFor, modelSwitchNeedsAsk } from "../../shared/approval-mode";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { COMPACT_SQUARE } from "@/lib/compact-chip";
@@ -49,17 +52,24 @@ export function effortLabel(level: EffortLevel): string {
  * sends, so both stay and the tooltips say which is which. */
 export function EffortRow({
   bot,
+  threadId,
+  updateBotDefault,
   className,
   label,
 }: {
   bot: Bot;
+  threadId?: string;
+  updateBotDefault?: boolean;
   className?: string;
   label?: ReactNode;
 }) {
   const { state, dispatch } = useStore();
   const selection = bot.modelSelection;
-  const levels = state.instances.find((instance) => instance.instanceId === selection.instanceId)?.capabilities
-    ?.effortLevels;
+  const instance = state.instances.find((candidate) => candidate.instanceId === selection.instanceId);
+  if (instance?.capabilities?.modelVariants) {
+    return <ModelVariantRow bot={bot} threadId={threadId} updateBotDefault={updateBotDefault} className={className} label={label} />;
+  }
+  const levels = instance?.capabilities?.effortLevels;
   // An engine with no levels gets no control at all, not an empty one.
   if (!levels?.length) return null;
 
@@ -79,7 +89,7 @@ export function EffortRow({
                 ? "Send no effort level and let the engine decide"
                 : `Ask for ${effortLabel(level)} reasoning effort`
             }
-            onClick={() => dispatch({ type: "setModel", botId: bot.id, selection: { ...selection, effort: level } })}
+            onClick={() => dispatch({ type: "setModel", botId: bot.id, threadId, ...(updateBotDefault ? { updateBotDefault: true } : {}), selection: { ...selection, effort: level } })}
             className={cn(
               "rounded-full border px-2.5 py-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
               selection.effort === level
@@ -93,6 +103,86 @@ export function EffortRow({
       </div>
     </div>
   );
+}
+
+function variantLabel(option: ModelVariantOption): string {
+  return option.id === "default" ? "OpenCode default" : option.label;
+}
+
+/** ACP variant ids are opaque; their model/session declares the available choices. */
+export function ModelVariantRow({ bot, threadId, updateBotDefault, className, label }: {
+  bot: Bot;
+  threadId?: string;
+  updateBotDefault?: boolean;
+  className?: string;
+  label?: ReactNode;
+}) {
+  const { state, dispatch } = useStore();
+  const selection = bot.modelSelection;
+  const instance = state.instances.find((candidate) => candidate.instanceId === selection.instanceId);
+  if (!instance?.capabilities?.modelVariants) return null;
+  const session = state.modelVariantSessions[threadId ?? bot.threadId];
+  const reported = session?.instanceId === selection.instanceId && session.model === selection.model ? session.variants : undefined;
+  const options = reported?.options ?? instance.models.options.find((option) => option.id === selection.model)?.variants ?? [];
+  if (!options.length && selection.variant === undefined) return null;
+  const missing = selection.variant !== undefined && !options.some((option) => option.id === selection.variant);
+  const unavailable = missing && reported !== undefined;
+  const current = reported?.currentValue;
+  const choose = (variant?: string) => {
+    const { effort: _effort, variant: _variant, ...model } = selection;
+    dispatch({ type: "setModel", botId: bot.id, threadId, ...(updateBotDefault ? { updateBotDefault: true } : {}),
+      selection: { ...model, ...(variant !== undefined ? { variant } : {}) } });
+  };
+  return (
+    <div className={className}>
+      {label}
+      {(selection.variant === undefined || missing) && (
+        <p className="mt-2 text-[12px] text-ink-secondary">
+          {unavailable ? `Saved variant “${selection.variant}” is unavailable. Choose an available variant.`
+            : missing ? `Saved variant “${selection.variant}” has not been checked in this session.` : "No variant selected."}
+          {current !== undefined && ` Session: ${variantLabel(options.find((option) => option.id === current) ?? { id: current, label: current })}.`}
+        </p>
+      )}
+      {selection.variant !== undefined && (
+        <button type="button" disabled={bot.busy} onClick={() => choose()}
+          title="Send no variant selection; OpenCode keeps its session or configured setting"
+          className="mt-2 block text-[12px] text-ink-secondary underline underline-offset-2 hover:text-ink disabled:opacity-50">
+          Clear variant selection
+        </button>
+      )}
+      {options.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label="Reasoning variant">
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              disabled={bot.busy}
+              aria-pressed={selection.variant === option.id}
+              title={`Use ${variantLabel(option)} for this model`}
+              onClick={() => choose(option.id)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-50",
+                selection.variant === option.id ? "border-accent/60 bg-control text-ink" : "border-hairline/40 text-ink-secondary hover:bg-control/60 hover:text-ink",
+              )}
+            >
+              {variantLabel(option)}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Switching models must not carry an opaque variant from the previous model. */
+export function modelSelectionForPick(selection: ModelSelection, instance: InstanceInfo, model: string): ModelSelection {
+  const next: ModelSelection = { instanceId: instance.instanceId, model };
+  if (instance.instanceId === selection.instanceId) {
+    if (instance.capabilities?.modelVariants) {
+      if (model === selection.model && selection.variant !== undefined) next.variant = selection.variant;
+    } else if (selection.effort) next.effort = selection.effort;
+  }
+  return next;
 }
 
 function ModelRow({
@@ -235,11 +325,13 @@ export function ClaudeAccountSelect({ accounts, selectedId, onSelect }: {
 
 export function ModelPicker({
   bot,
+  threadId,
   className,
   contained = false,
   label,
 }: {
   bot: Bot;
+  threadId?: string;
   className?: string;
   /** Expand the menu in-flow under the trigger so it cannot overflow a
    * narrow parent (the Agent profile sidebar). */
@@ -253,12 +345,19 @@ export function ModelPicker({
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [scope, setScope] = useState<"bot" | "thread">("thread");
+  const [pendingSwitch, setPendingSwitch] = useState<{ botId: string; threadId: string;
+    selection: ModelSelection; updateBotDefault: boolean; name: string } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const refreshingRef = useRef(false);
   const lastClaudeIdRef = useRef<string | null>(null);
 
   const selection = bot.modelSelection;
   const active = state.instances.find((instance) => instance.instanceId === selection.instanceId);
+  const selectedVariantLabel = selection.variant === undefined ? undefined : variantLabel(
+    active?.models.options.find((option) => option.id === selection.model)?.variants?.find((option) => option.id === selection.variant)
+      ?? { id: selection.variant, label: selection.variant },
+  );
   const claudeAccounts = state.instances.filter((instance) => instance.driverKind === "claudeAgent");
   const multipleClaudeAccounts = claudeAccounts.length > 1;
   const showActiveAccount = multipleClaudeAccounts && active?.driverKind === "claudeAgent";
@@ -349,15 +448,23 @@ export function ModelPicker({
 
   const pick = (instance: InstanceInfo, model: string) => {
     if (bot.busy) return;
-    const sameInstance = instance.instanceId === selection.instanceId;
-    const nextSelection: ModelSelection = {
-      instanceId: instance.instanceId,
-      model,
-    };
-    if (sameInstance && selection.effort) nextSelection.effort = selection.effort;
+    const nextSelection = modelSelectionForPick(selection, instance, model);
+    const updateBotDefault = !threadId || scope === "bot";
+    const profile = state.bots.find((candidate) => candidate.id === bot.id) ?? bot;
+    const targets = updateBotDefault ? [currentTaskBot(profile, threadId ?? bot.threadId), profile] : [bot];
+    if (targets.some((target) => modelSwitchNeedsAsk(approvalModeFor(target),
+      state.instances.find((candidate) => candidate.instanceId === target.modelSelection.instanceId)?.driverKind,
+      instance.driverKind))) {
+      setPendingSwitch({ botId: bot.id, threadId: threadId ?? bot.threadId,
+        selection: nextSelection, updateBotDefault, name: modelLabel(instance, model) });
+      setOpen(false);
+      return;
+    }
     dispatch({
       type: "setModel",
       botId: bot.id,
+      threadId: threadId ?? bot.threadId,
+      updateBotDefault,
       selection: nextSelection,
     });
     setOpen(false);
@@ -392,7 +499,7 @@ export function ModelPicker({
   );
 
   const trigger = (
-    <button
+    <button data-tour="model"
       type="button"
       disabled={Boolean(bot.busy)}
       onClick={() => {
@@ -417,11 +524,11 @@ export function ModelPicker({
       )}
       title={
         bot.busy
-          ? t("model.busy")
+          ? t(threadId ? "model.threadBusy" : "model.busy")
           : active
           ? `${active.displayName} · ${modelLabel(active, selection.model)}${
               modelProvider(active, selection.model) ? ` · ${modelProvider(active, selection.model)}` : ""
-            }${selection.effort ? ` · ${effortLabel(selection.effort)} effort` : ""}`
+            }${selectedVariantLabel ? ` · ${selectedVariantLabel}` : selection.effort ? ` · ${effortLabel(selection.effort)} effort` : ""}`
           : selection.model
       }
     >
@@ -441,7 +548,9 @@ export function ModelPicker({
         </span>
         {/* outside the truncating span: a long model name must not be what
             hides the effort the header exists to surface */}
-        {selection.effort && (
+        {selectedVariantLabel !== undefined ? (
+          <span data-model-variant className="max-w-[120px] truncate text-ink-secondary">· {selectedVariantLabel}</span>
+        ) : selection.effort && (
           <span data-model-effort className="shrink-0 text-ink-secondary">
             · {effortLabel(selection.effort)}
           </span>
@@ -478,12 +587,27 @@ export function ModelPicker({
             "flex overflow-hidden rounded-2xl border border-hairline/50 bg-card",
             contained
               ? "relative mt-3 w-full max-h-[min(420px,50dvh)]"
-              : "absolute right-0 top-full z-30 mt-2 w-[380px] max-h-[min(480px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
+              : "absolute right-0 top-full z-30 mt-2 w-[380px] max-w-[calc(100vw-2rem)] max-h-[min(480px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
           )}
         >
           <ModelEngineRail instances={state.instances} selectedInstance={railInstance} claudeInstance={claudeRailInstance} onSelect={selectRail} />
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {threadId && (
+              <div className="shrink-0 border-b border-hairline/40 px-3 py-2">
+                <div role="group" aria-label="Apply model changes to" className="flex gap-1">
+                  {(["thread", "bot"] as const).map((value) => (
+                    <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}
+                      className={cn("rounded-lg px-2 py-1 text-[12px]", scope === value ? "bg-control text-ink" : "text-ink-secondary hover:bg-control/60")}>
+                      {value === "bot" ? "Thread + bot default" : "Only this thread"}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] text-ink-secondary">
+                  {scope === "bot" ? "This thread, groups, and new threads. Other existing threads keep their model." : "Other threads and groups keep their model."}
+                </p>
+              </div>
+            )}
             {railInstance ? (
               <>
                 <div className="shrink-0 px-4 pb-2 pt-3.5">
@@ -528,7 +652,7 @@ export function ModelPicker({
                     </p>
                   )}
                   <div className="mt-0.5 text-[11.5px] text-ink-secondary">
-                    {pane === "custom" ? t("model.localHint") : t("model.chooseHint")}
+                    {pane === "custom" ? t("model.localHint") : t(threadId && scope === "thread" ? "model.chooseThreadHint" : "model.chooseHint")}
                   </div>
                 </div>
 
@@ -584,7 +708,7 @@ export function ModelPicker({
                       {pane === "main" ? (
                         <>
                           {railInstance.snapshot.update && (
-                            <EngineUpdateNotice update={railInstance.snapshot.update} className="mx-1 mb-2" />
+                            <EngineUpdateNotice update={railInstance.snapshot.update} instance={railInstance} className="mx-1 mb-2" />
                           )}
                           <EngineGroupLabel className="px-2 pb-1 pt-0.5">
                             {query
@@ -657,8 +781,10 @@ export function ModelPicker({
                 {!contained && (
                   <EffortRow
                     bot={bot}
+                    threadId={threadId}
+                    updateBotDefault={Boolean(threadId && scope === "bot")}
                     className="shrink-0 border-t border-hairline/40 px-4 py-3"
-                    label={<span className="text-[12.5px] font-medium text-ink">Effort</span>}
+                    label={<span className="text-[12.5px] font-medium text-ink">{active?.capabilities?.modelVariants ? "Reasoning" : "Effort"}</span>}
                   />
                 )}
 
@@ -695,6 +821,25 @@ export function ModelPicker({
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={pendingSwitch !== null}
+        title={t("model.providerSwitch.title")}
+        body={t(pendingSwitch?.updateBotDefault ? "model.providerSwitch.botBody" : "model.providerSwitch.threadBody", {
+          model: pendingSwitch?.name ?? "",
+        })}
+        tone="neutral"
+        confirmLabel={t("model.providerSwitch.confirm")}
+        onCancel={() => setPendingSwitch(null)}
+        onConfirm={() => {
+          if (!pendingSwitch || bot.busy || pendingSwitch.botId !== bot.id || pendingSwitch.threadId !== (threadId ?? bot.threadId)) {
+            setPendingSwitch(null); return;
+          }
+          dispatch({ type: "setModel", botId: pendingSwitch.botId, threadId: pendingSwitch.threadId,
+            selection: pendingSwitch.selection, updateBotDefault: pendingSwitch.updateBotDefault,
+            resetApprovalToAsk: true });
+          setPendingSwitch(null);
+        }}
+      />
     </div>
   );
 }

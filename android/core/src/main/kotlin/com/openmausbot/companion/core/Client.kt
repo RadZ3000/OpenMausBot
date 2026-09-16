@@ -226,6 +226,22 @@ class CompanionClient(
 
     suspend fun config(): ConfigStatus = send(makeRequest("GET", "/api/config"))
 
+    /**
+     * The engine is a setting, not a secret, so it rides the ordinary config
+     * write — the same one `VoiceSettings.tsx` sends from its Voice engine
+     * group. Only the provider field is written; keys and server addresses
+     * stay on the computer.
+     */
+    suspend fun updateVoiceProvider(provider: VoiceProvider): ConfigStatus = send(
+        makeRequest(
+            "PUT",
+            "/api/config",
+            body = buildJsonObject {
+                put("tts", buildJsonObject { put("provider", provider.wire) })
+            },
+        ),
+    )
+
     suspend fun connectorCatalog(): ConnectorCatalog =
         send(makeRequest("GET", "/api/connectors/catalog"))
 
@@ -313,14 +329,19 @@ class CompanionClient(
     }
 
     /**
-     * Change only the engine, model and optional reasoning effort. This uses the
-     * companion's narrow model route rather than the desktop's general bot PATCH,
-     * which also owns execution policy and computer settings.
+     * A captured task changes only that task's model. The optional legacy form
+     * retains the narrow profile/default model route for older callers.
      */
-    suspend fun updateModel(botId: String, selection: ModelSelection): Bot {
-        val body = CompanionJson.encodeToJsonElement(ModelSelection.serializer(), selection).jsonObject
+    suspend fun updateModel(botId: String, selection: ModelSelection, threadId: String? = null): Bot {
+        val model = CompanionJson.encodeToJsonElement(ModelSelection.serializer(), selection).jsonObject
+        val path = if (threadId == null) "/api/bots/${segment(botId)}/model"
+            else "/api/bots/${segment(botId)}/tasks/${segment(threadId)}"
+        val body = if (threadId == null) model else buildJsonObject {
+            put("modelSelection", model)
+            put("requireAvailableModel", true)
+        }
         return send<BotResponse>(
-            makeRequest("PATCH", "/api/bots/${segment(botId)}/model", body = body),
+            makeRequest("PATCH", path, body = body),
         ).bot
     }
 
@@ -443,14 +464,14 @@ class CompanionClient(
         return send<CreatedRoom>(makeRequest("POST", "/api/groups", body = body)).group
     }
 
-    suspend fun sendToBot(botId: String, text: String): SendReceipt =
+    suspend fun sendToBot(botId: String, text: String, threadId: String? = null): SendReceipt =
         sendForReceipt(
-            makeRequest("POST", "/api/bots/${segment(botId)}/messages", body = jsonBody("text" to text)),
+            makeRequest("POST", "/api/bots/${segment(botId)}/messages", body = jsonBody("text" to text, "threadId" to threadId)),
         )
 
-    suspend fun sendToRoom(groupId: String, text: String): SendReceipt =
+    suspend fun sendToRoom(groupId: String, text: String, threadId: String? = null): SendReceipt =
         sendForReceipt(
-            makeRequest("POST", "/api/groups/${segment(groupId)}/messages", body = jsonBody("text" to text)),
+            makeRequest("POST", "/api/groups/${segment(groupId)}/messages", body = jsonBody("text" to text, "threadId" to threadId)),
         )
 
     /**
@@ -472,7 +493,7 @@ class CompanionClient(
             is MessageDestination.Room -> "/api/groups/${safeRouteId(to.id)}/queue/$queueId"
         }
         try {
-            sendUnit(makeRequest("DELETE", route))
+            sendUnit(makeRequest("DELETE", route, body = jsonBody("threadId" to to.threadId)))
         } catch (error: APIError.Status) {
             if (error.code != 404) throw error
             // The harness's own words, not Throwable.message, which falls
@@ -519,8 +540,8 @@ class CompanionClient(
         sendUnit(makeRequest("POST", "/api/threads/${segment(threadId)}/respond", body = body))
     }
 
-    suspend fun alwaysAllow(botId: String, key: String) {
-        sendUnit(makeRequest("POST", "/api/bots/${segment(botId)}/always-allow", body = jsonBody("allowKey" to key)))
+    suspend fun alwaysAllow(botId: String, key: String, threadId: String? = null) {
+        sendUnit(makeRequest("POST", "/api/bots/${segment(botId)}/always-allow", body = jsonBody("allowKey" to key, "threadId" to threadId)))
     }
 
     suspend fun authorizeConnector(slug: String, alias: String?): URI {
@@ -545,19 +566,19 @@ class CompanionClient(
             body = jsonBody("emoji" to emoji),
         )).message
 
-    suspend fun edit(botId: String, messageId: String, text: String) {
+    suspend fun edit(botId: String, messageId: String, text: String, threadId: String? = null) {
         sendUnit(makeRequest(
             "POST",
             "/api/bots/${segment(botId)}/messages/${segment(messageId)}/edit",
-            body = jsonBody("text" to text),
+            body = jsonBody("text" to text, "threadId" to threadId),
         ))
     }
 
-    suspend fun setActiveBranch(botId: String, messageId: String): String =
+    suspend fun setActiveBranch(botId: String, messageId: String, threadId: String? = null): String =
         send<ActiveBranchResponse>(makeRequest(
             "POST",
             "/api/bots/${segment(botId)}/active-branch",
-            body = jsonBody("messageId" to messageId),
+            body = jsonBody("messageId" to messageId, "threadId" to threadId),
         )).activeLeafId
 
     suspend fun createTask(botId: String, title: String? = null): Bot {
@@ -576,6 +597,17 @@ class CompanionClient(
             "PATCH",
             "/api/bots/${segment(botId)}/tasks/${segment(threadId)}",
             body = jsonBody("title" to title),
+        ))
+    }
+
+    /** The unarchive PATCH carries an explicit null, so jsonBody's skip-nulls
+     * rule cannot be used here. Stamps are whole milliseconds: a Double would
+     * serialize large ones in scientific notation. */
+    suspend fun setTaskArchived(botId: String, threadId: String, archivedAt: Double?) {
+        sendUnit(makeRequest(
+            "PATCH",
+            "/api/bots/${segment(botId)}/tasks/${segment(threadId)}",
+            body = buildJsonObject { put("archivedAt", JsonPrimitive(archivedAt?.toLong())) },
         ))
     }
 
@@ -608,20 +640,20 @@ class CompanionClient(
         makeRequest("DELETE", "/api/groups/${segment(groupId)}/tasks/${segment(threadId)}"),
     ).group
 
-    suspend fun interrupt(botId: String) {
-        sendUnit(makeRequest("POST", "/api/bots/${segment(botId)}/interrupt"))
+    suspend fun interrupt(botId: String, threadId: String? = null) {
+        sendUnit(makeRequest("POST", "/api/bots/${segment(botId)}/interrupt", body = jsonBody("threadId" to threadId)))
     }
 
     suspend fun cloudDesktop(botId: String): CloudDesktopSession = send(
         makeRequest("POST", "/api/bots/${segment(botId)}/computer/join"),
     )
 
-    suspend fun markBotRead(botId: String) {
-        sendUnit(makeRequest("POST", "/api/bots/${segment(botId)}/read"))
+    suspend fun markBotRead(botId: String, threadId: String? = null) {
+        sendUnit(makeRequest("POST", "/api/bots/${segment(botId)}/read", body = jsonBody("threadId" to threadId)))
     }
 
-    suspend fun markRoomRead(roomId: String) {
-        sendUnit(makeRequest("POST", "/api/groups/${segment(roomId)}/read"))
+    suspend fun markRoomRead(roomId: String, threadId: String? = null) {
+        sendUnit(makeRequest("POST", "/api/groups/${segment(roomId)}/read", body = jsonBody("threadId" to threadId)))
     }
 
     fun events(since: String?, screens: Boolean = false): Flow<StreamFrame> {
@@ -1043,8 +1075,8 @@ class CompanionClient(
         @Serializable
         private data class HealthIdentity(val app: String)
 
-        private fun jsonBody(vararg values: Pair<String, String>): JsonObject = buildJsonObject {
-            values.forEach { (name, value) -> put(name, value) }
+        private fun jsonBody(vararg values: Pair<String, String?>): JsonObject = buildJsonObject {
+            values.forEach { (name, value) -> value?.let { put(name, it) } }
         }
 
         private const val PROBE_TIMEOUT_SECONDS = 4L

@@ -76,9 +76,27 @@ data class OptionCard(
     val allowKey: String? = null,
     /** Learned skills require a complete, hash-bound review before approval. */
     val skillRequest: SkillRequestCardData? = null,
+    /**
+     * The model's own questions and options (Claude's `AskUserQuestion`).
+     * Present only on a structured ask; every other card leaves it null.
+     */
+    val questionRequest: QuestionRequestCardData? = null,
+    /**
+     * What an answered question was answered WITH. `answered` only records the
+     * behavior once the harness settles a live ask, so without this a settled
+     * question card would read "answer" instead of the reply.
+     */
+    val answeredText: String? = null,
 ) {
     val isPending: Boolean get() = requestId != null && answered == null && dismissed != true
     val isPermission: Boolean get() = tool != null
+
+    /**
+     * A structured ask draws its own card: the model posed real questions with
+     * real options, and a flat row of buttons cannot say which question a tap
+     * answered.
+     */
+    val questions: List<AskQuestion> get() = questionRequest?.questions.orEmpty()
 
     fun responseBehavior(choice: String): String = responseBehavior(choice, isPermission)
 
@@ -123,6 +141,18 @@ data class ToolActivity(
     val setup: Boolean? = null,
 )
 
+/**
+ * The thread an activity chip opened — "Opened thread #Title on Scout" — so
+ * the phone can go there. Newer computers only; a chip without one is just a
+ * receipt.
+ */
+@Serializable
+data class ThreadRef(
+    val botId: String,
+    val threadId: String,
+    val title: String,
+)
+
 @Serializable
 data class Sender(
     val botId: String,
@@ -150,6 +180,7 @@ data class Message(
     val text: String? = null,
     val card: OptionCard? = null,
     val tool: ToolActivity? = null,
+    val threadRef: ThreadRef? = null,
     val parentId: String? = null,
     val from: Sender? = null,
     val reactions: List<Reaction>? = null,
@@ -218,8 +249,76 @@ data class ModelSelection(
     val effort: String? = null,
 )
 
+/**
+ * The bot that opened a thread, on itself or on a teammate. Absent — which is
+ * every thread from an older computer — means the person opened it.
+ */
 @Serializable
-data class BotTask(val threadId: String, val title: String, val createdAt: Double)
+data class ThreadOpener(
+    val botId: String,
+    val name: String,
+    val delegationId: String? = null,
+    val at: Double,
+)
+
+/**
+ * The bot that closed a thread with close_thread, once its result was read.
+ * Absent means the thread is open; the computer clears it the moment a new
+ * turn starts there, so a reopened thread simply loses the stamp.
+ */
+@Serializable
+data class ThreadCloser(
+    val botId: String,
+    val name: String,
+    val at: Double,
+)
+
+/** A folder within one bot, in the order saved on the computer. */
+@Serializable
+data class BotProject(val id: String, val name: String, val emoji: String? = null)
+
+@Serializable
+data class BotTask(
+    val threadId: String,
+    val title: String,
+    val createdAt: Double,
+    val modelSelection: ModelSelection? = null,
+    val activity: String? = null,
+    val busy: Boolean? = null,
+    val unread: Boolean? = null,
+    val approvalMode: String? = null,
+    val autoApprove: Boolean? = null,
+    val alwaysAllow: List<String>? = null,
+    val projectId: String? = null,
+    val openedBy: ThreadOpener? = null,
+    val closedBy: ThreadCloser? = null,
+    /** The person put this thread away. Present means archived — a stamp of
+     * 0 is still archived, because the task API accepts any epoch number. */
+    val archivedAt: Double? = null,
+    /** Bot-only internal execution. Keep it addressable, but out of thread pickers. */
+    val routineRunId: String? = null,
+)
+
+/** The thread list's quiet second line, worded as the desktop words it. */
+val BotTask.openedByLabel: String?
+    get() = openedBy?.let { "opened by ${it.name}" }
+
+/** A bot closed this thread and nothing has happened there since. */
+val BotTask.isClosed: Boolean
+    get() = closedBy != null
+
+/** Archived is the presence of the stamp, not its value: archivedAt 0 counts. */
+val BotTask.isArchived: Boolean
+    get() = archivedAt != null
+
+/**
+ * The one line under a title: who closed it once a bot has, otherwise who
+ * opened it, otherwise nothing. Closed wins because it is the newer fact;
+ * archived wins over the opener because it explains why the row sits where
+ * it does.
+ */
+val BotTask.bylineLabel: String?
+    get() = closedBy?.let { "closed by ${it.name}" } ?: if (isArchived) "Archived" else openedByLabel
 
 @Serializable
 data class Bot(
@@ -236,6 +335,7 @@ data class Bot(
     val avatarUrl: String? = null,
     val avatarCrop: AvatarCrop? = null,
     val busy: Boolean? = null,
+    val activity: String? = null,
     val pinned: Boolean? = null,
     val hidden: Boolean? = null,
     /** Desktop sidebar section. Missing or blank means the built-in Bots area. */
@@ -259,7 +359,28 @@ data class Bot(
     val messages: List<Message>? = null,
     val activeLeafId: String? = null,
     val hasMore: Boolean? = null,
+    val projects: List<BotProject>? = null,
 )
+
+/** Project only task-local controls; the original fleet record stays profile-global. */
+fun Bot.forTask(requestedThreadId: String): Bot? {
+    val task = tasks?.firstOrNull { it.threadId == requestedThreadId }
+    if (task == null) return takeIf { threadId == requestedThreadId }
+    val selected = threadId == requestedThreadId
+    return copy(
+        threadId = requestedThreadId,
+        modelSelection = task.modelSelection ?: modelSelection,
+        busy = task.busy ?: if (selected) busy else false,
+        activity = task.activity ?: if (selected) activity else null,
+        unread = task.unread ?: if (selected) unread else false,
+        approvalMode = task.approvalMode ?: task.autoApprove?.let { if (it) "auto" else "ask" } ?: approvalMode,
+        autoApprove = task.autoApprove ?: autoApprove,
+        alwaysAllow = task.alwaysAllow ?: alwaysAllow,
+        messages = if (selected) messages else null,
+        activeLeafId = if (selected) activeLeafId else null,
+        hasMore = if (selected) hasMore else null,
+    )
+}
 
 @Serializable(with = AvatarCropSerializer::class)
 enum class AvatarCrop { MASCOT, CIRCLE, ROUNDED, SQUARE }
@@ -337,7 +458,7 @@ object FleetSerializer : KSerializer<Fleet> {
 }
 
 @Serializable
-data class ThreadPage(val messages: List<Message>, val hasMore: Boolean? = null)
+data class ThreadPage(val messages: List<Message>, val hasMore: Boolean? = null, val activeLeafId: String? = null)
 
 @Serializable
 data class SearchHit(
@@ -559,8 +680,24 @@ data class InstanceCapabilities(
 @Serializable
 data class InstanceList(val instances: List<Instance>)
 
-/** Which engine actually speaks. `VoiceProvider` in `server/tts/index.ts`. */
-enum class VoiceProvider { ELEVENLABS, SYSTEM }
+/**
+ * Which engine actually speaks. `VoiceProvider` in `server/tts/index.ts`;
+ * [wire] is the exact string the config write carries, and [fromWire] applies
+ * the server's own fallback: a missing field — an older desktop that predates
+ * the choice — and a provider this build has never heard of both mean
+ * ElevenLabs, keeping an unrecognised engine from being explained with copy
+ * written for a different one.
+ */
+enum class VoiceProvider(val wire: String) {
+    ELEVENLABS("elevenlabs"),
+    FISH("fish"),
+    SYSTEM("system"),
+    CHATTERBOX("chatterbox");
+
+    companion object {
+        fun fromWire(value: String?): VoiceProvider = entries.firstOrNull { it.wire == value } ?: ELEVENLABS
+    }
+}
 
 @Serializable
 data class ConfigFlag(
@@ -603,15 +740,12 @@ data class ConfigStatus(
         isTTSConfigured && (!agentVoice.isNullOrBlank() || hasWorkspaceDefaultVoice)
 
     /**
-     * `voiceProvider(cfg)` in `server/tts/index.ts`: only the exact string
-     * "system" selects the built-in engine. A missing field — an older
-     * desktop that predates the choice — and a provider this build has never
-     * heard of both fall back to ElevenLabs, which is the server's own rule
-     * and keeps an unrecognised engine from being explained with copy
-     * written for a different one.
+     * `voiceProvider(cfg)` in `server/tts/index.ts`: only a known, exact wire
+     * value selects its engine. Everything else falls back to ElevenLabs
+     * through [VoiceProvider.fromWire], which is the server's own rule.
      */
     val voiceProvider: VoiceProvider
-        get() = if (tts?.provider == "system") VoiceProvider.SYSTEM else VoiceProvider.ELEVENLABS
+        get() = VoiceProvider.fromWire(tts?.provider)
 }
 
 object ConnectedAppsRules {

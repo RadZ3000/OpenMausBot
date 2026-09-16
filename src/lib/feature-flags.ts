@@ -1,7 +1,7 @@
 import { t } from "./i18n";
 
 export interface FeatureFlagConfig {
-  features?: { skillRecorder?: boolean; showToolCalls?: boolean; browser?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean };
   browserEngine?: { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; installing?: boolean; installError?: string };
 }
 
@@ -19,9 +19,11 @@ export function browserUnavailableReason(config: FeatureFlagConfig | null | unde
   return t("browser.noEngine");
 }
 
-/** Experimental features are available only after an explicit opt-in. */
-export function skillRecorderEnabled(config: FeatureFlagConfig | null | undefined): boolean {
-  return config?.features?.skillRecorder === true;
+/** Bots may draft skills (the Verify card's Save as skill, /learn,
+ * skill_manage) for the user's review. On unless the Settings toggle was
+ * switched off — the same rule as the server's skillAuthoringEnabled. */
+export function skillAuthoringEnabled(config: FeatureFlagConfig | null | undefined): boolean {
+  return config?.features?.skillAuthoring !== false;
 }
 
 /** The experimental built-in browser is unavailable until the person using
@@ -34,4 +36,19 @@ export function builtInBrowserEnabled(config: FeatureFlagConfig | null | undefin
  * shows that work is happening. */
 export function showToolCallsEnabled(config: FeatureFlagConfig | null | undefined): boolean {
   return config?.features?.showToolCalls === true;
+}
+
+/** Opt-in computer sharing — lending this desktop's folders, terminal or
+ * computer control to a connected workspace. Off unless this server was
+ * explicitly switched on in its config.json; there is no Settings toggle, so
+ * the controls simply are not offered. */
+export function sharedComputersEnabled(config: FeatureFlagConfig | null | undefined): boolean {
+  return config?.features?.sharedComputers === true;
+}
+
+/** Claude bots also see the MCP servers of this machine's own Claude Code
+ * setup (Plugins → MCP servers). Off by default — every extra tool costs
+ * tokens on each message — and mirrors the server's claudeUserMcpEnabled. */
+export function claudeUserMcpEnabled(config: FeatureFlagConfig | null | undefined): boolean {
+  return config?.features?.claudeUserMcp === true;
 }
