@@ -24,7 +24,7 @@ this file; git still has them.
 | | |
 |---|---|
 | Branch | `merge/upstream-0.1.84` — this merge (0.1.84) |
-| HEAD | `253a2a07` merge of `f25cda00` + `8d8182ea` (0.1.84) |
+| HEAD | `fb0512f7` on `253a2a07` merge of `f25cda00` + `8d8182ea` (0.1.84) |
 | Theirs | `8d8182ea` — `upstream/main` **0.1.84**, Apache-2.0 |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
