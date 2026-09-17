@@ -1240,13 +1240,22 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
                     support.resumeMethod === "resume" ? "session/resume" : "session/load",
                     { sessionId: cursor, cwd, mcpServers: live.mcpServers },
                     LOAD_SESSION_TIMEOUT,
+                    (result) => {
+                      // Same-chunk config updates after this result must see the
+                      // session id before the awaiting continuation resumes.
+                      const lived = support.sessionLoadLived
+                        ? support.sessionLoadLived(result)
+                        : Boolean(result);
+                      if (!lived) return;
+                      sessionId = cursor;
+                      receiveModelVariants(result);
+                    },
                   );
                   const lived = support.sessionLoadLived
                     ? support.sessionLoadLived(sessionResult)
                     : Boolean(sessionResult);
                   if (lived) {
                     sessionId = cursor;
-                    receiveModelVariants(sessionResult);
                   } else sessionResult = null;
                 } catch {
                   /* session gone, load unsupported, or too slow — start fresh */
@@ -1257,7 +1266,13 @@ export function createAcpDriver(support: AcpSupport, options: AcpDriverOptions =
                   "session/new",
                   { cwd, mcpServers: live.mcpServers },
                   NEW_SESSION_TIMEOUT,
-                  receiveModelVariants,
+                  (result) => {
+                    // Wire order: updates in the same stdout chunk as this
+                    // result are handled before the await continues, so the
+                    // turn-local session id must be live for those gates.
+                    if (typeof result?.sessionId === "string") sessionId = result.sessionId;
+                    receiveModelVariants(result);
+                  },
                 );
                 sessionId = typeof sessionResult?.sessionId === "string" ? sessionResult.sessionId : null;
                 if (!sessionId) throw new Error("session/new returned no sessionId");

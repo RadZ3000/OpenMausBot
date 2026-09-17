@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 const ALLOWED = new Set([
   "0BSD",
   "Apache-2.0",
+  "Apache 2.0", // npm's non-SPDX spelling; qrcode-terminal 0.12.0
   "BlueOak-1.0.0",
   "BSD-2-Clause",
   "BSD-3-Clause",

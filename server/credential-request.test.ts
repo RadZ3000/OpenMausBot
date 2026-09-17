@@ -43,7 +43,7 @@ describe("credential request allowlist", () => {
     expect(credentialIsConfigured({ tts: { key: "" } }, "ttsKey")).toBe(false);
     expect(credentialIsConfigured({ tts: { fishKey: "secret" } }, "fishAudioKey")).toBe(true);
     expect(credentialIsConfigured({ tts: { fishKey: "" } }, "fishAudioKey")).toBe(false);
-    expect(Object.keys(CREDENTIAL_TARGETS)).toHaveLength(6);
+    expect(Object.keys(CREDENTIAL_TARGETS)).toHaveLength(7);
   });
 
   it("reuses open room cards only for the bot that requested them", () => {

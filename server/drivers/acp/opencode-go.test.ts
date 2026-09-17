@@ -339,8 +339,14 @@ describe("OpenCode session variants", () => {
     const calls = (): Array<{ params: { sessionId: string; configId: string; value: string } }> => (
       existsSync(`${dump}.config.json`) ? JSON.parse(readFileSync(`${dump}.config.json`, "utf8")) : []
     );
-    const prompted = () => JSON.parse(readFileSync(`${dump}.methods.json`, "utf8")).includes("session/prompt");
-    return { instance, recorder, run, calls, prompted, dump };
+    // Keep-alive reuses the fake CLI process, so the RPC dump accumulates
+    // across turns. Count prompts rather than asking whether any ever ran.
+    const promptCount = () => {
+      if (!existsSync(`${dump}.methods.json`)) return 0;
+      return (JSON.parse(readFileSync(`${dump}.methods.json`, "utf8")) as string[]).filter((method) => method === "session/prompt").length;
+    };
+    const prompted = () => promptCount() > 0;
+    return { instance, recorder, run, calls, prompted, promptCount, dump };
   };
   afterEach(async () => {
     for (const entry of fixtures.splice(0)) {
@@ -384,8 +390,9 @@ describe("OpenCode session variants", () => {
     const first = await f.run();
     expect(first.done).toMatchObject({ ok: true });
     expect(first.events).toContainEqual(expect.objectContaining({ type: "session.model-variants", variants: { options: [] } }));
+    const prompts = f.promptCount();
     expect((await f.run({ variant: "high" })).done).toMatchObject({ ok: false });
-    expect(f.prompted()).toBe(false);
+    expect(f.promptCount()).toBe(prompts);
   });
 
   it("uses model-dependent grouped options returned by the model switch", async () => {
@@ -404,8 +411,9 @@ describe("OpenCode session variants", () => {
     expect(events.filter((event) => event.type === "session.model-variants").at(-1)).toMatchObject({
       model: secondModel, variants: { options: [{ id: "minimal", label: "Minimal" }, { id: "custom-deep", label: "Deep" }], currentValue: "custom-deep" },
     });
+    const prompts = f.promptCount();
     expect((await f.run({ model: secondModel, variant: "none" })).done).toMatchObject({ ok: false });
-    expect(f.prompted()).toBe(false);
+    expect(f.promptCount()).toBe(prompts);
   });
 
   it("reapplies an explicit choice on resume and targets only its native session", async () => {

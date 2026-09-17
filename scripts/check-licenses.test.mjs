@@ -4,7 +4,7 @@ import { permitted } from "./check-licenses.mjs";
 
 describe("permitted", () => {
   it("accepts the plain permissive licenses", () => {
-    for (const license of ["MIT", "ISC", "Apache-2.0", "BSD-3-Clause", "0BSD", "BlueOak-1.0.0"]) {
+    for (const license of ["MIT", "ISC", "Apache-2.0", "Apache 2.0", "BSD-3-Clause", "0BSD", "BlueOak-1.0.0"]) {
       expect(permitted(license)).toBe(true);
     }
   });
