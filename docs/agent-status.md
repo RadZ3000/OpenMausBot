@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-09-17 (Landed merge of `upstream/main` through `8d8182ea` **0.1.84** on branch `merge/upstream-0.1.84`. License gate green (Apache-2.0). Two content conflicts: `ci.yml` (took theirs' sharded CI; fork checks moved to additive `.github/workflows/check-fork.yml`) and `server/index.ts` (kept last-look via `withComputerObservation` on theirs' `dispatchContext.turnText`, plus their `delta-context` imports). `pnpm typecheck`, `pnpm check:brand`, `pnpm check:licenses`, `pnpm check:distribution` green; brand ledger re-baselined for incidents / locales / iOS Client. Full `pnpm test` showed order-dependent / contention flakes that pass in isolation; real fixes landed for OpenCode variant tests under ACP keep-alive and `session/new` config-update wire order. Do not push until asked. Theirs `IMAGE_LAYER_VERSION` stays **"5"**. Host Cua npm is **0.28.2**; container `CUA_DRIVER_VERSION` stays **0.20.0**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md). [B-29](known-bugs.md) is P1 of 002. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Hop-on map: [`README.md`](README.md).)
+Last updated: 2026-09-21 (Landed merge of `upstream/main` through `e87f4880` **0.1.85** on branch `merge/upstream-0.1.85`. License gate green (Apache-2.0). Took theirs' ACP per-thread keep-alive (#1575) and re-applied fork seams: imageGen MCP mount, `windowsDetachedSpawn` / `sessionLoadLived` for Hermes, last-look via `withComputerObservation`, `imageGen` + `hooks` capability kinds, brand `PRODUCT_NAME` on ACP deny notes and Electron window titles. Brand ledger re-baselined for docs / peer-roster / system-prompt drift; `fake-acp` dump allowlist keeps `HERMES_HOME`. `pnpm typecheck`, `pnpm check:brand`, `pnpm check:licenses`, `pnpm check:distribution` green. Full vitest: 7978 passed; remaining isolation flakes in `index.test` under load; real race fix in `thread-aware-bots.e2e` (poll for settlement prompt). Do not push until asked. Host Cua npm is **0.28.2**; container `CUA_DRIVER_VERSION` stays **0.20.0**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md). [B-29](known-bugs.md) is P1 of 002. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Hop-on map: [`README.md`](README.md).)
 
 ## Start here
 
@@ -19,17 +19,17 @@ plans: [`plans/archive/README.md`](plans/archive/README.md). The 2026-08-21
 morning handoff and the 2026-08-23 cold-start were deleted as duplicates of
 this file; git still has them.
 
-## Git (this machine, 2026-09-17)
+## Git (this machine, 2026-09-21)
 
 | | |
 |---|---|
-| Branch | `merge/upstream-0.1.84` — this merge (0.1.84) |
-| HEAD | `fb0512f7` on `253a2a07` merge of `f25cda00` + `8d8182ea` (0.1.84) |
-| Theirs | `8d8182ea` — `upstream/main` **0.1.84**, Apache-2.0 |
+| Branch | `merge/upstream-0.1.85` — this merge (0.1.85) |
+| HEAD | merge of `merge/upstream-0.1.84` tip + `e87f4880` (0.1.85) |
+| Theirs | `e87f4880` — `upstream/main` **0.1.85**, Apache-2.0 |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Catch-up to `upstream/main` `8d8182ea` (0.1.84) landed this turn; previous was `d35833b9` / `f25cda00` (0.1.82). Whose-file is still `git diff --stat upstream/main`. `package.json` version is now theirs' `0.1.84`. Host `@trycua/cua-driver` is **0.28.2**. Upstream's CI is now sharded (`static` / `vitest` / smokes / `gate`); our `check:brand` / `check:distribution` / `check:licenses` live in fork-owned [`.github/workflows/check-fork.yml`](../.github/workflows/check-fork.yml) — do not fold them back into `ci.yml`. Upstream also added `qrcode-terminal` (npm license string `Apache 2.0`); `scripts/check-licenses.mjs` accepts that spelling. New upstream surface worth knowing: team **incidents** (`server/incidents.ts`), **delta-context** handoffs, Auto Local VM claims, CDP attach to a running Chrome, provider icon picker, thread LLM titles, mobile attention inbox.
+Catch-up to `upstream/main` `e87f4880` (0.1.85) landed this turn; previous was `8d8182ea` (0.1.84). Whose-file is still `git diff --stat upstream/main`. `package.json` version is now theirs' `0.1.85`. Host `@trycua/cua-driver` is **0.28.2**. Upstream ACP now keeps one agent process per thread (idle via `OMB_ACP_SESSION_IDLE_MS`, default 10m) — our fork-owned `server/acp-session.ts` remains for fingerprint/last-look helpers but is no longer the ACP pool. New upstream surface worth knowing: KaTeX math, Grok TTS (`xai` TTS provider), hosted model routing, context compaction / digests, hooks (`omb-hook`), guarded external turns, standing agents / Slack assistant runtime, organisation local sign-in, webhook "post" mode.
 
 `cfg.imageGen` remains **theirs** (avatar) with our generate_image fields in the same block; status still splits `imageGen` vs **`imageGenProxy`**. Qwen `.cmd` shim parsing stays in fork-owned [`server/cmd-shim-vars.ts`](../server/cmd-shim-vars.ts).
 
@@ -57,7 +57,7 @@ We do not win by cloning upstream’s breadth.
 | Goal | Meaning | Not |
 |---|---|---|
 | **Path A** | Local `qwen3-vl:8b` (Thinking, 32k) via Ollama → Hermes ACP → Local VM (WSL → Podman → Cua XFCE). No API key. Eight `vm_*` tools. Last-look **text**. 16 GB is **tight**; comfortable starts at **24 GB**. Do not ship 4B Thinking at 8k. | Hosted Hermes (paid remote model, same VM). Flipping `RECOMMENDED_MODEL` off 8B except by a new plan. |
-| **Computer** | Honest sandbox on the Local VM. Coworker *loop* (observe → act → remember). Granite can open and read. Same-turn recover-and-click on a Chromium error page **did not land** on 3B or 8B. ACP child now stays across turns (idle 15m, cap 3). | Unsupervised Cowork on 3B/8B/4B. Driving the user’s Windows desktop. JPEG to Granite. |
+| **Computer** | Honest sandbox on the Local VM. Coworker *loop* (observe → act → remember). Granite can open and read. Same-turn recover-and-click on a Chromium error page **did not land** on 3B or 8B. ACP child now stays across turns (upstream idle default 10m via `OMB_ACP_SESSION_IDLE_MS`). | Unsupervised Cowork on 3B/8B/4B. Driving the user’s Windows desktop. JPEG to Granite. |
 | **Fork** | Additive files. Defaults never point at upstream feeds or keys. | Editing upstream-owned files when a new file will do. Publishing with the `windows-release` skill. |
 
 Coworker-level unsupervised hands on that VM: **Claude, Codex, or grokAgent**.
@@ -83,7 +83,7 @@ Read `commercial-fork`; do not add a second profile.
 
 **Upstream license gate.** [`plans/2026-08-25-003-upstream-license-gate.md`](plans/2026-08-25-003-upstream-license-gate.md)
 is in tree. `pnpm check:upstream-license` after `git fetch upstream`, before any
-merge. Green today on `8d8182ea` (Apache-2.0). A “fetch and merge” order does
+merge. Green today on `e87f4880` (Apache-2.0). A “fetch and merge” order does
 **not** skip it. On red: stop, paste the alert, wait for a named acknowledgment;
 default is freeze. Do not wrap fetch. Weekly Action:
 `.github/workflows/check-upstream-license.yml`.

@@ -1262,7 +1262,7 @@ const support: AcpSupport = {
   isAuthenticated: () => true,
   // LoadSessionResponse always includes `models`. `{}` is a miss — Hermes
   // returns None from load_session, the ACP SDK serializes that as success.
-  sessionLoadLived: (result) => result != null && typeof result === "object" && "models" in result,
+  sessionLoadLived: (result: unknown) => result != null && typeof result === "object" && "models" in result,
   async configureSession({ request, sessionId, turn }) {
     // Decode only — resolveTurnModel already wrote the named provider and
     // selected it using the instance HOME. Calling ensure*/select* again

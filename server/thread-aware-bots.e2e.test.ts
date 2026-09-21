@@ -359,7 +359,8 @@ describe("start_thread on yourself", () => {
 });
 
 describe("coordinate_bots on a teammate", () => {
-  it("queues three separate recipient threads, returns all results, and leaves the person's selected thread untouched", async () => {
+  it.each([1, 2])("runs three recipient threads within capacity %i, returns all results, and leaves the person's selected thread untouched", async (capacity) => {
+    expect((await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: capacity } })).status).toBe(200);
     const pm = await createBot("Pam", "gated");
     const qa = await createBot("Quinn", "gated");
     const stream = await openSse(`${base}/api/events`);
@@ -383,13 +384,15 @@ describe("coordinate_bots on a teammate", () => {
       expect(chips.map((chip) => [chip.tool.name, chip.threadRef.botId, chip.threadRef.threadId])).toEqual(
         opened.map((thread) => ["Sent to Quinn", qa.id, thread.threadId]),
       );
-      // Coordination serializes work on a busy recipient even when its own
-      // independent-thread capacity is two. Ending the source dispatches it.
+      // Ending the source admits only as many independent threads as fit.
+      // Hold every admitted turn so both parallelism and queueing are observable.
       release(pm.threadId);
       for (let index = 0; index < opened.length; index++) {
         const thread = opened[index];
         await liveToken(thread.threadId);
-        expect(handoffs().filter(node => node.botId === qa.id && node.status === "running")).toHaveLength(1);
+        const running = Math.min(capacity, opened.length - index);
+        await expect.poll(() => handoffs().filter(node => node.botId === qa.id && node.status === "running").length, { timeout: 15_000 }).toBe(running);
+        expect(handoffs().filter(node => node.botId === qa.id && node.status === "queued")).toHaveLength(opened.length - index - running);
         const request = (await messages(thread.threadId)).find((message) => message.roomRequest?.phase === "request");
         expect(request).toMatchObject({ from: { botId: pm.id }, roomRequest: { id: thread.id } });
         expect(request.text).toContain(`Test pull request ${index + 1}.`);
@@ -402,7 +405,8 @@ describe("coordinate_bots on a teammate", () => {
         (message) => message.from?.botId === qa.id && message.roomRequest?.phase === "result",
       ).length, { timeout: 20_000 }).toBe(3);
       await expect.poll(async () => (await botState(pm.id)).busy, { timeout: 15_000 }).toBe(false);
-      expect(promptsOf(pm.threadId).at(-1)?.message.content).toContain("Your downstream room requests have settled");
+      await expect.poll(() => promptsOf(pm.threadId).at(-1)?.message?.content, { timeout: 15_000 })
+        .toContain("Your downstream room requests have settled");
       expect(stream.frames.filter((frame) => frame.kind === "notify" && frame.notification?.botId === qa.id)).toEqual([]);
       expect((await botState(qa.id)).tasks.filter((task: any) => task.unread)).toEqual([]);
       expect((await botState(qa.id)).threadId).toBe(qa.threadId);
@@ -410,6 +414,7 @@ describe("coordinate_bots on a teammate", () => {
     } finally {
       stream.close();
       await cleanup([pm.id, qa.id]);
+      expect((await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: 2 } })).status).toBe(200);
     }
   }, 90_000);
 

@@ -72,6 +72,19 @@ function workspaceSummary(state) {
   return active ? { local: false, name: active.name, origin: active.origin } : { local: true, name: "This computer" };
 }
 
+/** Native identity must not depend on a hosted renderer's version/title. */
+function productName() {
+  const fromEnv = typeof process.env.OMB_PRODUCT_NAME === "string" ? process.env.OMB_PRODUCT_NAME.trim() : "";
+  return fromEnv || "FlowDesk";
+}
+
+function workspaceWindowTitle(state, companion) {
+  const name = productName();
+  if (companion) return `${name} — Connected to: ${companion.serverName} (${new URL(companion.endpoint).host})`;
+  const active = activeEnvironment(state);
+  return active ? `${name} — Hosted: ${active.name} (${new URL(active.origin).host})` : name;
+}
+
 /** Renderer navigation stays in the selected workspace. Switching is a main
  * process action; a cloud page must not navigate itself onto the local bridge. */
 function workspaceNavigationAllowed(url, state, localOrigin) {
@@ -199,4 +212,5 @@ module.exports = {
   workspaceNavigationAllowed,
   workspaceSenderAllowed,
   workspaceSummary,
+  workspaceWindowTitle,
 };

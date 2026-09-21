@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import { handleToolCall, request } from "../scripts/mcp-server.ts";
+import { PRODUCT_NAME } from "./distribution.ts";
 import { waitForExit } from "./testing/cleanup.ts";
 
 it("boots and reports an interrupted routine back to its source room", async () => {
@@ -46,7 +47,7 @@ it("boots and reports an interrupted routine back to its source room", async () 
       return fetch(url + "/api/health").then(r => r.ok).catch(() => false);
     }, { timeout: 10_000, interval: 150 }).toBe(true);
     const { runs } = await request("/api/routines", {}, url) as any;
-    expect(runs[0]).toMatchObject({ status: "failed", error: "OpenMausBot restarted while this routine was running" });
+    expect(runs[0]).toMatchObject({ status: "failed", error: `${PRODUCT_NAME} restarted while this routine was running` });
     const { messages } = await request(`/api/threads/${channel.activeTaskId}/messages`, {}, url) as any;
     expect(messages.filter((m: any) => m.routineRun?.runId === "interrupted-room-run"))
       .toMatchObject([{ routineRun: { status: "failed" } }]);
