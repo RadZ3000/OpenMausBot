@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-09-24 (Pushed merge of `upstream/main` `dbd7920c` **0.1.87** on `merge/upstream-0.1.87`. License gate green (Apache-2.0). Took theirs through 0.1.87 — org library, presets, share-team v2, command allowlist, voice notes, connector grants, mermaid, startup tray, stopped Local VM must be recreated — and re-applied fork seams: imageGen MCP plus `imageGenApiKey` in the agents catalog goldens, Hermes `windowsDetachedSpawn` / `sessionLoadLived`, last-look via `withComputerObservation`, `imageGen` + `hooks` + `phone` capability kinds, `PREFERRED_ENGINE` / `startingModel`, brand `PRODUCT_NAME`, Team Library gate, update Download hide, opt-in `AnalyticsSettings`. Brand ledger re-baselined. elkjs (EPL-2.0) and khroma (MIT, missing npm license field) reviewed for mermaid. `pnpm typecheck`, `pnpm check:brand`, `pnpm check:licenses`, `pnpm check:distribution`, `pnpm i18n:check` green. Full vitest (`OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`) had 13 failures: the six merge fixes above, plus workspace-backup, checkpoints digest, and surface-pins, which passed when re-run alone. Host Cua npm is **0.28.2**; container `CUA_DRIVER_VERSION` stays **0.20.0**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md). [B-29](known-bugs.md) is P1 of 002. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Hop-on map: [`README.md`](README.md).)
+Last updated: 2026-09-24 (Merge commit `a3e3523b` of `upstream/main` `dbd7920c` **0.1.87** is local on `merge/upstream-0.1.87`. Push to `origin` was refused by the pre-push hook: `pnpm lint` fails anti-slop on 851 files, including `vite.config.ts`, which is unchanged from the already-pushed `004638f2`. Do not `--no-verify` unless asked. License gate green (Apache-2.0). Took theirs through 0.1.87 — org library, presets, share-team v2, command allowlist, voice notes, connector grants, mermaid, startup tray, stopped Local VM must be recreated — and re-applied fork seams: imageGen MCP plus `imageGenApiKey` in the agents catalog goldens, Hermes `windowsDetachedSpawn` / `sessionLoadLived`, last-look via `withComputerObservation`, `imageGen` + `hooks` + `phone` capability kinds, `PREFERRED_ENGINE` / `startingModel`, brand `PRODUCT_NAME`, Team Library gate, update Download hide, opt-in `AnalyticsSettings`. Brand ledger re-baselined. elkjs (EPL-2.0) and khroma (MIT, missing npm license field) reviewed for mermaid. `pnpm typecheck`, `pnpm check:brand`, `pnpm check:licenses`, `pnpm check:distribution`, `pnpm i18n:check` green. Full vitest (`OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`) had 13 failures: the six merge fixes above, plus workspace-backup, checkpoints digest, and surface-pins, which passed when re-run alone. Host Cua npm is **0.28.2**; container `CUA_DRIVER_VERSION` stays **0.20.0**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md). [B-29](known-bugs.md) is P1 of 002. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Hop-on map: [`README.md`](README.md).)
 
 ## Start here
 
@@ -23,8 +23,8 @@ this file; git still has them.
 
 | | |
 |---|---|
-| Branch | `merge/upstream-0.1.87` — pushed to `origin` |
-| HEAD | merge of `004638f2` (0.1.85) + `dbd7920c` (0.1.87) |
+| Branch | `merge/upstream-0.1.87` — local; not on `origin` yet |
+| HEAD | `a3e3523b` — merge of `004638f2` (0.1.85) + `dbd7920c` (0.1.87) |
 | Theirs | `dbd7920c` — `upstream/main` **0.1.87**, Apache-2.0 |
 | `origin` | `RadZ3000/OpenMausBot` — **only push target**. |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
