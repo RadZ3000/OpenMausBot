@@ -48,6 +48,14 @@ const REVIEWED = [
     prefix: "@img/sharp",
     reason: "bundles LGPL-3.0 libvips, but arrives through miniflare (a dev-only Cloudflare tool) and is not shipped",
   },
+  {
+    prefix: "elkjs",
+    reason: "EPL-2.0 weak copyleft, shipped unmodified as mermaid's layout engine; the package keeps its LICENSE.md",
+  },
+  {
+    prefix: "khroma",
+    reason: "npm manifest omits license, but the published license file is MIT; pulled in by mermaid",
+  },
 ];
 
 /** SPDX expressions: OR lets us elect a licence, AND binds us to all of them. */
@@ -106,7 +114,7 @@ function main() {
     counts.set(license ?? "(none declared)", (counts.get(license ?? "(none declared)") ?? 0) + 1);
     if (license && permitted(license)) continue;
     const exception = REVIEWED.find((candidate) => name.startsWith(candidate.prefix));
-    if (exception && license) reviewed.push(`  ${id} — ${license}\n      ${exception.reason}`);
+    if (exception) reviewed.push(`  ${id} — ${license ?? "no license field"}\n      ${exception.reason}`);
     else violations.push(`  ${id} — ${license ?? "no license field"}`);
   }
 

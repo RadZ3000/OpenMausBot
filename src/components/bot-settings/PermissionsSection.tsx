@@ -15,9 +15,12 @@ import { useState } from "react";
 import { Crown } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import { t } from "@/lib/i18n";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { useStore, type Bot } from "@/state/store";
 import type { ApprovalMode } from "../../../shared/approval-mode";
 import { ApprovalModeSelector } from "../ApprovalModeSelector";
+import { CommandAllowlistDialog } from "../CommandAllowlistDialog";
 import { FullAccessWarning } from "../FullAccessWarning";
 import { LocalComputerAutoWarning } from "../LocalComputerAutoWarning";
 import { Switch } from "../SettingsPrimitives";
@@ -27,6 +30,7 @@ import {
 } from "@/lib/computer-routing";
 import { ManagedTeamsSettings } from "./ManagedTeamsSettings";
 import type { useBotSettingsDerived } from "./useBotSettingsDerived";
+import { useBotEditor } from "./BotEditorContext";
 
 export function PermissionsSection({
   bot,
@@ -37,9 +41,12 @@ export function PermissionsSection({
 }) {
   const { patch, engine, canCoordinate, approvalMode, trustedModesAvailable, sectionName, currentChief } = derived;
   const { state, dispatch } = useStore();
+  const ownerOrAdmin = useOwnerOrAdmin();
+  const { draft } = useBotEditor();
   const [localAutoWarning, setLocalAutoWarning] = useState<string | null>(null);
   const [fullAccessTarget, setFullAccessTarget] = useState<string | null>(null);
   const [allThreads, setAllThreads] = useState(true);
+  const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string } | null>(null);
   const setApprovalMode = (mode: ApprovalMode) => {
     if (bot.busy || mode === approvalMode) return;
     if (mode === "full") {
@@ -137,14 +144,16 @@ export function PermissionsSection({
       <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Approval level</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
-          {localInjectCannotAutoDriveComputer({
-            model: bot.modelSelection.model,
-            computer: bot.computer,
-            cloudBackend: bot.cloudBackend,
-            autoApprove: true,
-          })
-            ? LOCAL_INJECT_AUTO_COMPUTER_COPY
-            : "Default for new threads, routines and delegated work. When enabling Full access, you can also apply it to every existing thread."}
+          {draft
+            ? "Default for the new bot's threads, routines and delegated work."
+            : localInjectCannotAutoDriveComputer({
+                model: bot.modelSelection.model,
+                computer: bot.computer,
+                cloudBackend: bot.cloudBackend,
+                autoApprove: true,
+              })
+              ? LOCAL_INJECT_AUTO_COMPUTER_COPY
+              : "Default for new threads, routines and delegated work. When enabling Full access, you can also apply it to every existing thread."}
         </div>
         <div className="mt-3">
           <ApprovalModeSelector
@@ -157,15 +166,26 @@ export function PermissionsSection({
             wide
             disabled={Boolean(bot.busy)}
             trustedModesAvailable={trustedModesAvailable}
+            onManageCommandAllowlist={!draft && ownerOrAdmin === true ? () => setCommandAllowlistTarget({ botId: bot.id, botName: bot.name }) : undefined}
           />
         </div>
-        {approvalMode === "full" && trustedModesAvailable && <button
+        {!draft && approvalMode === "full" && trustedModesAvailable && <button
           type="button" disabled={Boolean(bot.busy)}
           className="mt-3 text-[13px] text-accent hover:underline disabled:opacity-40"
           onClick={() => { setAllThreads(true); setFullAccessTarget(bot.id); }}
         >Apply Full access to all threads</button>}
+        {!draft && ownerOrAdmin === true && <button
+          type="button"
+          className="mt-3 block text-[13px] text-accent hover:underline"
+          onClick={() => setCommandAllowlistTarget({ botId: bot.id, botName: bot.name })}
+        >{t("commandAllowlist.manage")}</button>}
       </div>
 
+      {commandAllowlistTarget && <CommandAllowlistDialog
+        key={commandAllowlistTarget.botId}
+        {...commandAllowlistTarget}
+        onClose={() => setCommandAllowlistTarget(null)}
+      />}
       <LocalComputerAutoWarning
         open={localAutoWarning !== null}
         onCancel={() => setLocalAutoWarning(null)}
@@ -179,7 +199,7 @@ export function PermissionsSection({
       <FullAccessWarning
         open={fullAccessTarget !== null}
         allThreads={allThreads}
-        onAllThreadsChange={setAllThreads}
+        onAllThreadsChange={draft ? undefined : setAllThreads}
         onCancel={() => setFullAccessTarget(null)}
         onConfirm={() => {
           const target = fullAccessTarget;

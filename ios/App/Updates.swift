@@ -37,7 +37,7 @@ extension CompanionState {
         }
 
         for bot in bots where bot.hidden != true {
-            for task in bot.threadGroups(queuedThreadIds: queuedThreadIds).flatMap(\.tasks) {
+            for task in bot.attentionOrderedTasks(queuedThreadIds: queuedThreadIds) {
                 guard let projected = bot.projected(forThread: task.threadId) else { continue }
                 let chat = Chat.bot(projected)
                 guard seen.insert(chat.conversationID).inserted else { continue }
@@ -98,7 +98,7 @@ extension CompanionState {
     }
 
     private func lastLine(threadId: String) -> String {
-        guard let last = visibleTranscript(forThread: threadId).last else { return "" }
+        guard let last = visibleTranscript(forThread: threadId).last(where: { $0.kind != .digest }) else { return "" }
         switch last.kind {
         case .text, .unknown: return last.text ?? ""
         case .options: return last.card?.title ?? ""
@@ -106,6 +106,8 @@ extension CompanionState {
         case .activity: return last.tool?.name ?? ""
         case .screen: return "Screenshot"
         case .image: return "Image"
+        case .digest: return ""
+        case .compaction: return last.compaction?.chipText ?? last.text ?? ""
         }
     }
 }

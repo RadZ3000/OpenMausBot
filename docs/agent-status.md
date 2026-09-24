@@ -3,7 +3,7 @@
 **Standing snapshot for a new agent.** Overwrite this file when facts change.
 Do not add another dated handoff.
 
-Last updated: 2026-09-21 (Landed merge of `upstream/main` through `e87f4880` **0.1.85** on branch `merge/upstream-0.1.85`. License gate green (Apache-2.0). Took theirs' ACP per-thread keep-alive (#1575) and re-applied fork seams: imageGen MCP mount, `windowsDetachedSpawn` / `sessionLoadLived` for Hermes, last-look via `withComputerObservation`, `imageGen` + `hooks` capability kinds, brand `PRODUCT_NAME` on ACP deny notes and Electron window titles. Brand ledger re-baselined for docs / peer-roster / system-prompt drift; `fake-acp` dump allowlist keeps `HERMES_HOME`. `pnpm typecheck`, `pnpm check:brand`, `pnpm check:licenses`, `pnpm check:distribution` green. Full vitest: 7978 passed; remaining isolation flakes in `index.test` under load; real race fix in `thread-aware-bots.e2e` (poll for settlement prompt). Do not push until asked. Host Cua npm is **0.28.2**; container `CUA_DRIVER_VERSION` stays **0.20.0**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md). [B-29](known-bugs.md) is P1 of 002. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Hop-on map: [`README.md`](README.md).)
+Last updated: 2026-09-24 (Pushed merge of `upstream/main` `dbd7920c` **0.1.87** on `merge/upstream-0.1.87`. License gate green (Apache-2.0). Took theirs through 0.1.87 — org library, presets, share-team v2, command allowlist, voice notes, connector grants, mermaid, startup tray, stopped Local VM must be recreated — and re-applied fork seams: imageGen MCP plus `imageGenApiKey` in the agents catalog goldens, Hermes `windowsDetachedSpawn` / `sessionLoadLived`, last-look via `withComputerObservation`, `imageGen` + `hooks` + `phone` capability kinds, `PREFERRED_ENGINE` / `startingModel`, brand `PRODUCT_NAME`, Team Library gate, update Download hide, opt-in `AnalyticsSettings`. Brand ledger re-baselined. elkjs (EPL-2.0) and khroma (MIT, missing npm license field) reviewed for mermaid. `pnpm typecheck`, `pnpm check:brand`, `pnpm check:licenses`, `pnpm check:distribution`, `pnpm i18n:check` green. Full vitest (`OMB_SKIP_REAL_ELECTRON_BROWSER_FIXTURE=1`) had 13 failures: the six merge fixes above, plus workspace-backup, checkpoints digest, and surface-pins, which passed when re-run alone. Host Cua npm is **0.28.2**; container `CUA_DRIVER_VERSION` stays **0.20.0**. Shared VM **piles** still decided — [`plans/2026-08-28-002-shared-vm-seats-plan.md`](plans/2026-08-28-002-shared-vm-seats-plan.md). [B-29](known-bugs.md) is P1 of 002. Path A first-run is still Thinking **8B @ 32k**. NVIDIA Hermes gold **pass**; Admin CPU Hermes gold **fail**. Hop-on map: [`README.md`](README.md).)
 
 ## Start here
 
@@ -19,17 +19,17 @@ plans: [`plans/archive/README.md`](plans/archive/README.md). The 2026-08-21
 morning handoff and the 2026-08-23 cold-start were deleted as duplicates of
 this file; git still has them.
 
-## Git (this machine, 2026-09-21)
+## Git (this machine, 2026-09-24)
 
 | | |
 |---|---|
-| Branch | `merge/upstream-0.1.85` — this merge (0.1.85) |
-| HEAD | merge of `merge/upstream-0.1.84` tip + `e87f4880` (0.1.85) |
-| Theirs | `e87f4880` — `upstream/main` **0.1.85**, Apache-2.0 |
-| `origin` | `RadZ3000/OpenMausBot` — **only push target**. Push this branch when asked. |
+| Branch | `merge/upstream-0.1.87` — pushed to `origin` |
+| HEAD | merge of `004638f2` (0.1.85) + `dbd7920c` (0.1.87) |
+| Theirs | `dbd7920c` — `upstream/main` **0.1.87**, Apache-2.0 |
+| `origin` | `RadZ3000/OpenMausBot` — **only push target**. |
 | `upstream` | `milind-soni/OpenMausBot`, push URL `DISABLED`. Never push there. |
 
-Catch-up to `upstream/main` `e87f4880` (0.1.85) landed this turn; previous was `8d8182ea` (0.1.84). Whose-file is still `git diff --stat upstream/main`. `package.json` version is now theirs' `0.1.85`. Host `@trycua/cua-driver` is **0.28.2**. Upstream ACP now keeps one agent process per thread (idle via `OMB_ACP_SESSION_IDLE_MS`, default 10m) — our fork-owned `server/acp-session.ts` remains for fingerprint/last-look helpers but is no longer the ACP pool. New upstream surface worth knowing: KaTeX math, Grok TTS (`xai` TTS provider), hosted model routing, context compaction / digests, hooks (`omb-hook`), guarded external turns, standing agents / Slack assistant runtime, organisation local sign-in, webhook "post" mode.
+Catch-up to `upstream/main` `dbd7920c` (0.1.87) landed on this branch; previous was `e87f4880` (0.1.85). Whose-file is still `git diff --stat upstream/main`. `package.json` version is theirs' `0.1.87`. Host `@trycua/cua-driver` is **0.28.2**. Upstream ACP still keeps one agent process per thread (idle via `OMB_ACP_SESSION_IDLE_MS`, default 10m). A stopped Local VM desktop image cannot safely resume — recreate it. New upstream surface on top of 0.1.85: organisation library, preset bots, share-team package v2, exact command allowlist, voice notes, per-bot connector tool grants, mermaid diagrams, Windows startup screen and system tray.
 
 `cfg.imageGen` remains **theirs** (avatar) with our generate_image fields in the same block; status still splits `imageGen` vs **`imageGenProxy`**. Qwen `.cmd` shim parsing stays in fork-owned [`server/cmd-shim-vars.ts`](../server/cmd-shim-vars.ts).
 
@@ -83,7 +83,7 @@ Read `commercial-fork`; do not add a second profile.
 
 **Upstream license gate.** [`plans/2026-08-25-003-upstream-license-gate.md`](plans/2026-08-25-003-upstream-license-gate.md)
 is in tree. `pnpm check:upstream-license` after `git fetch upstream`, before any
-merge. Green today on `e87f4880` (Apache-2.0). A “fetch and merge” order does
+merge. Green today on `dbd7920c` (Apache-2.0). A “fetch and merge” order does
 **not** skip it. On red: stop, paste the alert, wait for a named acknowledgment;
 default is freeze. Do not wrap fetch. Weekly Action:
 `.github/workflows/check-upstream-license.yml`.

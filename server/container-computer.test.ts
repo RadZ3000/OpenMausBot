@@ -456,7 +456,7 @@ describe("containerComputerStatus", () => {
 
     expect(status.persistence).toBe("unsafe");
     expect(status.ready).toBe(false);
-    expect(status.problem).toContain("durable workspace");
+    expect(status.problem).toBe("The existing Local VM is missing its durable folder; recreate it");
   });
 
   it("does not mistake an unrelated container executable for Apple container off macOS", async () => {
@@ -681,7 +681,7 @@ describe("containerComputerStatus", () => {
     expect(status.problem).toContain("Prepare the Cua desktop image");
   });
 
-  it("asks to start a healthy stopped desktop instead of calling it unsafe to resume", async () => {
+  it("asks to recreate a stopped desktop image instead of resuming it", async () => {
     const fake = runner({
       "/usr/bin/which docker": "docker\n",
       "/usr/bin/which podman": new Error("missing"),
@@ -693,7 +693,7 @@ describe("containerComputerStatus", () => {
     const status = await containerComputerStatus(fake.run, "linux");
     expect(status.container).toBe("stopped");
     expect(status.imageMatches).toBe(true);
-    expect(status.problem).toBe("Start the Local VM");
+    expect(status.problem).toBe("This desktop image cannot safely resume; recreate the Local VM");
   });
 });
 

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Menu } from "lucide-react";
 import { StoreProvider, useStore } from "@/state/store";
-import { WelcomeFlow } from "@/components/onboarding/WelcomeFlow";
+import { useWelcomeViewer, WelcomeGate } from "@/components/onboarding/WelcomeGate";
+import { spotlightsQuiet } from "@/lib/onboarding";
 import { FirstConversationTour } from "@/components/onboarding/FirstConversationTour";
 import { GuidedTour } from "@/components/onboarding/GuidedTour";
-import { welcomeDue } from "@/lib/onboarding";
 import { ThreadRefsProvider } from "@/components/ThreadRefs";
-import { emailGateDone, initAnalytics } from "@/lib/analytics";
+import { initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
@@ -342,42 +342,11 @@ function Shell() {
   );
 }
 
-/** Opens the welcome flow on a fresh workspace (the server's onboarding
- * record says so) or on request from Settings. The decision waits for the
- * config to arrive, so a returning user never sees the tour flash. */
-function WelcomeGate() {
-  const { state, dispatch } = useStore();
-  const [dismissed, setDismissed] = useState(false);
-  const due =
-    !dismissed &&
-    welcomeDue(state.config, {
-      remoteClient: window.ogb?.remoteClient?.active === true,
-      legacyDone: emailGateDone(),
-    });
-  // Explicit desktop connection Settings need no local provider onboarding.
-  // Organisation remains optional; closing Settings resumes the normal tour.
-  if (state.appSettingsOpen && ["desktopWorkspaces", "organization"].includes(state.appSettingsSection)) return null;
-  if (!state.welcomeOpen && !due) return null;
-  const bot = state.bots.find((b) => !b.hidden) ?? null;
-  const replay = state.welcomeOpen && !due;
-  return (
-    <WelcomeFlow
-      bot={bot}
-      replay={replay}
-      onDone={() => {
-        setDismissed(true);
-        dispatch({ type: "toggleWelcome", open: false });
-        // the first real finish hands over to the guided tour; a replay does not
-        if (!replay) dispatch({ type: "toggleTour", open: true });
-      }}
-    />
-  );
-}
-
 function Application() {
   useEffect(() => {
     initAnalytics();
   }, []);
+  const viewer = useWelcomeViewer();
   return (
     <DesktopCapabilitiesProvider>
       <LightboxProvider>
@@ -385,9 +354,9 @@ function Application() {
           <ThreadRefsProvider>
             <Shell />
           </ThreadRefsProvider>
-          <WelcomeGate />
+          <WelcomeGate viewer={viewer} />
           <GuidedTour />
-          <FirstConversationTour />
+          <FirstConversationTour quiet={spotlightsQuiet(viewer)} />
           {/* after the welcome gate on purpose: same z-50 tier, so DOM order
               keeps the path choice on top until it is answered or deferred */}
           <InstallPathChooser />
